@@ -1,0 +1,27 @@
+# .NET and local development tools
+bin/
+obj/
+.vs/
+*.user
+*.suo
+__pycache__/
+node_modules/
+.env
+.env.*
+
+# Local workspace state and SQLite journals
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-*
+*.sqlite3-*
+*.db-*
+workbench-location.json*
+workbench.lock
+coordinator.lock
+/handoffs/
+/topics/
+/development-tasks/
+
+# Historical research notes from the development machine
+/docs/engine-protocol-research.md
