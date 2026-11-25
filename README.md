@@ -22,11 +22,7 @@ FF.AgentCollaboration 在 Windows 本机运行，把多个 AI 命令行终端放
 
 ### 使用 Windows 发布包
 
-独立发布包已包含 .NET 运行时。解压整个发布包，保留 EXE 同目录的 `wwwroot`、`runtimes` 和 `ff-agent-collab` 文件夹。在该目录打开 PowerShell，运行下面这一行。
-
-```powershell
-.\FF.AgentCollaboration.exe workbench --open-browser
-```
+解压整个发布包，双击 **`启动工作台.bat`** 即可。脚本直接运行同目录的 `FF.AgentCollaboration.exe` 并打开浏览器。独立发布包已包含 .NET 运行时。
 
 ### 使用 GitHub 源码
 

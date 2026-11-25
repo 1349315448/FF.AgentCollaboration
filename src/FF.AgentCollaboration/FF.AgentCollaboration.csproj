@@ -11,6 +11,7 @@
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="Microsoft.Windows.Console.ConPTY" Version="1.25.261109001" GeneratePathProperty="true" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <None Update="启动工作台.bat" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Update="Skills/ff-agent-collab/SKILL.md" TargetPath="ff-agent-collab/SKILL.md"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Update="wwwroot/**/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
