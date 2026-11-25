@@ -10,7 +10,13 @@ internal sealed class WorkbenchLocation
     private sealed record Location(string data_dir, string? previous_data_dir, bool pending_migration = false);
     internal static string LocalData => Environment.GetEnvironmentVariable("LOCALAPPDATA") ??
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-    internal static string DefaultDirectory => Path.Combine(LocalData, "FF.AgentCollaboration", "workbench");
+    internal static string LegacyDirectory => Path.Combine(LocalData, "FF.AgentCollaboration", "workbench");
+    private static string DataRoot => Path.Combine(Path.GetFullPath(
+        Environment.GetEnvironmentVariable("FF_WORKBENCH_HOME") ?? AppContext.BaseDirectory), "workbench-data");
+    internal static string DefaultDirectory => Path.Combine(DataRoot, "database");
+    internal WorkbenchPaths Defaults => IsFixed
+        ? new(Path.Combine(Root, "topics"), Path.Combine(Root, "handoffs"), Root)
+        : new(Path.Combine(DataRoot, "topics"), Path.Combine(DataRoot, "handoffs"), DefaultDirectory);
     private readonly string? config;
     private readonly object gate = new();
     private Location? saved;
@@ -24,15 +30,18 @@ internal sealed class WorkbenchLocation
             Path.Combine(LocalData, "FF.AgentCollaboration", "workbench-location.json"));
         saved = Read();
         Root = saved?.data_dir ?? initial;
+        if (!fixedDirectory && saved == null && ProjectFolders.Same(initial, DefaultDirectory) &&
+            !File.Exists(Path.Combine(initial, "workbench.sqlite")) && File.Exists(Path.Combine(LegacyDirectory, "workbench.sqlite")))
+            Root = LegacyDirectory;
         // P4 迁入知识库时保留过 FF 原库。双库并存取旧启动器实际使用的 cache，两份原库都保留。
-        if (!fixedDirectory && saved == null && ProjectFolders.Same(initial, DefaultDirectory) && knowledge != null)
+        if (!fixedDirectory && saved == null && ProjectFolders.Same(Root, LegacyDirectory) && knowledge != null)
         {
             string cache = Path.Combine(knowledge, "agent-collaboration", "cache");
             if (File.Exists(Path.Combine(cache, "workbench.sqlite")))
             {
-                if (File.Exists(Path.Combine(initial, "workbench.sqlite")))
+                if (File.Exists(Path.Combine(Root, "workbench.sqlite")))
                 {
-                    string candidate = initial + "-from-cache";
+                    string candidate = Root + "-from-cache";
                     Root = candidate;
                     for (int suffix = 2; File.Exists(Root) ||
                          (Directory.Exists(Root) && Directory.EnumerateFileSystemEntries(Root).Any()); suffix++)
@@ -105,7 +114,6 @@ internal sealed class WorkbenchLocation
         lock (gate)
         {
             var (archive, handoffs) = store.Directories;
-            string defaults = config == null ? Root : DefaultDirectory;
             return new
             {
                 data_dir = Target,
@@ -113,12 +121,7 @@ internal sealed class WorkbenchLocation
                 pending_restart = Pending,
                 archive_root = archive,
                 handoffs,
-                defaults = new
-                {
-                    data_dir = defaults,
-                    archive_root = Path.Combine(defaults, "topics"),
-                    handoffs = Path.Combine(defaults, "handoffs")
-                }
+                defaults = Defaults
             };
         }
     }

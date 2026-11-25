@@ -8,6 +8,8 @@ using FF.AgentCollaboration.Infrastructure.Storage;
 
 namespace FF.AgentCollaboration.Presentation.Http;
 
+internal sealed record LogCleanupRequest(int? Days);
+
 internal static class WorkbenchEndpoints
 {
     internal static void Map(WebApplication app, WorkbenchStartup startup, WorkbenchLocation location)
@@ -29,6 +31,12 @@ internal static class WorkbenchEndpoints
         {
             using var state = new WorkbenchStore(startup.Root);
             state.Acknowledge(WorkbenchInput.Id(id), WorkbenchInput.Id(messageId));
+            return Results.NoContent();
+        });
+        app.MapPost("/api/windows/{id}/inbox/acknowledge-all", (string id) =>
+        {
+            using var state = new WorkbenchStore(startup.Root);
+            state.AcknowledgeAll(WorkbenchInput.Id(id));
             return Results.NoContent();
         });
         app.MapGet("/api/topics", () => { using var state = new WorkbenchStore(startup.Root); return state.Topics(); });
@@ -59,6 +67,27 @@ internal static class WorkbenchEndpoints
             state.SelectProject(selected);
             return new { project = selected };
         });
+        app.MapDelete("/api/project", (string path) =>
+        {
+            using var state = new WorkbenchStore(startup.Root);
+            state.RemoveProject(ProjectFolders.Resolve(path));
+            return Results.NoContent();
+        });
+        app.MapGet("/api/settings/logs", () =>
+        {
+            using var store = new WorkbenchStore(startup.Root);
+            return new { total = store.LogCount() };
+        });
+        app.MapPost("/api/settings/logs/cleanup", (LogCleanupRequest input) =>
+        {
+            using var store = new WorkbenchStore(startup.Root);
+            return store.CleanLogs(input.Days);
+        });
+        app.MapPut("/api/settings/mention-shortcut", (MentionKey input) =>
+        {
+            using var store = new WorkbenchStore(startup.Root);
+            return new { chord = store.SaveMentionShortcut(input.Chord) };
+        });
         app.MapGet("/api/settings", () => { using var state = new WorkbenchStore(startup.Root); return location.Settings(state); });
         app.MapPut("/api/settings", (WorkbenchPaths input) =>
         {
@@ -77,6 +106,11 @@ internal static class WorkbenchEndpoints
             await WorkbenchEnvironment.Repair(state, location.Target, input.Item);
             return Results.NoContent();
         });
+        app.MapGet("/api/engines/capabilities", () => WorkbenchEnvironment.Engines.ToDictionary(name => name, name =>
+        {
+            using var adapter = Engine.Create(name, Directory.GetCurrentDirectory());
+            return adapter.Capabilities;
+        }));
         app.MapGet("/api/engines", async (bool? detail, CancellationToken ct) =>
         {
             if (detail == true) return Results.Json(await Task.WhenAll(WorkbenchEnvironment.Engines.Select(e => WorkbenchEnvironment.EngineDetails(e, ct))));
@@ -98,6 +132,11 @@ internal static class WorkbenchEndpoints
             Workbench workbench, CancellationToken cancellation) =>
         {
             await workbench.ChangeHistory(WorkbenchInput.Id(id), action, input, cancellation);
+            return Results.NoContent();
+        });
+        app.MapPost("/api/windows/{id}/mention", async (string id, MentionTarget input, Workbench workbench, CancellationToken ct) =>
+        {
+            await workbench.InsertMention(WorkbenchInput.Id(id), input, ct);
             return Results.NoContent();
         });
         app.MapGet("/api/files", (string project, string? q, CancellationToken cancellation) =>
@@ -135,9 +174,14 @@ internal static class WorkbenchEndpoints
             workbench.Toggle(WorkbenchInput.Id(id), request.Enabled);
             return Results.NoContent();
         });
+        app.MapPost("/api/windows/{id}/stop", async (string id, Workbench workbench, CancellationToken cancellation) =>
+        {
+            await workbench.Stop(WorkbenchInput.Id(id), cancellation);
+            return Results.NoContent();
+        });
         app.MapDelete("/api/windows/{id}", async (string id, Workbench workbench, CancellationToken cancellation) =>
         {
-            await workbench.Close(WorkbenchInput.Id(id), cancellation);
+            await workbench.Stop(WorkbenchInput.Id(id), cancellation, removeWindow: true);
             return Results.NoContent();
         });
     }

@@ -5,29 +5,61 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 
 internal sealed partial class WorkbenchStore
 {
+    internal string MentionShortcut() =>
+        Read("SELECT value FROM settings WHERE key='mention_shortcut'", row => row.GetString(0)).SingleOrDefault()
+        ?? MentionKey.Default;
+
+    internal string SaveMentionShortcut(string? chord)
+    {
+        var value = MentionKey.Validate(chord);
+        if (value == MentionKey.Default) Exec("DELETE FROM settings WHERE key='mention_shortcut'");
+        else Exec("INSERT INTO settings VALUES('mention_shortcut',$p0) ON CONFLICT(key) DO UPDATE SET value=excluded.value", value);
+        return value;
+    }
+
     private string? ProjectSetting() => Read("SELECT value FROM settings WHERE key='project'", row => row.GetString(0)).SingleOrDefault();
 
-    internal string Project()
+    internal (string? Current, string[] Paths) ProjectList(IEnumerable<string>? associated = null)
     {
-        string? path = ProjectSetting();
-        return Directory.Exists(path) ? Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)) : Directory.GetCurrentDirectory();
+        string? selected = ProjectSetting();
+        associated ??= Read("SELECT project FROM topics UNION ALL SELECT project FROM windows WHERE closed=0", row => row.GetString(0));
+        var paths = Projects(selected == null ? associated : associated.Prepend(selected));
+        return (paths.FirstOrDefault(path => string.Equals(path, selected, StringComparison.OrdinalIgnoreCase)) ?? paths.FirstOrDefault(), paths);
+    }
+
+    private string[] SavedProjects()
+    {
+        string? saved = Read("SELECT value FROM settings WHERE key='projects'", row => row.GetString(0)).SingleOrDefault();
+        return saved == null ? [] : JsonSerializer.Deserialize<string[]>(saved) ?? [];
     }
 
     // [T13] 已打开的选项卡按用户顺序排在前面；话题和未关闭窗口补齐旧库中的项目。
-    internal string[] Projects(IEnumerable<string> candidates)
+    private string[] Projects(IEnumerable<string> candidates)
     {
-        string? saved = Read("SELECT value FROM settings WHERE key='projects'", row => row.GetString(0)).SingleOrDefault();
-        var paths = saved == null ? [] : JsonSerializer.Deserialize<string[]>(saved) ?? [];
-        return paths.Concat(candidates).Where(path => !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path))
+        var removed = Read("SELECT value FROM settings WHERE key GLOB 'removed_project:*'", row => row.GetString(0));
+        return SavedProjects().Concat(candidates).Where(path => !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path))
             .Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)))
-            .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
+            .Except(removed, StringComparer.OrdinalIgnoreCase)
             .Where(Directory.Exists).ToArray();
     }
 
     internal void SelectProject(string project) => Atomic(() => SaveProject(project));
 
+    internal void RemoveProject(string project) => Atomic(() =>
+    {
+        // 保留话题、窗口与磁盘原件，同时阻止旧话题的项目路径被重新补回侧栏。
+        Exec("INSERT OR REPLACE INTO settings(key,value) VALUES($p0,$p1)", RemovedProjectKey(project), project);
+        var remaining = SavedProjects().Where(path => !string.Equals(path, project, StringComparison.OrdinalIgnoreCase));
+        Exec("UPDATE settings SET value=$p0 WHERE key='projects'", JsonSerializer.Serialize(remaining));
+        if (string.Equals(ProjectSetting(), project, StringComparison.OrdinalIgnoreCase))
+            Exec("DELETE FROM settings WHERE key='project'");
+    });
+
+    private static string RemovedProjectKey(string path) => "removed_project:" + path.ToUpperInvariant();
+
     private void SaveProject(string project)
     {
+        Exec("DELETE FROM settings WHERE key=$p0", RemovedProjectKey(project));
         string[] tabs = Projects([ProjectSetting() ?? project, project]);
         Exec("""
             INSERT INTO settings(key,value) VALUES('project',$p0),('projects',$p1)

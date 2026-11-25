@@ -22,7 +22,7 @@ internal static class Mcp
     internal static string WindowGrant() =>
         Environment.GetEnvironmentVariable("LX_P0_WINDOW_GRANT") ?? Environment.GetEnvironmentVariable("FF_P0_WINDOW_GRANT") ?? throw new InvalidOperationException("缺少窗口绑定");
 
-    internal static async Task Serve(object[] tools, Func<string, JsonNode, string> call)
+    internal static async Task Serve(object[] tools, Func<string, JsonNode, string> call, Func<string>? instructions = null)
     {
         while (await Console.In.ReadLineAsync() is { } line)
         {
@@ -37,12 +37,14 @@ internal static class Mcp
                 switch (method)
                 {
                     case "initialize":
-                        result = new
+                        var handshake = new Dictionary<string, object>
                         {
-                            protocolVersion = (string?)p?["protocolVersion"] ?? "2024-11-05",
-                            capabilities = new { tools = new { } },
-                            serverInfo = new { name = "lx_collab", version = "1.0" }
+                            ["protocolVersion"] = (string?)p?["protocolVersion"] ?? "2024-11-05",
+                            ["capabilities"] = new { tools = new { } },
+                            ["serverInfo"] = new { name = "lx_collab", version = "1.0" }
                         };
+                        if (instructions != null) handshake["instructions"] = instructions();
+                        result = handshake;
                         break;
                     case "ping": result = new { }; break;
                     case "tools/list": result = new { tools }; break;
@@ -54,6 +56,11 @@ internal static class Mcp
                         Console.WriteLine(JsonSerializer.Serialize(new { jsonrpc = "2.0", id, error = new { code = -32601, message = "Unknown method" } }));
                         continue;
                 }
+            }
+            catch (Exception e) when (method == "initialize")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { jsonrpc = "2.0", id, error = new { code = -32603, message = e.Message } }));
+                continue;
             }
             catch (Exception e) when (method == "tools/call")
             {

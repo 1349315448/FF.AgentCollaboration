@@ -14,7 +14,7 @@ internal sealed class SessionCatalog(WorkbenchStartup startup) : IDisposable
     internal async Task<IReadOnlyList<ModelChoice>> Models(string name, string? project, CancellationToken request)
     {
         using var state = new WorkbenchStore(startup.Root);
-        using var engine = Engine.Create(EngineNames.Require(name), ProjectFolders.Resolve(project ?? state.Project()));
+        using var engine = Engine.Create(EngineNames.Require(name), ProjectFolders.Resolve(project ?? state.ProjectList().Current ?? Directory.GetCurrentDirectory()));
         using var timeout = Deadline(request);
         return await engine.ListModels(timeout.Token);
     }
@@ -46,12 +46,12 @@ internal sealed class SessionCatalog(WorkbenchStartup startup) : IDisposable
     {
         using var state = new WorkbenchStore(startup.Root);
         string engineName = EngineNames.Require(name);
-        string folder = ProjectFolders.Resolve(project ?? state.Project());
+        string folder = ProjectFolders.Resolve(project ?? state.ProjectList().Current ?? Directory.GetCurrentDirectory());
         using var engine = Engine.Create(engineName, folder);
         using var timeout = Deadline(request);
         var history = await engine.ListSessions(timeout.Token, archived);
         var bound = state.Windows().Where(w => w.Engine == engineName && w.Session != null).Select(w => w.Session).ToHashSet();
-        var archives = engineName != "codex" ? state.ArchivedSessions(engineName) : null;
+        var archives = !engine.Capabilities.NativeArchive ? state.ArchivedSessions(engineName) : null;
         return history.Where(s => archives == null || archives.Contains(s.Id) == archived)
             .Select(s => s with { MayBeInUse = bound.Contains(s.Id) || s.MayBeInUse || engine.HasNativeWriter(s.Id) })
             .Where(s => includeBound || !s.MayBeInUse)

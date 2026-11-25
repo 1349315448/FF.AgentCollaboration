@@ -4,6 +4,7 @@ obj/
 .vs/
 *.user
 *.suo
+**/Properties/PublishProfiles/FolderProfile.pubxml
 __pycache__/
 node_modules/
 .env
@@ -20,6 +21,7 @@ workbench-location.json*
 workbench.lock
 coordinator.lock
 /handoffs/
+/workbench-data/
 /topics/
 /development-tasks/
 

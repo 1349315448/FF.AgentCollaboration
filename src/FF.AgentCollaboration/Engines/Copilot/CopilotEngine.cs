@@ -7,7 +7,10 @@ namespace FF.AgentCollaboration.Engines;
 
 internal sealed class CopilotEngine(string cwd) : RpcEngine
 {
-    internal override bool SupportsMode(string mode) => mode is "agent" or "autopilot";
+    internal override EngineCapabilities Capabilities => Profile;
+    private static readonly EngineCapabilities Profile = new("运行模式",
+        [new("agent", "Agent"), new("autopilot", "Autopilot")],
+        ["new", "latest", "resume", "fork", "archive", "restore", "delete"], NativeArchive: false);
 
     private async Task Start(EngineMcp? mcp, CancellationToken ct)
     {

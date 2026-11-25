@@ -28,20 +28,45 @@ internal static class WorkbenchMcp
                     message = new { type = "string" },
                     document = new { type = "string", description = "Existing .md path in your project or your topic archive, shared in place." },
                     resend = new { type = "string", description = "Original message ID. Omit message and document." },
+                    supersedePrevious = new { type = "boolean", @default = true, description = "Replace your earlier pending or uncertain messages to this recipient. Set false for independent tasks." },
+                    cancel = new { type = new[] { "string", "boolean" }, description = "Only retract your own unclaimed or uncertain message: its full message ID alone, or true with target to retract the latest eligible message. Does not stop work already started." },
                     files = new { type = "array", items = new { type = "string" }, description = "Existing files within your project directory. Relative or absolute paths." },
                     autoReturnHint = new { type = new[] { "string", "boolean" }, description = "Optional instruction to return results. True asks the recipient to reply using send_to_agent." }
                 },
                 additionalProperties = false
             }
         },
-        Mcp.Tool(CollaborationTools.ReadDocument, "Read a Markdown handoff that you sent or received. Use the delivered absolute path or its message ID.", "pathOrId"),
-        Mcp.Tool(CollaborationTools.FinishTopic, "Finish your current topic with a short completion summary.", "summary")
+        Mcp.Tool(CollaborationTools.ReadDocument, "Read a Markdown handoff you sent or received. Use its HANDOFF_DOC path, full message ID, or unique 8-hex MSG_ID. Plain MSG messages have no handoff document.", "pathOrId"),
+        Mcp.Tool(CollaborationTools.FinishTopic, "Finish your current topic with a short completion summary.", "summary"),
+        Mcp.Tool(CollaborationTools.ReadSkill, "Read this FF.CP window's ff-agent-collab skill and examples for delegation, review, and delivering images to the user.")
     ];
 
-    internal static Task Serve(string root)
+    private static readonly HttpClient Notifications = new(new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false })
+        { Timeout = TimeSpan.FromMilliseconds(500) };
+
+    internal static Task Serve(string root, int? port)
     {
         string grant = Mcp.WindowGrant();
-        return Mcp.Serve(Tools, (name, input) => Call(root, grant, name, input));
+        return Mcp.Serve(Tools, (name, input) =>
+        {
+            string result = Call(root, grant, name, input);
+            if (port.HasValue && name is CollaborationTools.Send or CollaborationTools.FinishTopic)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/api/events/wake");
+                request.Headers.Add("X-FF-Notify", "1");
+                try { using var response = Notifications.Send(request); }
+                catch (Exception error) when (error is HttpRequestException or OperationCanceledException)
+                { /* 已提交的操作仍成功，宿主定期核对 SQLite。 */ }
+            }
+            return result;
+        }, () =>
+        {
+            using var state = new WorkbenchStore(root);
+            var caller = state.Caller(grant);
+            return $"FF.Agent 窗口 @{caller.Name}，所属话题「{state.Topic(caller.TopicId).Name}」。" +
+                "用 @名称 或 @话题/名称 寻址。长文通过 document 传 Markdown 路径，message 用简短摘要。" +
+                "更新需求默认 supersedePrevious=true；独立任务设为 false。交接、审核或交付图片时，调用 read_collaboration_skill 读取本窗口的 ff-agent-collab 规范和示例。";
+        });
     }
 
     private static string Call(string root, string grant, string name, JsonNode input)
@@ -49,6 +74,9 @@ internal static class WorkbenchMcp
         using var state = new WorkbenchStore(root);
         switch (name)
         {
+            case CollaborationTools.ReadSkill:
+                state.Caller(grant);
+                return CollaborationSkill.Read();
             case CollaborationTools.FinishTopic:
                 var finished = state.FinishOwnTopic(grant, WorkbenchInput.Text((string?)input["summary"], "完成摘要", 2000));
                 return JsonSerializer.Serialize(new { id = finished.Id, status = finished.Status, summary = finished.FinishSummary });
@@ -74,10 +102,23 @@ internal static class WorkbenchMcp
                     return item;
                 }));
             case CollaborationTools.Send:
+                if (input.AsObject().ContainsKey("cancel"))
+                {
+                    if (input.AsObject().Any(p => p.Key is not ("cancel" or "target")))
+                        throw new WorkbenchError("撤回时请只传 cancel，按目标撤回时另传 target");
+                    string cancelled;
+                    if (input["cancel"] is JsonValue option && option.TryGetValue<bool>(out var byTarget) && byTarget)
+                        cancelled = state.Cancel(grant, null, WorkbenchInput.Text((string?)input["target"], "收件 Agent", 160));
+                    else if (input["cancel"] is JsonValue token && token.TryGetValue<string>(out var id) && input["target"] == null)
+                        cancelled = state.Cancel(grant, WorkbenchInput.Id(id), null);
+                    else throw new WorkbenchError("请用 cancel=消息 ID 或 cancel=true 加 target 撤回");
+                    return JsonSerializer.Serialize(new { id = cancelled, status = "cancelled" });
+                }
                 var hint = input["autoReturnHint"] is JsonValue value && value.TryGetValue<bool>(out var reply)
                     ? reply.ToString() : (string?)input["autoReturnHint"];
                 return Queued(HandoffService.Send(state, grant, (string?)input["target"], (string?)input["message"],
-                    (string?)input["document"], (string?)input["resend"], input["files"]?.Deserialize<string[]>() ?? [], hint));
+                    (string?)input["document"], (string?)input["resend"], input["files"]?.Deserialize<string[]>() ?? [], hint,
+                    (bool?)input["supersedePrevious"] ?? true));
             case CollaborationTools.ReadDocument:
                 return state.ReadDocument(grant, WorkbenchInput.Text((string?)input["pathOrId"], "交接文档", 4096));
             default:

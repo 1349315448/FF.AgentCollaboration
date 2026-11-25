@@ -14,7 +14,7 @@ import threading
 import time
 from unittest.mock import patch
 from urllib.error import HTTPError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -24,20 +24,27 @@ def new_id():
 
 
 @contextmanager
-def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=True, graceful=False, initialize=True):
-    command = [executable, "workbench", root, "--port", "0", "--handoffs", handoffs or Path(root) / "handoffs"]
+def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=True, graceful=False, initialize=True, use_defaults=False):
+    command = [executable, "workbench", "--port", "0"] if use_defaults else [
+        executable, "workbench", root, "--port", "0", "--handoffs", handoffs or Path(root) / "handoffs"]
     if fixed:
         command.append("--fixed-data-dir")
     if knowledge is not None:
         command += ["--knowledge", knowledge]
     if project:
         command += ["--project", project]
-    launch = {}
+    # Keep user-level skills and engine configuration inside this fixture.
+    profile = Path(root).parent / "cli-user"
+    env = dict(os.environ, USERPROFILE=str(profile))
+    for key, folder in (("CODEX_HOME", ".codex"), ("CLAUDE_CONFIG_DIR", ".claude")):
+        if not env.get(key) or not Path(env[key]).resolve().is_relative_to(profile.parent.resolve()):
+            env[key] = str(profile / folder)
+    launch = {"env": env}
     if graceful:
         startup = subprocess.STARTUPINFO()
         startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startup.wShowWindow = subprocess.SW_HIDE
-        launch = dict(creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup)
+        launch.update(creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup)
     with subprocess.Popen(command, **launch, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8") as process:
         lines = queue.Queue()
 
@@ -83,10 +90,13 @@ def http(base, route, body=None, method=None, **headers):
         return error.code, json.loads(detail) if detail else None
 
 
-def mcp(executable, root, grant, name, **arguments):
+def mcp(executable, root, grant, name, *, notify_port=None, **arguments):
     request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": arguments}}
     env = dict(os.environ, LX_P0_WINDOW_GRANT=grant)
-    call = subprocess.run([executable, "workbench-mcp", root], input=json.dumps(request) + "\n",
+    command = [executable, "workbench-mcp", root]
+    if notify_port is not None:
+        command += ["--notify-port", str(notify_port)]
+    call = subprocess.run(command, input=json.dumps(request) + "\n",
                           capture_output=True, text=True, encoding="utf-8", env=env, timeout=15, check=True)
     return json.loads(call.stdout)["result"]
 
@@ -166,6 +176,18 @@ def verify(executable, directory):
         files = http(base, "/api/files?" + urlencode({"project": project}))[1]["files"]
         assert files == ["interface notes.md"], files
         assert http(base, "/api/handoffs", {}, "POST")[0] == 404
+        capabilities = http(base, "/api/engines/capabilities")[1]
+        assert set(capabilities) == {"codex", "copilot", "claude"}
+        for engine, profile in capabilities.items():
+            assert {"new","resume","fork","archive","restore","delete"} <= set(profile["sessionActions"])
+            assert ("latest" in profile["sessionActions"]) == (engine == "copilot")
+            assert profile["nativeArchive"] == (engine == "codex")
+            assert profile["models"] and profile["efforts"] and all(m["id"] and m["label"] for m in profile["modes"])
+        chord = "/api/settings/mention-shortcut"
+        assert http(base, "/api/state")[1]["mentionShortcut"] == "Alt+Shift+A"
+        for invalid in ("A", "Alt", "Enter", "Escape", "Tab", "Ctrl+W", "Alt+Shift+F", "Alt+A\\n"):
+            assert http(base, chord, {"chord":invalid}, "PUT")[0] == 400, invalid
+        assert http(base, chord, {"chord":"Ctrl+Alt+M"}, "PUT")[1]["chord"] == "Ctrl+Alt+M"
         shortcuts = "/api/shortcuts/codex"
         defaults = http(base, shortcuts)[1]
         assert "/status" in {item["command"] for item in defaults}
@@ -216,10 +238,27 @@ def verify(executable, directory):
         assert text(mcp(executable, root, sender, "read_handoff_doc", pathOrId=message["id"])) == long_text.strip()
         assert mcp(executable, root, outsider, "read_handoff_doc", pathOrId=message["id"])["isError"]
         assert mcp(executable, root, recipient, "read_handoff_doc", pathOrId=str(other / doc.name))["isError"]
-        short = json.loads(text(mcp(executable, root, sender, "send_to_agent", target=recipient, message="short")))
+        short = json.loads(text(mcp(executable, root, sender, "send_to_agent", target=recipient, message="short", supersedePrevious=False)))
         assert short["document"] is None
+        prefix = message["id"][:8]
+        for grant in (sender, recipient):
+            assert text(mcp(executable, root, grant, "read_handoff_doc", pathOrId=prefix.upper())) == long_text.strip()
+        assert mcp(executable, root, outsider, "read_handoff_doc", pathOrId=prefix)["isError"]
+        plain = mcp(executable, root, recipient, "read_handoff_doc", pathOrId=short["id"][:8])
+        assert plain["isError"] and "没有交接文档" in plain["content"][0]["text"]
+        collision = prefix + new_id()[8:]
+        db.execute("UPDATE inbox SET id=?,source=?,target=? WHERE id=?", (collision, outsider, twin, short["id"]))
+        db.commit()
+        assert text(mcp(executable, root, sender, "read_handoff_doc", pathOrId=prefix)) == long_text.strip()
+        db.execute("UPDATE inbox SET source=?,target=? WHERE id=?", (sender, recipient, collision))
+        db.commit()
+        ambiguous = mcp(executable, root, sender, "read_handoff_doc", pathOrId=prefix)
+        assert ambiguous["isError"] and "多条" in ambiguous["content"][0]["text"]
+        assert text(mcp(executable, root, sender, "read_handoff_doc", pathOrId=message["id"])) == long_text.strip()
+        db.execute("UPDATE inbox SET id=? WHERE id=?", (short["id"], collision))
+        db.commit()
         def send(agent=sender, **args):
-            return json.loads(text(mcp(executable, root, agent, "send_to_agent", **args)))
+            return json.loads(text(mcp(executable, root, agent, "send_to_agent", supersedePrevious=False, **args)))
 
         def denied(agent=sender, **args):
             assert mcp(executable, root, agent, "send_to_agent", **args)["isError"], args
@@ -261,6 +300,8 @@ def verify(executable, directory):
 
     handoffs = directory / "Runtime" / "handoffs"
     with host(executable, root, handoffs=handoffs, knowledge=root) as base:
+        assert http(base, "/api/state")[1]["mentionShortcut"] == "Ctrl+Alt+M"
+        assert http(base, chord, {"chord":None}, "PUT")[1]["chord"] == "Alt+Shift+A"
         assert http(base, shortcuts)[1] == defaults + [saved]
         assert http(base, shortcuts, {"action": "reset"})[1] == defaults
         view = http(base, "/api/state")[1]
@@ -364,6 +405,37 @@ def verify_first_run(executable, directory):
     docs = sandbox / "handoffs"
     config = sandbox / "bootstrap.json"
     chosen = dict(data_dir=str(data), archive_root=str(archive), handoffs=str(docs))
+    app = sandbox / "portable app"
+    location = sandbox / "portable-location.json"
+    with patch.dict(os.environ, LOCALAPPDATA=str(sandbox), FF_WORKBENCH_HOME=str(app), FF_LOCATION_CONFIG=str(location)):
+        with host(executable, initial, fixed=False, initialize=False, use_defaults=True) as base:
+            suggested = http(base, "/api/initialize")[1]
+            expected = {key:str(app / "workbench-data" / leaf) for key, leaf in (
+                ("data_dir", "database"), ("archive_root", "topics"), ("handoffs", "handoffs"))}
+            assert not (app / "workbench-data").exists()
+            assert all(suggested[key] == value for key, value in expected.items())
+            assert http(base, "/api/initialize", expected)[0] == 204
+            assert http(base, "/api/settings")[1]["defaults"] == expected
+            assert (Path(expected["data_dir"]) / "workbench.sqlite").is_file()
+            assert all(Path(path).is_dir() for path in expected.values())
+        with host(executable, initial, fixed=False, initialize=False, use_defaults=True) as base:
+            assert http(base, "/api/initialize")[1]["initialized"]
+    # Pre-setup versions saved implicit paths without a bootstrap file or the custom_paths marker.
+    legacy = sandbox / "FF.AgentCollaboration/workbench"
+    old_knowledge = sandbox / "legacy-knowledge"
+    old_knowledge.mkdir()
+    legacy_docs = sandbox / "legacy-documents"
+    with host(executable, legacy, handoffs=legacy_docs, knowledge=old_knowledge):
+        pass
+    with closing(sqlite3.connect(legacy / "workbench.sqlite")) as db:
+        db.execute("DELETE FROM settings WHERE key='custom_paths'")
+        db.commit()
+    with patch.dict(os.environ, LOCALAPPDATA=str(sandbox), FF_WORKBENCH_HOME=str(sandbox / "upgrade"), FF_LOCATION_CONFIG=str(sandbox / "legacy-pointer.json")):
+        with host(executable, initial, fixed=False, initialize=False, use_defaults=True) as base:
+            settings = http(base, "/api/settings")[1]
+            assert Path(settings["data_dir"]) == legacy
+            assert Path(settings["archive_root"]) == old_knowledge / "development-tasks"
+            assert Path(settings["handoffs"]) == legacy_docs
     fixed = sandbox / "fixed"
     with host(executable, str(fixed) + os.sep, directory, initialize=False) as base:
         setup = http(base, "/api/initialize")[1]
@@ -414,7 +486,7 @@ def verify_location(executable, directory):
             assert (independent / "handoffs" / "history.md").read_text(encoding="utf8") == "old"
             settings = http(base, "/api/settings")[1]
             assert settings["data_dir"] == str(independent) and not settings["pending_restart"]
-            assert Path(settings["defaults"]["archive_root"]).parent == independent
+            assert Path(settings["defaults"]["archive_root"]).parent == Path(settings["defaults"]["data_dir"]).parent
             paths = dict(data_dir=str(target), archive_root=str(target / "tasks"), handoffs=str(target / "docs"))
             foreign = directory / "foreign"
             with host(executable, foreign):
@@ -608,6 +680,10 @@ def verify_projects(executable, directory):
         path.mkdir()
     default, opened, topic_project, window_project, closed = paths
     missing = directory / "MissingProject"
+    with host(executable, root) as base:
+        fresh = http(base, "/api/state")[1]
+        assert fresh["projects"] == [] and fresh["project"] is None, fresh
+        assert http(base, "/api/topics", {"name": "隐式项目"})[0] == 400
     with host(executable, root, default) as base:
         assert http(base, "/api/project", {"path": str(opened)}, "PUT")[0] == 200
         topic = http(base, "/api/topics", {"name": "归属项目", "project": str(topic_project)})[1]
@@ -626,6 +702,21 @@ def verify_projects(executable, directory):
         assert state["project"] == str(opened) and state["projects"][:2] == [str(default), str(opened)]
         assert http(base, "/api/project", {"path": str(missing)}, "PUT")[0] == 404
         assert http(base, "/api/state")[1]["project"] == str(opened)
+        for path in (topic_project, opened, default, window_project):
+            assert http(base, "/api/project?" + urlencode({"path": str(path).swapcase() + os.sep}), method="DELETE")[0] == 204
+        empty = http(base, "/api/state")[1]
+        assert empty["project"] is None and empty["projects"] == []
+        assert topic["id"] in [t["id"] for t in empty["topics"]] and len(empty["windows"]) == 3
+    with host(executable, root) as base:
+        assert http(base, "/api/state")[1]["projects"] == []
+        # Removing one entry preserves other saved folders that are temporarily unavailable.
+        missing.mkdir()
+        assert http(base, "/api/state")[1]["projects"] == [str(missing)]
+        assert http(base, "/api/project?" + urlencode({"path": missing}), method="DELETE")[0] == 204
+        assert http(base, "/api/project", {"path": str(topic_project)}, "PUT")[0] == 200
+        restored = http(base, "/api/state")[1]
+        assert restored["project"] == str(topic_project) and restored["projects"] == [str(topic_project)]
+        assert Path(topic["folder"], "PLAN.md").exists() and topic_project.is_dir()
 
 
 def verify_install(executable, directory, fixture):
@@ -680,7 +771,8 @@ def verify_ff(executable, directory, fixture):
         with host(executable, state, project) as base:
             assert http(base, "/api/engines?detail=true")[1][-1]["version"] == "fixture 2.1"
             assert len(http(base, "/api/models/claude")[1]) == 6
-            assert not http(base, "/api/quota/claude")[1]["supported"]
+            quota = http(base, "/api/quota/claude")[1]
+            assert not quota["supported"] and quota["status"] == "unsupported" and "/usage" in quota["message"]
             assert len(http(base, "/api/shortcuts/claude")[1]) == 6
             assert [s["id"] for s in http(base, "/api/sessions/claude")[1]] == [history_id]
             defaults = http(base, "/api/settings")[1]["defaults"]
@@ -732,7 +824,7 @@ def verify_ff(executable, directory, fixture):
             assert first[:4] == ["--session-id",window["session"],"--name","接口 & UI-研究员"], first[:4]
             assert first[4:10] == ["--model","sonnet","--effort","high","--permission-mode","plan"]
             server = json.loads(first[first.index("--mcp-config")+1])["mcpServers"]["lx_collab"]
-            assert server["args"][-2:] == ["workbench-mcp", str(state)]
+            assert server["args"][-4:] == ["workbench-mcp", str(state), "--notify-port", str(urlsplit(base).port)]
             assert server["env"]["LX_P0_WINDOW_GRANT"] == "\u0024{LX_P0_WINDOW_GRANT}"
             assert first[-2:] == ["--allowedTools","mcp__lx_collab__*"]
             (project / "grant-ready").unlink()

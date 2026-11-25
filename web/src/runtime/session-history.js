@@ -1,4 +1,10 @@
-"use strict";
+import { request } from "../services/api";
+import { engineCapabilities } from "./create.js";
+import { byId, feedback, node, setBusy } from "./dom.js";
+import { focusAgent } from "./layout.js";
+import { engineNames, windowRoute } from "./pane.js";
+import { panes } from "../services/terminalRegistry";
+import { refresh } from "./workbench.js";
 
 let paneSessionRequest;
 let sessionPane;
@@ -19,6 +25,7 @@ function openPaneSessions(pane) {
   const context = byId("pane-session-context");
   context.title = context.textContent = engineNames[pane.agent.engine] + " · " + pane.agent.project;
   dialog.showModal();
+  byId("pane-session-new").hidden = false;
   loadDrawerHistory();
 }
 
@@ -37,8 +44,12 @@ async function loadDrawerHistory() {
     tab.setAttribute("aria-pressed", String((tab.dataset.history === "archived") === archived));
   try {
     const params = new URLSearchParams({project, archived, includeBound:true});
-    const sessions = await request("/sessions/" + engine + "?" + params, {signal:controller.signal});
+    const [sessions, capabilities] = await Promise.all([
+      request("/sessions/" + engine + "?" + params, {signal:controller.signal}), engineCapabilities()
+    ]);
+    const actionsAllowed = capabilities[engine]?.sessionActions ?? ["new", "resume", "archive", "restore", "delete"];
     if (controller.signal.aborted) return;
+    byId("pane-session-new").hidden = !actionsAllowed.includes("new");
     status.textContent = sessions.length ? "" : archived ? "暂无已归档会话" : "当前项目暂无历史会话";
     for (const session of sessions) {
       const row = node("li", "session-entry");
@@ -48,6 +59,7 @@ async function loadDrawerHistory() {
       const meta = [Number.isNaN(date.getTime()) ? null : date.toLocaleString(), session.mayBeInUse ? "已绑定或可能正在使用" : null];
       const actions = node("div", "session-actions");
       function add(label, action, style = "text-button") {
+        if (!actionsAllowed.includes(action)) return;
         const button = node("button", style, label);
         button.type = "button";
         button.disabled = session.mayBeInUse;
@@ -112,3 +124,5 @@ byId("pane-session-reload").onclick = loadDrawerHistory;
 byId("pane-session-new").onclick = () => runSessionAction("new");
 byId("cancel-session-delete").onclick = cancelSessionDelete;
 byId("confirm-session-delete").onclick = () => { if (deleteCandidate) runSessionAction("delete", deleteCandidate); };
+
+export { openPaneSessions };

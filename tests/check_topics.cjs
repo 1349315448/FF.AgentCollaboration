@@ -18,7 +18,7 @@ function sql(statement, ...args) {
 }
 function mcp(name, args) {
   const input = JSON.stringify({jsonrpc:"2.0", id:1, method:"tools/call", params:{name, arguments:args}}) + "\n";
-  const res = JSON.parse(execFileSync(exe, ["workbench-mcp", path.dirname(db)], {
+  const res = JSON.parse(execFileSync(exe, ["workbench-mcp", path.dirname(db), "--notify-port", new URL(base).port], {
     input, encoding:"utf8", env:{...process.env, LX_P0_WINDOW_GRANT:token}
   })).result;
   assert(!res.isError, res.content[0].text);
@@ -46,7 +46,7 @@ async function run() {
       const animate=Element.prototype.animate;
       Element.prototype.animate=function(frames, options) {
         const rect=this.getBoundingClientRect();
-        window.effects.push({classes:this.className,path:this.style.offsetPath,frames,center:[rect.x+rect.width/2,rect.y+rect.height/2],
+        window.effects.push({classes:this.getAttribute("class") || "",path:this.style.offsetPath,frames,center:[rect.x+rect.width/2,rect.y+rect.height/2],
           duration:typeof options==="number"?options:options.duration});
         return animate.call(this,frames,options);
       };
@@ -61,6 +61,7 @@ async function run() {
       };
     });
     await page.goto(base);
+    assert.equal(await page.locator(".brand [title='FF Collaboration Platform']").textContent(), "FF.CP");
     await page.locator("#setup-dialog[open]").waitFor();
     assert(!fs.existsSync(db));
     assert.equal((await page.request.get(base + "/api/state")).status(), 409);
@@ -69,8 +70,35 @@ async function run() {
     await page.locator("#folder-dialog[open]").waitFor();
     await page.keyboard.press("Escape");
     assert(await page.locator("#setup-dialog").isVisible());
+    const eventStream = page.waitForResponse(r => new URL(r.url()).pathname === "/api/events");
     await page.locator("#setup-submit").click();
+    assert.match((await eventStream).headers()["content-type"], /text\/event-stream/);
     await page.waitForFunction(() => !!snapshot);
+    await sleep(350);
+    let idleReads = 0;
+    const countReads = r => { if (new URL(r.url()).pathname === "/api/state") idleReads++; };
+    page.on("request", countReads);
+    await sleep(1600);
+    page.off("request", countReads);
+    assert.equal(idleReads, 0, "healthy idle page should not poll /api/state");
+    // SSE 连接健康，但一次快照请求失败，空闲期间也应补到快照。
+    await page.route("**/api/state*", route => route.fulfill({status:503,json:{error:"temporary failure"}}), {times:1});
+    const healthyAgain = page.waitForResponse(r => new URL(r.url()).pathname === "/api/state" && r.ok());
+    assert((await page.request.post(base+"/api/events/wake",{headers:{"X-FF-Notify":"1"}})).ok());
+    await healthyAgain;
+    async function pickFolder(folder) {
+      await page.locator("#folder-dialog[open]").waitFor();
+      await page.waitForFunction(()=>!!folderListing);
+      await page.locator("#folder-path").fill(folder);
+      await page.locator("#folder-path").press("Enter");
+      await page.waitForFunction(path=>folderListing?.path===path, folder);
+      await page.locator("#choose-folder").click();
+      await page.locator("#folder-dialog").waitFor({state:"hidden"});
+    }
+    assert.deepEqual(await page.evaluate(()=>snapshot.projects), []);
+    assert(await page.locator("#topic-new").isDisabled());
+    await page.getByRole("button",{name:"打开项目文件夹",exact:true}).and(page.locator("#empty-create")).click();
+    await pickFolder(path.join(root,"one"));
     const post = async (url, body) => {
       const res = await page.request.post(base + "/api" + url, {data:body});
       assert(res.ok(), await res.text());
@@ -103,7 +131,7 @@ async function run() {
         throw error;
       }
     };
-    const send = (target, message) => mcp("send_to_agent", {target, message}).id;
+    const send = (target, message) => mcp("send_to_agent", {target, message, supersedePrevious:false}).id;
     const state = id => sql("SELECT state FROM inbox WHERE id=?", id)[0][0];
     const key = async (id, name) => { await page.evaluate(id => panes.get(id).term.focus(), id); await page.keyboard.press(name); };
     const mode = value => fs.writeFileSync(path.join(root, "one", "mode.txt"), value);
@@ -198,6 +226,10 @@ async function run() {
       sql("INSERT INTO windows(id,name,engine,project,topic_id) VALUES(?,?,'codex',?,?)", id, name, path.join(root,"one"), another);
       return id;
     });
+    const settleLayout = () => page.waitForFunction(() => !document.querySelector(".pane-flight") &&
+      [...panes.values()].every(p => p.layoutMotion?.playState !== "running"));
+    await page.waitForFunction(ids => ids.every(id => panes.has(id)), offlineIds);
+    await settleLayout();
     for (const [i,id] of offlineIds.entries()) {
       const overlay = pane(id).locator(".terminal-overlay");
       await overlay.waitFor();
@@ -212,8 +244,6 @@ async function run() {
       assert(Math.abs(buttonBox.x + buttonBox.width / 2 - surface.x - surface.width / 2) < 2);
     }
     const paneBounds = id => pane(id).boundingBox();
-    const settleLayout = () => page.waitForFunction(() => !document.querySelector(".pane-flight") &&
-      [...panes.values()].every(p => p.layoutMotion?.playState !== "running"));
     const byPosition = await Promise.all(offlineIds.map(async id => ({id, box:await paneBounds(id)})));
     byPosition.sort((a,b) => a.box.x - b.box.x);
     const [first, middle, last] = byPosition.map(item => item.id);
@@ -268,7 +298,7 @@ async function run() {
     await ready(offlineIds[0]);
     assert(await pane(offlineIds[0]).locator(".terminal-overlay").isHidden());
     assert(await pane(offlineIds[1]).getByRole("button", {name:"打开终端", exact:true}).isVisible());
-    // 模拟两次轮询之间已送达的消息，验证同项目跨话题的两个方向及两次动画。
+    // 模拟两次轮询之间已送达的消息，验证同项目跨话题的两个方向的单次交接动画。
     await choose(a);
     const localPeer = (await post("/windows", {name:"回执测试", topic:a, engine:"codex", newSession:true})).id;
     await pane(localPeer).waitFor();
@@ -283,23 +313,91 @@ async function run() {
       await envelope.waitFor({state:"visible"});
       const appearance = await envelope.evaluate(el => {
         const style = getComputedStyle(el), icon = getComputedStyle(el.querySelector("rect"));
-        return [style.width, style.height, icon.fill, icon.stroke, style.filter];
+        return [style.width,style.height,icon.fill,icon.stroke,style.filter];
       });
-      assert.deepEqual(appearance.slice(0,4), ["28px", "20px", "rgb(2, 132, 199)", "rgb(186, 230, 253)"]);
-      assert.match(appearance[4], /drop-shadow\(.*rgb\(56, 189, 248\).*8px/);
-      await page.waitForFunction(() => window.effects.filter(e=>e.classes==="message-flight").length === 2 &&
-        window.effects.filter(e=>e.classes.includes("topic-choice") && e.duration===320).length >= 2);
+      assert.deepEqual(appearance.slice(0,4), ["18px","13px","rgb(2, 132, 199)","rgb(186, 230, 253)"]);
+      assert.match(appearance[4], /drop-shadow\(.*rgb\(56, 189, 248\).*6px/);
+      await page.waitForFunction(() => window.effects.some(e=>e.classes==="mailbox-flag") &&
+        window.effects.some(e=>e.classes.includes("topic-choice") && e.duration===320));
       const matched = await page.evaluate(({source,target,first}) => {
-        const from = messageAnchor(source).getBoundingClientRect(), to = messageAnchor(target).getBoundingClientRect();
+        const from = messageAnchor(source).getBoundingClientRect();
+        const to = document.querySelector('.topic-agent-tag[data-agent="'+target+'"]').getBoundingClientRect();
         const coords = window.effects.find(e=>e.classes==="message-flight").path.match(/-?\d+(?:\.\d+)?/g).map(Number);
-        return messageAnchor(first).closest(".topic-choice") &&
-          Math.abs(coords[0]-from.x-from.width/2)<2 && Math.abs(coords.at(-2)-to.x-to.width/2)<2;
+        return !!messageAnchor(first).closest(".topic-choice") &&
+          Math.abs(coords[0]-from.x-from.width/2)<2 && Math.abs(coords.at(-2)-to.x-to.width/2)<2 &&
+          (source !== first || coords[3] > Math.max(coords[1],coords.at(-1)));
       }, {source,target,first});
       assert(matched);
+      const border = page.locator(".receipt-sweep");
+      assert.equal(await border.count(), 1);
+      assert(await border.evaluate((svg, {target, first}) => {
+        const frame = document.querySelector('.topic-agent-tag[data-agent="'+target+'"]').closest(".topic-choice");
+        if (svg.parentElement !== frame) return false;
+        const overlay = svg.getBoundingClientRect(), box = frame.getBoundingClientRect();
+        const right = svg.querySelector(".receipt-right"), down = svg.querySelector(".receipt-down");
+        const outline = svg.querySelector(".receipt-outline");
+        const animations = svg.getAnimations({subtree:true});
+        const flash = outline.getAnimations().find(a => a.animationName === "receipt-flash");
+        if (!right || !down || !flash) return false;
+        const {delay:meet, duration} = flash.effect.getTiming();
+        const seek = time => { for (const a of animations) a.currentTime = time; };
+        function tip(rect) {
+          const style = getComputedStyle(rect);
+          const dash = parseFloat(style.strokeDasharray), offset = parseFloat(style.strokeDashoffset);
+          const percent = ((rect === right ? dash : 0) - offset + 100) % 100;
+          return rect.getPointAtLength(rect.getTotalLength() * percent / 100);
+        }
+        seek(0);
+        const start = tip(right), origin = tip(down);
+        seek(meet * .12);
+        const top = tip(right), left = tip(down);
+        const split = top.x > start.x && Math.abs(top.y - start.y) < 1 && left.y > start.y;
+        seek(meet);
+        const end = tip(right), other = tip(down), bounds = outline.getBBox();
+        const joined = Math.hypot(end.x - other.x, end.y - other.y) < 1 &&
+          Math.abs(bounds.x + bounds.width - end.x) < 16 && Math.abs(bounds.y + bounds.height - end.y) < 3;
+        const litBeforeFlash = parseFloat(getComputedStyle(outline).strokeOpacity);
+        seek(meet + duration * .35);
+        const lit = getComputedStyle(outline);
+        const fullFlash = parseFloat(lit.strokeDasharray) === 100 && lit.stroke === "rgb(185, 237, 255)" &&
+          parseFloat(lit.strokeOpacity) > litBeforeFlash && flash.effect.getTiming().iterations === 1;
+        return Math.abs(overlay.width - box.width) <= 2 && Math.abs(overlay.height - box.height) <= 2 &&
+          Math.abs(overlay.x - box.x) <= 1 && Math.abs(overlay.y - box.y) <= 1 &&
+          start.x < 16 && start.y <= 3 && Math.hypot(start.x - origin.x, start.y - origin.y) < 1 &&
+          split && joined && fullFlash && getComputedStyle(svg).pointerEvents === "none" &&
+          getComputedStyle(right).stroke === "rgb(141, 219, 255)";
+      }, {target,first}));
+      await border.waitFor({state:"detached"});
       await page.waitForFunction(()=>!document.querySelector(".message-flight"));
-      assert.equal(await page.evaluate(() => window.effects.filter(e => e.classes === "message-flight").length), 2);
+      const samples = await page.evaluate(() => window.effects.filter(e=>e.classes==="message-flight"));
+      assert.equal(samples.length,1);
+      const [startX,startY,,,,,slotX,slotY] = samples[0].path.match(/-?\d+(?:\.\d+)?/g).map(Number);
+      const distance = Math.hypot(slotX-startX,slotY-startY);
+      const arcLength = Math.hypot(distance,Math.max(source === first ? 82 : 56,Math.min(140,distance*.28))*1.15);
+      const turns = Math.min(5,Math.max(1,Math.round(arcLength/300)));
+      assert.equal(parseFloat(samples[0].frames.at(-1).transform.slice(7)),(slotX>=startX?1:-1)*turns*360);
+      assert.equal(samples[0].duration,Math.min(1850,Math.max(1050,Math.round(720+arcLength*.62))));
+      assert.equal(await page.locator(".message-mailbox,.message-flick-hand,.message-trail").count(),0);
     }
     await page.emulateMedia({reducedMotion:"no-preference"});
+    // 两端都在未选中的话题，消息在下一帧之前已完成，不会出现在当前日志或收件条。
+    const instant = crypto.randomUUID().replaceAll("-","");
+    await page.evaluate(()=>{window.effects=[];});
+    sql("INSERT INTO inbox(id,source,target,sender,text,files,document,state,topic_id) VALUES(?,?,?,'接口开发','后台已送达','[]',0,'delivered',?)",
+      instant, first, middle, another);
+    await page.evaluate(()=>refresh());
+    await page.waitForFunction(()=>window.effects.some(e=>e.classes==="message-flight"));
+    assert(await page.evaluate(({a,first,middle,instant})=>{
+      const coords = window.effects.find(e=>e.classes==="message-flight").path.match(/-?\d+(?:\.\d+)?/g).map(Number);
+      const tag = id => document.querySelector('.topic-agent-tag[data-agent="'+id+'"]').getBoundingClientRect();
+      const from = tag(first), to = tag(middle);
+      return selectedTopicId === a && !snapshot.timeline.some(e=>e.id===instant) &&
+        Math.abs(coords[0]-from.x-from.width/2)<2 && Math.abs(coords.at(-2)-to.x-to.width/2)<2 &&
+        Math.abs(coords.at(-1)-to.y-to.height/2)<2 && coords[3]>Math.max(coords[1],coords.at(-1));
+    }, {a,first,middle,instant}));
+    await page.evaluate(()=>refresh());
+    await page.waitForFunction(()=>!document.querySelector(".message-flight"));
+    assert.equal(await page.evaluate(()=>window.effects.filter(e=>e.classes==="message-flight").length),1);
     assert((await page.request.delete(base+"/api/windows/"+localPeer)).ok());
     for (const id of offlineIds) assert((await page.request.delete(base+"/api/windows/"+id)).ok());
     await choose(a);
@@ -313,6 +411,17 @@ async function run() {
     const right = (await post("/windows", {name:"同名", topic:b, engine:"copilot", newSession:true})).id;
     sql("UPDATE windows SET grant_hash=? WHERE id=?",crypto.createHash("sha256").update(token).digest("hex").toUpperCase(),helper);
     await ready(left);
+    await page.evaluate(id => {
+      const p = panes.get(id);
+      window.disconnectedTerminal = {socket:p.socket, term:p.term, at:performance.now()};
+      p.socket.close();
+    }, left);
+    await page.waitForFunction(id => {
+      const p = panes.get(id);
+      return p.socket !== window.disconnectedTerminal.socket && p.socket.readyState === WebSocket.OPEN && !p.replaying;
+    }, left);
+    assert(await page.evaluate(id => panes.get(id).term === window.disconnectedTerminal.term &&
+      performance.now() - window.disconnectedTerminal.at >= 1400, left));
     assert(await pane(left).getByRole("switch", {name:"自动接收"}).isChecked());
     await choose(b);
     const receive = pane(right).getByRole("switch", {name:"自动接收"});
@@ -443,9 +552,18 @@ async function run() {
     const pausePoll = async route => { pollStarted(); await resume; await route.continue(); };
     await page.route("**/api/state?*", pausePoll);
     try {
+      await page.evaluate(() => { void refresh(); });
       await started;
       await key(left, "Control+u");
       await page.waitForFunction(id => readNativePrompt(panes.get(id)).screen === "clear", left);
+      // Codex 保留上一轮的 Tip 和耗时。即使没有后续输出，窗格也应在防抖结束后恢复待命。
+      await page.evaluate(id => new Promise(resolve => {
+        const p = panes.get(id);
+        p.term.write("\x1b[H\x1b[2J  └ Tip: Press ctrl+t to open the full transcript." +
+          "\r\nWorked for 15s • 09:52\r\n\r\n› Ask Codex to do anything\r\x1b[2C",
+          () => { reportPrompt(p); resolve(); });
+      }), left);
+      assert.equal(await page.evaluate(id => readNativePrompt(panes.get(id)).screen, left), "clear");
       assert.deepEqual(await page.evaluate(id => {
         const p = observePrompt(panes.get(id));
         return [p.screen, p.clear, p.empty];
@@ -578,7 +696,8 @@ async function run() {
     await page.locator("#pane-divider").focus();
     await page.keyboard.press("ArrowRight");
     const ratio = await page.evaluate(() => layout.splitRatio);
-    assert(await pane(left).locator(".pane-more").isHidden());
+    assert(await pane(left).locator(".pane-more").isVisible());
+    assert(await pane(left).locator(".terminal-actions > .pane-sessions").isVisible());
     await page.evaluate(id => { window.original = {term:panes.get(id).term,socket:panes.get(id).socket}; },left);
     const topicAPreview = page.locator('.topic-choice[data-topic="' + a + '"] .topic-agents');
     assert(await topicAPreview.isVisible());
@@ -651,9 +770,64 @@ async function run() {
     await choose(a);
     assert.equal(await page.evaluate(()=>layout.splitRatio),ratio);
     assert(await page.evaluate(id=>panes.get(id).term===original.term && panes.get(id).socket===original.socket && layout.primaryWindowId===id,left));
+    await ready(left);
+    const picker = page.locator("#agents-dialog"), search = page.locator("#peer-search");
     await pane(left).locator(".insert-agent").click();
-    await page.locator("#peer-topic").selectOption(b);
-    await page.locator("#agent-options button").click();
+    await picker.waitFor();
+    assert(await search.evaluate(el => el === document.activeElement));
+    const options = await picker.getByRole("option").evaluateAll(items=>items.map(i=>i.dataset.id));
+    const candidates = await page.evaluate(id => snapshot.windows.filter(w=>w.agent.id!==id && w.agent.online).map(w=>w.agent.id),left);
+    assert.deepEqual([...options].sort(),candidates.sort());
+    assert(options.indexOf(helper)<options.indexOf(right));
+    assert.equal(await picker.locator("#peer-"+helper+" strong").innerText(),"@测试");
+    assert.equal(await picker.locator("#peer-"+helper+" small").innerText(),"开发");
+    assert.equal(await picker.locator("#peer-"+right+" strong").innerText(),"@同名");
+    assert.equal(await picker.locator("#peer-"+right+" small").innerText(),"设计");
+    await page.waitForFunction(id=>!panes.get(id).view.inputReady,left);
+    const held = send("@同名","选择 Agent 时暂缓自动收件");
+    await page.waitForFunction(([id,msg])=>panes.get(id).view.inbox.some(m=>m.id===msg && m.state==="pending"),[left,held]);
+    await search.press("ArrowDown");
+    const selected = await search.getAttribute("aria-activedescendant");
+    await page.evaluate(() => refresh());
+    assert.equal(await search.getAttribute("aria-activedescendant"),selected);
+    await search.press("Escape");
+    await picker.waitFor({state:"hidden"});
+    await until(()=>state(held)==="writing","automatic delivery claimed after closing picker");
+    await page.evaluate(id=>openPeers(panes.get(id)),left);
+    // 粘贴、回车与确认已开始，服务端应先完成这一条，再允许浏览器显示选择器。
+    await picker.waitFor();
+    assert(logLines("one","accepted.txt").some(line=>line.includes(held.slice(0,8))));
+    await search.press("Escape");
+    await page.waitForFunction(msg=>snapshot.timeline.some(m=>m.id===msg && m.state==="delivered"),held);
+    await ready(left);
+    await key(left,"@");
+    await key(left,"@");
+    await page.waitForFunction(id=>observePrompt(panes.get(id)).editableText?.includes("@@"),left);
+    assert(!await picker.isVisible());
+    await key(left,"Control+u");
+    await ready(left);
+    await page.locator("#open-settings").click();
+    await page.locator("#mention-record").click();
+    await page.locator("#mention-record").press("Alt+Shift+F");
+    assert.match(await page.locator("#mention-key-feedback").innerText(),/选择文件/);
+    await page.locator("#mention-record").press("Alt+Shift+M");
+    await page.locator("#mention-save").click();
+    await page.waitForFunction(()=>mentionShortcut==="Alt+Shift+M" && [...panes.values()].every(p=>p.element.querySelector(".mention-key").textContent==="(Alt+Shift+M)"));
+    await page.locator("#close-settings").click();
+    await key(left,"Alt+Shift+A");
+    assert(!await picker.isVisible());
+    await key(left,"Alt+Shift+M");
+    await picker.waitFor();
+    await search.fill("设名"); // 跨话题名与别名的子序列。
+    assert.equal(await picker.getByRole("option").count(),1);
+    await search.dispatchEvent("keydown",{key:"Enter",isComposing:true});
+    assert(await picker.isVisible());
+    await search.press("Enter");
+    await picker.waitFor({state:"hidden"});
+    await page.locator("#open-settings").click();
+    await page.locator("#mention-reset").click();
+    await page.waitForFunction(()=>mentionShortcut==="Alt+Shift+A");
+    await page.locator("#close-settings").click();
     await page.waitForFunction(id=>observePrompt(panes.get(id)).editableText?.includes("@设计/同名"),left);
     await key(left,"Control+u");
     await ready(left);
@@ -688,6 +862,26 @@ async function run() {
     await pendingBar.waitFor({state:"hidden"});
     await page.locator('.timeline-entry[data-message="'+ignoredPending+'"] .log-state').filter({hasText:"已忽略"}).waitFor();
     assert.equal(logLines("two","enters.txt").length, entered);
+    const withdrawn = send("@设计/同名","从日志撤回");
+    await page.locator('.timeline-entry[data-message="'+withdrawn+'"]').click();
+    await page.locator("#dismiss-preview").click();
+    await page.locator('.timeline-entry[data-message="'+withdrawn+'"] .log-state').filter({hasText:"已忽略"}).waitFor();
+    await page.locator('.timeline-entry[data-message="'+withdrawn+'"]').click();
+    await page.locator("#preview-dialog[open]").waitFor();
+    assert(await page.locator("#dismiss-preview").isHidden());
+    await page.keyboard.press("Escape");
+    const writing = send("@设计/同名","正在写入");
+    sql("UPDATE inbox SET state='writing' WHERE id=?",writing);
+    const queued = [send("@设计/同名","保留任务一"),send("@设计/同名","保留任务二")];
+    await page.waitForFunction(({right,queued})=>queued.every(id=>panes.get(right).view.inbox.some(m=>m.id===id)),{right,queued});
+    for (let i=0;i<3 && await pendingBar.getAttribute("data-state")!=="writing";i++) await pendingBar.locator(".next-inbox").click();
+    assert.equal(await pendingBar.getAttribute("data-state"),"writing");
+    const batchAck = page.waitForResponse(r=>r.url().endsWith("/inbox/acknowledge-all"));
+    await pendingBar.getByRole("button",{name:"全部忽略",exact:true}).click();
+    assert.equal((await batchAck).status(),204);
+    assert.deepEqual(sql("SELECT state,acknowledged FROM inbox WHERE id=?",writing),[["writing",0]]);
+    assert(queued.every(id=>sql("SELECT acknowledged FROM inbox WHERE id=?",id)[0][0]===1));
+    sql("UPDATE inbox SET state='delivered' WHERE id=?",writing);
     assert.equal((await page.request.post(base+"/api/windows/"+right+"/input", {data:{messageId:ignoredPending}})).status(),409);
     await page.waitForFunction(()=>window.effects.some(e=>e.frames[0]?.boxShadow));
     await page.locator('.timeline-entry[data-message="'+cross+'"]').click();
@@ -781,6 +975,8 @@ async function run() {
     assert.equal(await page.evaluate(()=>("\x1b[44;3R\x1b[?1;2c\x1b]10;rgb:aaaa/bbbb/cccc\x1b\\keep").replace(replayReports,"")),"keep");
     console.log("PASS frontend/backend live and replay report suppression including mixed UTF-8 input");
 
+    const enterBaseline = logLines("one","enters.txt").length;
+    const acceptedBaseline = logLines("one","accepted.txt").length;
     mode("retry");
     assert(await pane(left).locator(".auto-receive input").isChecked());
     await key(left,"x");
@@ -807,9 +1003,9 @@ async function run() {
     await key(left,"Control+u");
     await until(()=>state(msg)==="delivered","single follow-up Enter on multiline draft");
     assert(await page.evaluate(()=>window.stableReported));
-    assert.deepEqual(logLines("one","enters.txt"),["retry","retry"]);
-    assert.equal(logLines("one","accepted.txt").length,1);
-    assert(logLines("one","accepted.txt")[0].includes("交接路径 @index.html"));
+    assert.deepEqual(logLines("one","enters.txt").slice(enterBaseline),["retry","retry"]);
+    assert.equal(logLines("one","accepted.txt").length,acceptedBaseline+1);
+    assert(logLines("one","accepted.txt")[acceptedBaseline].includes("交接路径 @index.html"));
     const draft = await page.evaluate(() => {
       const read = lines => observePrompt({agent:{engine:"codex"},term:{rows:lines.length,
         modes:{bracketedPasteMode:true},buffer:{active:{baseY:0,cursorX:1,cursorY:lines.length-1,
@@ -846,6 +1042,16 @@ async function run() {
     });
     assert.deepEqual(narrowFrames.slice(0,4), Array(4).fill(["running",false,false]));
     assert.deepEqual(narrowFrames.slice(4).map(f => f[0]), ["clear","blocked","clear","draft","clear"]);
+    const afterCompletion = await page.evaluate(() => {
+      const frame = (history, current) => {
+        const lines = [history, "─ Worked for 6m 45s ───", current, "› Ask Codex to do anything"];
+        return readNativePrompt({agent:{engine:"codex"}, term:{rows:lines.length, modes:{bracketedPasteMode:true},
+          buffer:{active:{baseY:0, cursorX:2, cursorY:3, getLine:i=>({translateToString:()=>lines[i]})}}}}).screen;
+      };
+      return [frame("◦ Working (esc to interrupt)", ""), frame("Approval request", ""),
+        frame("", "• Working (5m 04s · es…"), frame("", "Approval request")];
+    });
+    assert.deepEqual(afterCompletion, ["clear","clear","running","blocked"]);
     const thick=await page.evaluate(()=>{
       function read(lines){
         return observePrompt({agent:{engine:"copilot"},term:{rows:lines.length,cols:40,modes:{bracketedPasteMode:true},
@@ -918,17 +1124,21 @@ async function run() {
       return p.message.id;
     }, {id:left,beforeEnter});
     const entersBeforeIgnore = logLines("one","enters.txt").length;
-    await pane(left).getByRole("button", {name:"忽略",exact:true}).click();
+    const batch = sql("SELECT id FROM inbox WHERE target=? AND state='delivery_uncertain' AND acknowledged=0",left).flat();
+    assert(batch.length > 1 && batch.includes(ignored));
+    await page.waitForFunction(({left,batch}) => batch.every(id=>panes.get(left).view.inbox.some(m=>m.id===id && canIgnore(m))),{left,batch});
+    await pane(left).getByRole("button", {name:"全部忽略",exact:true}).click();
     await pane(left).locator(".pane-error").waitFor({state:"hidden"});
-    await page.waitForFunction(({left, ignored}) => !panes.get(left).view.inbox.some(m => m.id === ignored), {left,ignored});
-    assert.equal(sql("SELECT count(*) FROM inbox WHERE state='delivery_uncertain' AND acknowledged=1")[0][0],1);
+    await page.waitForFunction(({left,batch}) => !panes.get(left).view.inbox.some(m=>batch.includes(m.id)),{left,batch});
+    const acknowledged = sql("SELECT id FROM inbox WHERE target=? AND state='delivery_uncertain' AND acknowledged=1",left).flat();
+    assert(batch.every(id=>acknowledged.includes(id)));
     await page.locator('.timeline-entry[data-message="'+ignored+'"] .log-state').filter({hasText:"已忽略"}).waitFor();
     assert.equal(logLines("one","enters.txt").length, entersBeforeIgnore);
     const finished=mcp("finish_topic",{summary:"验收完成"});
     assert.equal(finished.id,a);
     assert.equal(finished.summary,"验收完成");
     await page.waitForFunction(()=>selectedTopic().activity==="finished");
-    assert(await page.evaluate(()=>window.effects.every(e=>e.duration<=400 || (e.classes==="message-flight" && e.duration===1150))));
+    assert(await page.evaluate(()=>window.effects.every(e=>e.duration<=400 || (e.classes==="message-flick-hand" && e.duration===760) || (e.classes==="message-flight" && e.duration>=1050 && e.duration<=1850))));
     const log = page.locator("#topic-timeline");
     const row = log.locator(".timeline-entry").first();
     await page.waitForFunction(() => document.querySelectorAll(".timeline-entry").length > 6);
@@ -987,8 +1197,7 @@ async function run() {
     await receiveOverflow.click();
     await page.waitForFunction(([id,previous]) => panes.get(id).view.agent.autoReceive !== previous, [overflowId,previousReceive]);
     assert(await menu.isHidden());
-    await more.click();
-    await menu.locator(".rename-agent").click();
+    await pane(overflowId).locator(".pane-header .rename-agent").click();
     await page.locator("#rename-dialog[open]").waitFor();
     await page.keyboard.press("Escape");
     await pane(overflowId).evaluate(el => { el.style.removeProperty("width"); });
@@ -1001,9 +1210,15 @@ async function run() {
     });
     assert.deepEqual(scrollStyles, [["6px", "rgba(255, 255, 255, 0.24)"], ["6px", "rgba(255, 255, 255, 0.16)"]]);
     await page.setViewportSize({width:719,height:780});
-    await more.waitFor({state:"hidden"});
-    assert.equal(await menu.locator("button,label").count(), 0);
-    assert(await footer.locator(".close-pane").isVisible());
+    await footer.locator(".terminal-actions > .set-primary").waitFor();
+    assert.equal(await menu.locator("button,label").count(), 1);
+    assert(await menu.isHidden());
+    assert(await footer.evaluate(el => {
+      const auto = el.querySelector(".auto-receive").getBoundingClientRect();
+      const sessions = el.querySelector(".pane-sessions").getBoundingClientRect();
+      const last = el.querySelector(".pane-more").getBoundingClientRect();
+      return sessions.left > auto.right + 20 && Math.abs(el.getBoundingClientRect().right - last.right) < 12;
+    }));
     await page.setViewportSize({width:1000,height:760});
     let lastId;
     for (let i = 0; i < 12; i++)
@@ -1048,7 +1263,100 @@ async function run() {
     await page.waitForFunction(id=>panes.get(id)?.view.inputReady,claude.id);
     await page.waitForFunction(id=>snapshot.timeline.some(m=>m.id===id && m.state==="delivered"),receipt);
     assert(fs.readFileSync(path.join(root,"third","accepted.txt"),"utf8").includes(receipt.slice(0,8)));
+    const sequential = [send("@Claude 实测/Claude审阅","连续投递一"), send("@Claude 实测/Claude审阅","连续投递二")];
+    await until(() => sequential.every(id => state(id) === "delivered"), "wake drains both queued messages", 24000);
+    const accepted = logLines("third","accepted.txt").filter(line => sequential.some(id => line.includes(id.slice(0,8))));
+    assert.equal(accepted.length, 2);
+    sequential.forEach((id,i) => assert(accepted[i].includes(id.slice(0,8))));
+    await page.locator("#open-settings").click();
+    await page.locator("#log-count").filter({hasText:"条协作日志记录"}).waitFor();
+    for (const days of [30,15,7]) {
+      const response = page.waitForResponse(r=>r.url().endsWith("/settings/logs/cleanup") && r.request().postDataJSON().days===days);
+      await page.locator('#log-cleanup [data-days="'+days+'"]').click();
+      assert.equal((await response).status(),200);
+    }
+    const logCountBefore = await page.locator("#log-count").textContent();
+    page.once("dialog", dialog=>dialog.dismiss());
+    await page.locator('#log-cleanup [data-days="0"]').click();
+    assert.equal(await page.locator("#log-count").textContent(),logCountBefore);
+    page.once("dialog", dialog=>dialog.accept());
+    await page.locator('#log-cleanup [data-days="0"]').click();
+    await page.locator("#log-count").filter({hasText:"共 0 条"}).waitFor();
+    await page.locator("#cleanup-result").filter({hasText:"已清理"}).waitFor();
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(()=>snapshot.timeline.length===0);
+    console.log("PASS timeline withdrawal and all four cleanup ranges with full-clean confirmation");
+    await page.evaluate(id=>{window.liveProjectSocket=panes.get(id).socket;},claude.id);
+    page.once("dialog", dialog=>dialog.dismiss());
+    await page.getByRole("button",{name:"移除当前项目"}).click();
+    assert.equal(await page.locator("#current-project").getAttribute("title"),path.join(root,"third"));
+    page.once("dialog", dialog=>dialog.accept());
+    await page.getByRole("button",{name:"移除当前项目"}).click();
+    await page.waitForFunction(path=>!snapshot.projects.includes(path),path.join(root,"third"));
+    await page.locator("#add-project").click();
+    await pickFolder(path.join(root,"third"));
+    await page.waitForFunction(id=>selectedTopicId===id,claudeTopic.id);
+    assert(await page.evaluate(id=>panes.get(id).socket===window.liveProjectSocket && window.liveProjectSocket.readyState===WebSocket.OPEN,claude.id));
+    console.log("PASS empty startup, manual project add, remove and reopen with same topic and live terminal");
     console.log("PASS settings, three-row project cards with static working/idle/offline lights, Claude ConPTY delivery");
+    const terminal = pane(claude.id);
+    async function toolbarAction(selector) {
+      const button = terminal.locator(selector);
+      if (!await button.isVisible()) await terminal.locator(".pane-more").click();
+      await button.click();
+    }
+    const meta = await page.evaluate(id => {
+      const {online, ...configuration} = panes.get(id).agent;
+      return configuration;
+    }, claude.id);
+    const power = terminal.locator(".pane-header .pane-power");
+    assert(await power.evaluate(button => button.nextElementSibling.matches(".agent-light") &&
+      button.getAttribute("aria-pressed") === "true" && getComputedStyle(button).color === "rgb(54, 229, 121)"));
+    await power.click();
+    const launcher = terminal.locator(".start-pane");
+    await launcher.waitFor();
+    assert.equal(await power.getAttribute("aria-pressed"),"false");
+    assert(await power.isHidden());
+    assert(await launcher.evaluate(button => button.textContent.trim() === "" &&
+      !!button.querySelector("svg") && getComputedStyle(button).color === getComputedStyle(button.closest(".pane").querySelector(".pane-power")).color));
+    assert(await page.evaluate(({meta,id}) => {
+      const runtime = panes.get(id);
+      return !runtime.agent.online && Object.entries(meta).every(([k,v]) => runtime.agent[k] === v);
+    }, {meta,id:claude.id}));
+    const startRoute = "**/api/windows/" + claude.id + "/start";
+    await page.route(startRoute, route => route.fulfill({status:503, json:{error:"模拟启动失败"}}), {times:1});
+    await launcher.click();
+    await terminal.getByRole("alert").filter({hasText:"模拟启动失败"}).waitFor();
+    await terminal.getByRole("button", {name:"打开终端",exact:true}).waitFor();
+    assert(await launcher.isEnabled() && await power.isHidden());
+    let releaseStart;
+    const holdStart = new Promise(resolve => { releaseStart = resolve; });
+    await page.route(startRoute, async route => { await holdStart; await route.continue(); }, {times:1});
+    await launcher.click();
+    await terminal.getByRole("status").filter({hasText:"正在启动"}).waitFor();
+    assert(await launcher.isDisabled() && await power.isHidden());
+    const origin = await launcher.boundingBox();
+    releaseStart();
+    await page.waitForFunction(id => panes.get(id)?.agent.online && panes.get(id).socket?.readyState === WebSocket.OPEN, claude.id);
+    await power.waitFor();
+    const flight = await page.evaluate(() => window.effects.filter(e => e.classes.includes("pane-power")).at(-1));
+    const delta = await page.evaluate(frame => { const m = new DOMMatrix(frame.transform); return [m.e,m.f]; }, flight.frames[0]);
+    assert(Math.abs(flight.center[0] + delta[0] - origin.x - origin.width/2) < 2);
+    assert(Math.abs(flight.center[1] + delta[1] - origin.y - origin.height/2) < 2);
+    assert(flight.frames.some(frame => frame.transform === "scale(1.22)"));
+    await power.evaluate(button => Promise.all(button.getAnimations().map(animation => animation.finished)));
+    assert(await launcher.isHidden() && await power.isEnabled());
+    assert.equal(await power.evaluate(button => getComputedStyle(button).color), "rgb(54, 229, 121)");
+    assert(await page.evaluate(({id,meta}) => Object.entries(meta).every(([k,v]) => panes.get(id).agent[k] === v), {id:claude.id,meta}));
+    await toolbarAction(".close-pane");
+    await page.waitForFunction(id => !panes.has(id) && !snapshot.windows.some(w => w.agent.id === id), claude.id);
+    const inactive = page.locator(".project-button").filter({has:page.getByRole("button",{name:"移除项目",exact:true})}).first();
+    const inactivePath = await inactive.getAttribute("title");
+    page.once("dialog", dialog => dialog.accept());
+    await inactive.locator(".project-card-title .remove-project-btn").click();
+    await page.waitForFunction(path => !snapshot.projects.includes(path), inactivePath);
+    assert.equal(await card.getAttribute("title"),path.join(root,"third"));
+    console.log("PASS stop/reopen retains agent metadata, remove disposes runtime, inactive project removal keeps selection");
     assert.deepEqual(errors,[]);
     console.log("PASS pending-to-idle without new VT, multiline retry once, first-submit success, approval, typing, retry cap and stale error clearing");
   } finally { await browser.close(); }

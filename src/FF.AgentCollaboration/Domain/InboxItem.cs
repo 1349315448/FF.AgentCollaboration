@@ -6,6 +6,7 @@ internal sealed record InboxItem(string Id, string Target, string From, string T
     internal bool ProjectDocument { get; init; }
     public string? FromTopic { get; init; }
     public string? Source { get; init; }
+    public bool Acknowledged { get; init; }
     internal string? QueueHint { get; init; }
 
     internal string AsText()

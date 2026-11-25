@@ -41,6 +41,7 @@ internal static class WorkbenchHost
             index++;
         }
 
+        CollaborationSkill.Read();
         string initial = root;
         var location = new WorkbenchLocation(initial, fixedDirectory, knowledge);
         using var startup = new WorkbenchStartup(location, initial, project, knowledge, handoffs);
@@ -57,8 +58,9 @@ internal static class WorkbenchHost
             server.Limits.MaxRequestBodySize = 300_000;
         });
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
+        var events = new WorkbenchEvents();
         builder.Services.AddSingleton(_ => new SessionCatalog(startup));
-        builder.Services.AddSingleton(services => new Workbench(startup, services.GetRequiredService<SessionCatalog>(), services.GetRequiredService<ILogger<Workbench>>()));
+        builder.Services.AddSingleton(services => new Workbench(startup, services.GetRequiredService<SessionCatalog>(), services.GetRequiredService<ILogger<Workbench>>(), events));
         builder.Services.AddHostedService(services => services.GetRequiredService<Workbench>());
         await using var app = builder.Build();
 
@@ -83,7 +85,12 @@ internal static class WorkbenchHost
                 await Results.Json(new { error = "请先完成工作台初始化" }, statusCode: 409).ExecuteAsync(context);
                 return;
             }
-            try { await next(context); }
+            try
+            {
+                await next(context);
+                if (request.Path.StartsWithSegments("/api") && request.Method is "POST" or "PUT" or "DELETE" &&
+                    context.Response.StatusCode is >= 200 and < 300) events.Changed();
+            }
             catch (WorkbenchError error)
             {
                 await Results.Json(new { error = error.Message }, statusCode: HttpErrors.Status(error.Failure)).ExecuteAsync(context);
@@ -99,6 +106,10 @@ internal static class WorkbenchHost
         app.UseDefaultFiles();
         app.UseStaticFiles();
 
+        app.MapGet("/api/events", () => TypedResults.ServerSentEvents(events.Subscribe(app.Lifetime.ApplicationStopping)));
+        // MCP 只提示重新读取已提交数据。该入口没有消息正文、Grant 或直接写终端的能力。
+        app.MapPost("/api/events/wake", (HttpRequest request) =>
+            request.Headers["X-FF-Notify"] == "1" ? Results.NoContent() : Results.StatusCode(403));
         WorkbenchEndpoints.Map(app, startup, location);
         app.Lifetime.ApplicationStopping.Register(() =>
         {
@@ -107,6 +118,7 @@ internal static class WorkbenchHost
         });
         await app.StartAsync();
         string address = app.Urls.Single();
+        events.NotifyPort = new Uri(address).Port;
         Console.WriteLine($"LX_WORKBENCH {address}");
         if (openBrowser)
         {

@@ -7,10 +7,10 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 
 internal sealed partial class WorkbenchStore
 {
-    private const string AgentColumns = "id,name,engine,project,model,session,effort,mode,auto_receive,online,topic_id";
+    private const string AgentColumns = "id,name,engine,project,model,session,effort,mode,auto_receive,online,topic_id,session_title";
 
     private static AgentWindow Agent(SqliteDataReader row) => new(row.GetString(0), row.GetString(1), row.GetString(2),
-        row.GetString(3), Optional(row, 4), Optional(row, 5), Optional(row, 6), Optional(row, 7), row.GetBoolean(8), row.GetBoolean(9), row.GetString(10));
+        row.GetString(3), Optional(row, 4), Optional(row, 5), Optional(row, 6), Optional(row, 7), row.GetBoolean(8), row.GetBoolean(9), row.GetString(10)) { SessionTitle = Optional(row, 11) };
 
     // Copilot 旧表沿用原 ID。Claude 用独立前缀以免两个引擎碰巧使用相同 UUID。
     internal HashSet<string> ArchivedSessions(string engine)
@@ -50,10 +50,10 @@ internal sealed partial class WorkbenchStore
         }
     }
     internal void RemoveUnstartedWindow(string id) => Exec("DELETE FROM windows WHERE id=$p0 AND online=0", id);
-    internal void Start(string id, string grant, string? session) =>
-        Exec("UPDATE windows SET grant_hash=$p1,online=1,session=$p2 WHERE id=$p0 AND closed=0", id, Hash(grant), session);
-    internal void RestoreSession(string id, string? session) =>
-        Exec("UPDATE windows SET grant_hash=NULL,online=0,session=$p1 WHERE id=$p0 AND closed=0", id, session);
+    internal void Start(string id, string grant, string? session, string? title) =>
+        Exec("UPDATE windows SET grant_hash=$p1,online=1,session=$p2,session_title=$p3 WHERE id=$p0 AND closed=0", id, Hash(grant), session, title);
+    internal void RestoreSession(AgentWindow previous) =>
+        Exec("UPDATE windows SET grant_hash=NULL,online=0,session=$p1,session_title=$p2 WHERE id=$p0 AND closed=0", previous.Id, previous.Session, previous.SessionTitle);
     internal void Offline(string id) => Exec("UPDATE windows SET grant_hash=NULL,online=0 WHERE id=$p0", id);
     internal void Close(string id) => Exec("UPDATE windows SET grant_hash=NULL,online=0,closed=1 WHERE id=$p0", id);
     internal void AutoReceive(string id, bool enabled) =>

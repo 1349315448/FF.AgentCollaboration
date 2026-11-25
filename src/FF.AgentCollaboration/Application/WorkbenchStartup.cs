@@ -13,8 +13,8 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
     private FileStream? owner;
     internal Task Ready => ready.Task;
     internal string Root => location.Root;
-    private string DefaultArchive => knowledge == null ? Path.Combine(Root, "topics") : Path.Combine(knowledge, "development-tasks");
-    private string DefaultHandoffs => handoffs ?? Path.Combine(Root, "handoffs");
+    private string DefaultArchive => knowledge == null ? location.Defaults.Archive_root! : Path.Combine(knowledge, "development-tasks");
+    private string DefaultHandoffs => handoffs ?? location.Defaults.Handoffs!;
 
     internal object Status() => new
     {
@@ -38,8 +38,12 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
         owner = Acquire(Root);
         if (source != null) location.Import(source);
         using var store = new WorkbenchStore(Root);
-        store.Initialize(project, DefaultHandoffs, DefaultArchive, standalone: knowledge == null);
-        ready.SetResult();
+        bool portable = ProjectFolders.Same(Root, WorkbenchLocation.DefaultDirectory);
+        string archive = knowledge != null || portable ? DefaultArchive : Path.Combine(Root, "topics");
+        string docs = handoffs != null || portable ? DefaultHandoffs : Path.Combine(Root, "handoffs");
+        store.Initialize(project, docs, archive, standalone: knowledge == null,
+            keepArchive: knowledge == null, keepHandoffs: handoffs == null && source == null);
+        MarkReady();
     }
 
     internal void Initialize(WorkbenchPaths paths)
@@ -64,7 +68,7 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
                 }
                 location.Activate(data, staged);
                 owner = lease;
-                ready.SetResult();
+                MarkReady();
             }
             finally
             {
@@ -72,6 +76,12 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
                 foreach (string suffix in new[] { "", "-wal", "-shm", "-journal" }) File.Delete(staged + suffix);
             }
         }
+    }
+
+    private void MarkReady()
+    {
+        CollaborationSkill.Inspect(retireLegacy: true);
+        ready.SetResult();
     }
 
     public void Dispose() => owner?.Dispose();

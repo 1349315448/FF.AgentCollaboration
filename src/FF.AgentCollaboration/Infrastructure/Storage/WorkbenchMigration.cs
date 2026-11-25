@@ -12,11 +12,12 @@ internal static class WorkbenchMigration
         bool exists = File.Exists(Path.Combine(data, "workbench.sqlite"));
         if (exists && !pending) return null;
         string? cache = knowledge == null ? null : Path.Combine(knowledge, "agent-collaboration", "cache");
-        string branded = WorkbenchLocation.DefaultDirectory;
+        string branded = WorkbenchLocation.LegacyDirectory;
         string legacy = Path.Combine(WorkbenchLocation.LocalData, "LX.AgentCollaboration", "workbench");
         if (pending && (previous == null || !File.Exists(Path.Combine(previous, "workbench.sqlite"))))
             throw new WorkbenchError("待迁移的来源数据库缺失，请恢复原目录后重试");
         if (previous == null && ProjectFolders.Same(data, initial) && !ProjectFolders.Same(data, branded) &&
+            !ProjectFolders.Same(data, WorkbenchLocation.DefaultDirectory) &&
             (cache == null || !ProjectFolders.Same(data, cache))) return null;
         return new[] { previous, initial, cache, branded, legacy }.FirstOrDefault(path =>
             path != null && !ProjectFolders.Same(data, path) && File.Exists(Path.Combine(path, "workbench.sqlite")));

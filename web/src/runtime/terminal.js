@@ -1,4 +1,9 @@
-"use strict";
+import { request } from "../services/api";
+import { showPeers } from "./mentions.js";
+import { clearSubmitError, windowRoute } from "./pane.js";
+import { panes } from "../services/terminalRegistry";
+import { selectedTopicId } from "../store/workbenchStore";
+import { refresh } from "./workbench.js";
 
 const replayReports = /\x1b(?:\[(?:\??\d+;\d+R|[?>=][\d;]*c|\??\d+;\d+\$y|[IO]|0n)|\](?:10|11|12);rgb:[\da-f/]+(?:\x1b\\|\x07))/gi;
 function sendBytes(pane, data) { if (pane.socket?.readyState === WebSocket.OPEN) pane.socket.send(data); }
@@ -20,7 +25,9 @@ function fitPane(pane) {
 
 function connect(pane) {
   clearTimeout(pane.runningTimer);
+  clearTimeout(pane.reconnectTimer);
   pane.socket?.close();
+  pane.socket = undefined;
   pane.generation = pane.view.terminal;
   pane.runningUntil = 0;
   pane.sentSize = undefined;
@@ -29,13 +36,20 @@ function connect(pane) {
   pane.draftRevision = undefined;
   pane.term.reset();
   if (!pane.generation) return;
-  const socket = new WebSocket("ws://" + location.host + "/api" + windowRoute(pane) + "/terminal");
+  const socket = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api" + windowRoute(pane) + "/terminal");
   pane.socket = socket;
   socket.binaryType = "arraybuffer";
+  socket.addEventListener("close", () => {
+    if (panes.get(pane.agent.id) !== pane || pane.socket !== socket || !pane.view.agent.online) return;
+    pane.reconnectTimer = setTimeout(() => {
+      if (pane.socket === socket && pane.view.agent.online) connect(pane);
+    }, 1500);
+  });
   socket.addEventListener("message", event => {
     if (pane.socket !== socket) return;
     if (typeof event.data === "string") {
       const boundary = JSON.parse(event.data);
+      if (boundary.type === "mention-ready") { showPeers(pane, boundary.request); return; }
       // 先用 ConPTY 的实际尺寸解码历史光标定位，仅在重放结束后允许可见窗格调整宿主。
       pane.term.resize(boundary.cols, boundary.rows);
       pane.replayThrough = boundary.replayThrough;
@@ -67,11 +81,12 @@ function reportPrompt(pane, prompt = observePrompt(pane)) {
   const clearedDraft = prompt.clear ? pane.draftRevision : undefined;
   if (prompt.clear) pane.draftRevision = undefined;
   if (clearedDraft != null) clearSubmitError(pane);
-  const writing = pane.view.inbox.find(item => item.state === "writing");
-  const draftId = prompt.draftText?.replace(/\s/g, "").match(/\bMSG_ID:([0-9a-f]{8})(?![0-9a-f])/i)?.[1].toLowerCase();
-  const sameDraft = writing && prompt.editableText && draftId === writing.id.slice(0, 8);
+  const writing = pane.view.inbox.find(item => item.state === "writing" || (item.state === "pending" && pane.view.agent.autoReceive));
+  const draftIds = [...new Set([...(prompt.draftText?.replace(/\s/g, "").matchAll(/\bMSG_ID:([0-9a-f]{8})(?![0-9a-f])/gi) || [])].map(m => m[1].toLowerCase()))];
+  const draftId = (writing && draftIds.find(id => id === writing.id.slice(0, 8))) || draftIds.at(-1);
+  const sameDraft = prompt.editableText && draftId && (writing?.id.slice(0, 8) === draftId ? writing.id : draftId);
   sendControl(pane, { type: "prompt", revision, empty: prompt.empty, clearedDraft, screen: prompt.screen, draftId,
-    retryDraft: sameDraft ? writing.id : undefined, bracketedPaste: pane.term.modes.bracketedPasteMode });
+    retryDraft: sameDraft || undefined, bracketedPaste: pane.term.modes.bracketedPasteMode });
   clearTimeout(pane.runningTimer);
   const remaining = pane.runningUntil - Date.now();
   if (remaining > 0) {
@@ -103,7 +118,10 @@ function readNativePrompt(pane) {
     buffer.getLine(buffer.baseY + offset)?.translateToString(true).trimEnd() || "");
   const blocking = /esc (to )?(interrupt|cancel|back)|ctrl\s*\+\s*c (?:to )?interrupt|enter (to )?select|allow this (command|tool)|would you like to run|do you (want to run|trust)|approval request|press esc to stop|select model/i;
   const codex = pane.agent.engine === "codex";
-  const screenBelow = lines.slice(Math.max(0, buffer.cursorY - (codex ? 12 : 5)));
+  // 完成行以上是上一轮的输出，可能仍留有 Tip、计时器或审批提示。
+  const completedTurn = /^\s*(?:[─━]+\s*)?Worked for\s+(?:\d+[hms]\s*)+(?:[•·]\s*\d{1,2}:\d{2})?\s*[─━]*$/i;
+  const turnStart = codex ? lines.findLastIndex((line, y) => y < buffer.cursorY && completedTurn.test(line)) + 1 : 0;
+  const screenBelow = lines.slice(Math.max(turnStart, buffer.cursorY - (codex ? 12 : 5)));
   // Codex 的工具输出可能把运行提示顶到上方；出现新审批时优先读取下方的新提示。
   const controls = codex ? (screenBelow.findLast(line => blocking.test(line)) || "") : screenBelow.join("\n");
   const executing = /(?:esc|ctrl\s*\+\s*c) (?:to )?interrupt|press esc to stop/i.test(controls);
@@ -117,19 +135,21 @@ function readNativePrompt(pane) {
     const row = buffer.cursorY;
     const prompt = lines[row]?.match(/^(\s*)›\s*(.*)$/);
     const clear = !!prompt && buffer.cursorX === prompt[1].length + 2 && (!prompt[2] || placeholder.test(prompt[2]));
-    // 长粘贴可跨多行，光标上方最近的输入提示符仍属于当前草稿。
+    // 长粘贴或粘贴后回车换行时，首行 › 可能已滚出小视口，当前输入框底部的状态栏紧贴在 row 下方。
     let first = row;
     const boundary = /^\s*(?:[─━═]{3,}|[•●]\s|(?:GPT-[\w.-]+|model:)\s)|(?:for shortcuts|for agents|esc to interrupt|context left|f2 to view)/i;
-    const top = Math.max(0, row - 64);
+    const top = Math.max(turnStart, row - 64);
     while (first > top && !/^\s*›/.test(lines[first])) {
-      if (boundary.test(lines[first])) break;
+      if (boundary.test(lines[first])) { first++; break; }
       first--;
     }
-    const content = lines[first]?.match(/^\s*›\s*(.+)$/)?.[1]?.trim();
+    const promptFooter = lines.slice(row + 1, row + 4).some(line => /(?:GPT-[\w.-]+|model:|for shortcuts|context left|f2\s*to\s*view)/i.test(line));
+    const draftBlock = lines.slice(first, row + 1).join("").replace(/^\s*›\s*/, "").trim();
+    const content = lines[first]?.match(/^\s*›\s*(.+)$/)?.[1]?.trim() || (promptFooter && !clear ? draftBlock : "");
     const draft = !!content && !placeholder.test(content);
-    const draftText = draft ? lines.slice(first, row + 1).join("").replace(/^\s*›\s*/, "") : null;
+    const draftText = draft ? draftBlock : null;
     // 窄窗会裁掉 interrupt；计时器、Tip 和闪烁符号来自输入区外的运行状态行。
-    const above = lines.slice(Math.max(0, first - 8), first);
+    const above = lines.slice(Math.max(turnStart, first - 8), first);
     const below = lines.slice(/^\s*›/.test(lines[first]) ? row + 1 : first, row + 4);
     const codexSpinner = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|^\s*◦\s|\((?:\d+h\s*)?(?:\d+m\s*)?\d+s\s*[•·]|^\s*└\s*Tip:/m.test([...above, ...below].join("\n"));
     const codexScreen = blocked ? screen : codexSpinner ? "running" : draft ? "draft" : clear ? "clear" : "unknown";
@@ -164,7 +184,7 @@ function readNativePrompt(pane) {
 function syncTerminal(pane, view) {
   pane.agent = view.agent;
   pane.view = view;
-  if (pane.generation !== view.terminal || (view.agent.online && pane.socket?.readyState === WebSocket.CLOSED)) connect(pane);
+  if (pane.generation !== view.terminal) connect(pane);
   const writing = view.inbox.some(item => item.state === "writing");
   const pending = view.inbox.some(item => item.state === "pending");
   if (view.agent.online && !pane.replaying && pane.revision > 0 && (writing || !view.inputReady)) {
@@ -172,3 +192,5 @@ function syncTerminal(pane, view) {
     if (writing || prompt.empty || (pending && view.agent.autoReceive)) reportPrompt(pane, prompt);
   }
 }
+
+export { fitPane, observePrompt, readNativePrompt, replayReports, reportPrompt, sendBytes, sendControl, syncTerminal };

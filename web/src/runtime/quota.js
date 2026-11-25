@@ -1,4 +1,9 @@
-"use strict";
+import { isDialogOpen } from "../store/workbenchStore";
+import { request } from "../services/api";
+import { selectedEngine } from "./create.js";
+import { byId, node } from "./dom.js";
+import { panes } from "../services/terminalRegistry";
+import { refresh } from "./workbench.js";
 
 const quotas = new Map();
 
@@ -73,8 +78,10 @@ function renderQuota(engine) {
     button.title = title;
     button.setAttribute("aria-label", [value, reset, "点击刷新额度"].filter(Boolean).join("，"));
   }
-  if (byId("new-dialog").open && selectedEngine() === engine) {
+  if (isDialogOpen("new-dialog") && selectedEngine() === engine) {
     byId("engine-quota").replaceChildren(...details.map(text => node("span", "", text)));
     byId("refresh-quota").disabled = entry.loading;
   }
 }
+
+export { loadQuota, quotas };

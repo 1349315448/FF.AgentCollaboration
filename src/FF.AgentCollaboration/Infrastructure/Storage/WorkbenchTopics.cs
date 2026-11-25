@@ -26,7 +26,8 @@ internal sealed partial class WorkbenchStore
             if (Read("SELECT 1 FROM windows LIMIT 1", row => row.GetInt32(0)).Count > 0)
             {
                 string id = Guid.NewGuid().ToString("N");
-                Exec("INSERT INTO topics(id,name,project) VALUES($p0,'默认话题',$p1)", id, Project());
+                var legacyProject = ProjectSetting() ?? Read("SELECT project FROM windows ORDER BY rowid LIMIT 1", row => row.GetString(0)).Single();
+                Exec("INSERT INTO topics(id,name,project) VALUES($p0,'默认话题',$p1)", id, legacyProject);
                 Exec("UPDATE windows SET topic_id=$p0", id);
             }
         }
@@ -60,7 +61,7 @@ internal sealed partial class WorkbenchStore
             if (id == null)
             {
                 id = Guid.NewGuid().ToString("N");
-                string project = ProjectFolders.Resolve(input.Project ?? Project());
+                string project = ProjectFolders.Resolve(input.Project ?? ProjectList().Current);
                 Atomic(() =>
                 {
                     Exec("INSERT INTO topics(id,name,project,goal) VALUES($p0,$p1,$p2,$p3)", id, name, project, goal);

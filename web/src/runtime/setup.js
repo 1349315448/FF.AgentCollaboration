@@ -1,4 +1,7 @@
-"use strict";
+import { request } from "../services/api";
+import { byId, feedback, node } from "./dom.js";
+import { openFolders } from "./folders.js";
+import { startWorkbench } from "./workbench.js";
 
 const setupDialog = byId("setup-dialog");
 const setupFields = [["data_dir", "数据库位置"], ["archive_root", "话题归档"], ["handoffs", "长消息交接"]];
@@ -63,4 +66,5 @@ byId("setup-form").onsubmit = async event => {
     feedback("setup-error", error.message);
   } finally { submit.disabled = false; }
 };
-checkSetup();
+
+export { checkSetup };

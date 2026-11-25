@@ -5,14 +5,17 @@ namespace FF.AgentCollaboration.Engines;
 
 internal sealed class ClaudeEngine(string cwd) : Engine
 {
-    internal override bool SupportsMode(string mode) => mode is "default" or "acceptEdits" or "plan" or "bypassPermissions";
+    internal override EngineCapabilities Capabilities => Profile;
+    private static readonly EngineCapabilities Profile = new("权限模式",
+        [new("default", "默认审批"), new("acceptEdits", "自动接受编辑"), new("plan", "计划"), new("bypassPermissions", "跳过权限确认")],
+        ["new", "resume", "fork", "archive", "restore", "delete"], NativeArchive: false);
 
     internal override Task<IReadOnlyList<ModelChoice>> ListModels(CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<ModelChoice>>(new[] { "sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5" }
             .Select(id => new ModelChoice(id, id, id == "sonnet", ["low", "medium", "high", "max"])).ToArray());
 
     internal override Task<EngineQuota> ReadQuota(CancellationToken ct) => Task.FromResult(
-        new EngineQuota(false, "Claude Code 暂不支持原生额度查询，可在终端内使用 /usage 查看", CheckedAt: DateTimeOffset.UtcNow));
+        new EngineQuota(false, "Claude Code 暂不支持原生额度查询，可在终端内使用 /usage 查看", CheckedAt: DateTimeOffset.UtcNow) { Status = "unsupported" });
 
     internal override Task<IReadOnlyList<HistorySession>> ListSessions(CancellationToken ct, bool archived)
     {

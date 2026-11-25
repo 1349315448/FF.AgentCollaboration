@@ -52,6 +52,7 @@ internal static class WorkbenchEnvironment
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or WorkbenchError)
             { result.Add(new(id, label, false, path + " · " + error.Message, "directory")); }
         }
+        result.Add(CollaborationSkill.Inspect());
         return result.ToArray();
     }
 
@@ -67,6 +68,12 @@ internal static class WorkbenchEnvironment
     internal static async Task Repair(WorkbenchStore store, string data, string item)
     {
         var (archive, handoffs) = store.Directories;
+        if (item == CollaborationSkill.Id)
+        {
+            var skill = CollaborationSkill.Inspect(retireLegacy: true);
+            if (!skill.Ready) throw new WorkbenchError(skill.Description, WorkbenchFailure.Unavailable);
+            return;
+        }
         if (item is "data_dir" or "archive_root" or "handoffs")
         {
             string path = item switch { "data_dir" => data, "archive_root" => archive, _ => handoffs };

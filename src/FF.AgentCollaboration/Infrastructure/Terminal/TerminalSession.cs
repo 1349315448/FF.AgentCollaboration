@@ -9,7 +9,7 @@ using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Infrastructure.Terminal;
 
-internal sealed record TerminalFrame(long Revision, byte[] Data);
+internal sealed record TerminalFrame(long Revision, byte[] Data, int MentionRequest = 0);
 internal sealed record TerminalViewer(int Id, int Columns, int Rows, TerminalFrame[] Replay, ChannelReader<TerminalFrame> Live);
 
 // [01、04] ConPTY 输入与输出由独立管道处理。唯一写入锁同时保护键盘和外部消息。
@@ -22,6 +22,8 @@ internal sealed class TerminalSession : IDisposable
     private readonly Queue<TerminalFrame> replay = new();
     private readonly TerminalReplay discarded = new();
     private readonly Dictionary<int, Channel<TerminalFrame>> viewers = new();
+    private readonly Dictionary<int, int> mentionPickers = new(); // 正数是待确认的请求，0 表示该查看者已收到确认。
+    private bool automaticDeliveryInProgress;
     private readonly Dictionary<int, long> ready = new();
     private readonly Dictionary<int, (long Revision, string Message, long ObservedAt)> visibleDrafts = new();
     private readonly FileStream input;
@@ -50,9 +52,13 @@ internal sealed class TerminalSession : IDisposable
     private uint? exitCode;
     private bool ended;
     private static readonly TimeSpan Quiet = TimeSpan.FromMilliseconds(1500);
+    private readonly Action changed;
+    private readonly Timer? quietTimer;
+    private (bool Online, bool InputReady, string Activity)? lastReported;
 
-    internal TerminalSession(string executable, IReadOnlyList<string> arguments, string cwd, string grant, int cols, int rows)
+    internal TerminalSession(string executable, IReadOnlyList<string> arguments, string cwd, string grant, int cols, int rows, Action changed)
     {
+        this.changed = changed;
         columns = cols;
         lines = rows;
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763))
@@ -74,6 +80,7 @@ internal sealed class TerminalSession : IDisposable
             output = new FileStream(hostOutput, FileAccess.Read, bufferSize: 4096);
             drain = Task.Factory.StartNew(Drain, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
             process = Launch(executable, arguments, cwd, grant);
+            lock (outputLock) quietTimer = new Timer(_ => QuietElapsed(), null, Quiet, Timeout.InfiniteTimeSpan);
         }
         catch
         {
@@ -121,7 +128,7 @@ internal sealed class TerminalSession : IDisposable
                 lock (outputLock)
                 {
                     var frame = new TerminalFrame(++revision, buffer.AsSpan(0, size).ToArray());
-                    lastActivity = Stopwatch.GetTimestamp();
+                    Touch();
                     awaitingScreenSince ??= lastActivity;
                     ready.Clear();
                     replay.Enqueue(frame);
@@ -137,6 +144,7 @@ internal sealed class TerminalSession : IDisposable
                         if (viewer.Writer.TryWrite(frame)) continue;
                         viewer.Writer.TryComplete(new IOException("终端连接读取过慢"));
                         viewers.Remove(id);
+                        mentionPickers.Remove(id);
                     }
                 }
             }
@@ -149,6 +157,7 @@ internal sealed class TerminalSession : IDisposable
                 ended = true;
                 foreach (var viewer in viewers.Values) viewer.Writer.TryComplete();
             }
+            changed();
         }
     }
 
@@ -176,7 +185,9 @@ internal sealed class TerminalSession : IDisposable
             ready.Remove(id);
             visibleDrafts.Remove(id);
             screens.Remove(id);
+            mentionPickers.Remove(id);
             if (viewers.Remove(id, out var channel)) channel.Writer.TryComplete();
+            NotifyView();
         }
     }
 
@@ -213,7 +224,41 @@ internal sealed class TerminalSession : IDisposable
                     nextPromptRevision = revision;
                 if (revision >= nextPromptRevision) ready[viewerId] = revision;
             }
-            else ready.Remove(viewerId);
+            else
+            {
+                ready.Remove(viewerId);
+                if (observedRevision == revision && (screen == "draft" || draftId != null || retryDraft != null))
+                    draftMayContainText = true;
+            }
+            NotifyView();
+        }
+    }
+
+    // 持有 outputLock。每个窗格只有一个静默到期计时器；重复的同态画面不会广播快照。
+    private void Touch()
+    {
+        lastActivity = Stopwatch.GetTimestamp();
+        if (disposed == 0) quietTimer?.Change(Quiet, Timeout.InfiniteTimeSpan);
+    }
+
+    private void NotifyView(bool recheck = false)
+    {
+        if (disposed != 0) return;
+        var current = ViewState();
+        if (!recheck && current == lastReported) return;
+        lastReported = current;
+        changed();
+    }
+
+    private void QuietElapsed()
+    {
+        lock (outputLock)
+        {
+            if (disposed != 0 || ended) return;
+            var remaining = Quiet - Stopwatch.GetElapsedTime(lastActivity);
+            if (remaining > TimeSpan.Zero)
+                quietTimer?.Change(remaining + TimeSpan.FromMilliseconds(1), Timeout.InfiniteTimeSpan);
+            else NotifyView(recheck: true); // 无回显的按键也需要浏览器重新确认当前输入行。
         }
     }
 
@@ -241,10 +286,34 @@ internal sealed class TerminalSession : IDisposable
         }
     }
 
+    internal void SetMentionPicker(int viewer, bool open, int request)
+    {
+        lock (outputLock)
+        {
+            if (!open) { mentionPickers.Remove(viewer); NotifyView(); return; }
+            if (!Online || !viewers.ContainsKey(viewer) || request <= 0) return;
+            mentionPickers[viewer] = request;
+            if (!automaticDeliveryInProgress) ConfirmMentionPicker(viewer);
+            NotifyView();
+        }
+    }
+
+    private void ConfirmMentionPicker(int viewer)
+    {
+        // 与终端帧共用该查看者的发送队列，避免同一个 WebSocket 上并发 SendAsync。
+        var channel = viewers[viewer];
+        if (channel.Writer.TryWrite(new TerminalFrame(0, [], MentionRequest:mentionPickers[viewer]))) mentionPickers[viewer] = 0;
+        else
+        {
+            channel.Writer.TryComplete(new IOException("终端连接读取过慢"));
+            mentionPickers.Remove(viewer);
+        }
+    }
+
     internal bool CanDeliver(bool automatic)
     {
         lock (outputLock)
-            return Online && (!automatic || (bracketedPasteEnabled && pasteRevision == revision && !draftMayContainText &&
+            return Online && (!automatic || (mentionPickers.Count == 0 && bracketedPasteEnabled && pasteRevision == revision && !draftMayContainText &&
                 ready.Values.Contains(revision) && Stopwatch.GetElapsedTime(lastActivity) >= Quiet));
     }
 
@@ -254,7 +323,8 @@ internal sealed class TerminalSession : IDisposable
         {
             ready.Clear();
             nextPromptRevision = revision + 1;
-            lastActivity = Stopwatch.GetTimestamp();
+            Touch();
+            NotifyView();
         }
     }
 
@@ -269,7 +339,8 @@ internal sealed class TerminalSession : IDisposable
             lock (outputLock)
             {
                 ready.Clear();
-                lastActivity = Stopwatch.GetTimestamp();
+                Touch();
+                NotifyView();
             }
             Marshal.ThrowExceptionForHR(Native.ResizePseudoConsole(console, new((short)cols, (short)rows)));
             columns = cols;
@@ -342,45 +413,50 @@ internal sealed class TerminalSession : IDisposable
     private static readonly Regex TerminalReports = new(
         @"\x1b(?:\[(?:\??[0-9]+;[0-9]+R|[?>=][0-9;]*c|\??[0-9]+;[0-9]+\$y|[IO]|0n)|\](?:10|11|12);rgb:[a-fA-F0-9/]+(?:\x1b\\|\x07))");
 
-    internal async Task<bool> Deliver(InboxItem item, bool automatic, Func<bool> claim, Action release, CancellationToken ct)
+    internal async Task<bool> Deliver(InboxItem item, bool automatic, Func<bool> claim, CancellationToken ct)
     {
         // 提交后允许同一 WebSocket 处理键盘或终端查询回复，继续接收浏览器的草稿清空回执。
         // 下一条外部投递须等本条确认或转为待核对，不能借用另一条消息的清空信号。
         await deliveryLock.WaitAsync(ct);
         try
         {
-            var written = await PasteAndSubmit(item, automatic, claim, release, ct);
+            var written = await PasteAndSubmit(item, automatic, claim, ct);
             if (written == null) return false;
             await WaitForSubmitConfirmation(item.Id, written.Value, ct);
             return true;
         }
-        finally { deliveryLock.Release(); }
+        finally
+        {
+            lock (outputLock)
+            {
+                if (automaticDeliveryInProgress)
+                {
+                    automaticDeliveryInProgress = false;
+                    foreach (int viewer in mentionPickers.Where(pair => pair.Value > 0).Select(pair => pair.Key).ToArray())
+                        ConfirmMentionPicker(viewer);
+                }
+            }
+            deliveryLock.Release();
+        }
     }
 
     private async Task<(long BeforePaste, long BeforeSubmit, long KeyboardVersion)?> PasteAndSubmit(InboxItem item, bool automatic,
-        Func<bool> claim, Action release, CancellationToken ct)
+        Func<bool> claim, CancellationToken ct)
     {
         await inputLock.WaitAsync(ct);
         try
         {
-            if (!CanDeliver(automatic) || !claim()) return null;
-            bool reserved, useBracketedPaste;
+            bool useBracketedPaste;
             long beforePaste;
             lock (outputLock)
             {
-                reserved = CanDeliver(automatic);
+                // 最后一次空闲检查与认领共用预留区，避免已被新指令取代的旧消息回退到 pending。
+                if (!CanDeliver(automatic) || !claim()) return null;
                 useBracketedPaste = bracketedPasteEnabled;
                 beforePaste = revision;
-                if (reserved)
-                {
-                    MarkInput();
-                    draftMayContainText = false;
-                }
-            }
-            if (!reserved)
-            {
-                release();
-                return null;
+                automaticDeliveryInProgress = automatic;
+                MarkInput();
+                draftMayContainText = false;
             }
             // 标记单独写入，正文仍按完整 UTF-8 字符分片，以保护 Windows 10 ConPTY。
             string text = item.AsText();
@@ -456,7 +532,10 @@ internal sealed class TerminalSession : IDisposable
                 int confirmationSeconds = viewers.Count > 0 && revision > sent.BeforeSubmit &&
                     keyboardVersion == sent.KeyboardVersion ? 8 : 4;
                 if (elapsed.TotalSeconds >= confirmationSeconds)
+                {
+                    draftMayContainText = true;
                     throw new IOException("已发送回车，未观察到原生输入行清空，请核对终端");
+                }
                 retry = !retried && elapsed.TotalMilliseconds >= 1100 && StillEditing();
             }
             if (retry)
@@ -480,12 +559,14 @@ internal sealed class TerminalSession : IDisposable
             await Task.Delay(30, ct);
         }
 
-        // 首次回车也可能被直接吞掉；无新帧时复用粘贴重绘已确认的草稿，有新帧时要求回车后重新观察到同一条草稿。
+        // 首次回车也可能被直接吞掉或变成换行；无新帧时复用粘贴重绘已确认的草稿，有新帧时允许按完整 ID 或 8 位前缀匹配当前草稿。
         bool StillEditing() => Online && keyboardVersion == sent.KeyboardVersion && revision > sent.BeforePaste &&
             (clearedDraftRevision <= sent.BeforePaste || clearedAtRevision <= sent.BeforeSubmit) &&
             Stopwatch.GetElapsedTime(lastActivity).TotalMilliseconds >= 250 &&
-            visibleDrafts.Any(pair => viewers.ContainsKey(pair.Key) && pair.Value.Revision == revision &&
-                pair.Value.Message == messageId && (revision == sent.BeforeSubmit || pair.Value.ObservedAt >= started));
+            (revision == sent.BeforeSubmit || visibleDrafts.Any(pair => viewers.ContainsKey(pair.Key) &&
+                pair.Value.Revision == revision &&
+                (pair.Value.Message == messageId || pair.Value.Message == messageId[..8]) &&
+                pair.Value.ObservedAt >= started));
     }
 
     public void Dispose()
@@ -499,6 +580,7 @@ internal sealed class TerminalSession : IDisposable
                 {
                     exitCode = ReadExitCode();
                     Volatile.Write(ref disposed, 1);
+                    quietTimer?.Dispose();
                 }
                 Native.ClosePseudoConsole(console);
                 // 保持输出读取线程运行，让 CLI 有机会完成原生关闭和历史落盘。

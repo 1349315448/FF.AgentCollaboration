@@ -13,7 +13,7 @@ internal abstract class Engine : IDisposable
         _ => throw new WorkbenchError("请选择受支持的引擎")
     };
 
-    internal abstract bool SupportsMode(string mode);
+    internal abstract EngineCapabilities Capabilities { get; }
     internal abstract Task<IReadOnlyList<ModelChoice>> ListModels(CancellationToken ct);
     internal abstract Task<EngineQuota> ReadQuota(CancellationToken ct);
     internal abstract Task<IReadOnlyList<HistorySession>> ListSessions(CancellationToken ct, bool archived);

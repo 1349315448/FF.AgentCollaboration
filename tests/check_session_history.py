@@ -140,9 +140,11 @@ def verify_titles(executable, case):
             selection = {"session": original} if engine == "codex" else {"newSession": False}
             status, resumed = http(base, "/api/windows", {**window, **selection})
             assert status == 200 and resumed["session"] == original and titles()[original] == before
+            assert resumed["sessionTitle"] == before, (engine, resumed["sessionTitle"], before)
             assert http(base, "/api/windows/" + resumed["id"], method="DELETE")[0] == 204
             status, forked = http(base, "/api/windows", {**window,"session":original,"forkSession":True})
             assert status == 200 and forked["session"] != original, (engine,status,forked)
+            assert forked["sessionTitle"] == topic_name + "-" + agent_name
             branch = forked["session"]
             check_native_title(branch, topic_name + "-" + agent_name)
             branch_file = (next(home.rglob("*" + branch + "*.jsonl")) if engine == "codex"

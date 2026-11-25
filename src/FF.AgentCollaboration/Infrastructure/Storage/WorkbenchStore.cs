@@ -7,10 +7,13 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 internal sealed partial class WorkbenchStore(string root, bool create = false, string? databaseFile = null) : LocalState(databaseFile ?? Path.Combine(root, "workbench.sqlite"), create)
 {
     private string LegacyHandoffs => Path.Combine(root, "handoffs");
+    internal long DataVersion => Read("PRAGMA data_version", row => row.GetInt64(0)).Single();
     private string? handoffDirectory;
-    private string Handoffs => handoffDirectory ??= Read("SELECT value FROM settings WHERE key='handoffs'", row => row.GetString(0)).SingleOrDefault() ?? LegacyHandoffs;
+    private string Handoffs => handoffDirectory ??= CurrentHandoffs();
+    private string CurrentHandoffs(string? fallback = null) => Read("SELECT value FROM settings WHERE key='handoffs'", row => row.GetString(0)).SingleOrDefault() ?? fallback ?? LegacyHandoffs;
 
-    internal void Initialize(string? requestedProject, string handoffs, string archiveRoot, bool standalone)
+    internal void Initialize(string? requestedProject, string handoffs, string archiveRoot, bool standalone,
+        bool keepArchive = false, bool keepHandoffs = false)
     {
         Exec("PRAGMA journal_mode=WAL");
         Atomic(() =>
@@ -20,6 +23,7 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
             if (upgrade) Exec("ALTER TABLE windows RENAME TO chat_windows");
             Exec("""
                 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS handoff_cleanup(path TEXT PRIMARY KEY COLLATE NOCASE);
                 CREATE TABLE IF NOT EXISTS windows(
                     id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE, engine TEXT NOT NULL, project TEXT NOT NULL,
                     model TEXT, session TEXT, effort TEXT, mode TEXT, grant_hash TEXT,
@@ -41,18 +45,22 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
             // [T04–T05] 旧记录沿用自身 ID。新引用记录保存项目路径或托管文档的原始 ID。
             if (!Read("PRAGMA table_info(inbox)", row => row.GetString(1)).Contains("document_ref"))
                 Exec("ALTER TABLE inbox ADD COLUMN document_ref TEXT");
-            SaveProject(requestedProject ?? Project());
+            if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("session_title"))
+                Exec("ALTER TABLE windows ADD COLUMN session_title TEXT");
+            if (requestedProject != null) SaveProject(requestedProject);
             InitializeTopics();
             Exec("CREATE TABLE IF NOT EXISTS copilot_session_archives(session TEXT PRIMARY KEY)");
             bool customPaths = CustomPaths;
-            Exec("INSERT OR REPLACE INTO settings VALUES('standalone_handoffs',$p0)", standalone ? "1" : "0");
-            if (!customPaths) SaveArchiveRoot(archiveRoot);
+            // 旧库可能保存了目录但还没有 custom_paths。普通重开应沿用当时的路径与交接模式。
+            string insert = keepArchive ? "INSERT OR IGNORE" : "INSERT OR REPLACE";
+            Exec($"{insert} INTO settings VALUES('standalone_handoffs',$p0)", standalone ? "1" : "0");
+            if (!customPaths) Exec($"{insert} INTO settings VALUES('archive_root',$p0)", archiveRoot);
             if (!Read("PRAGMA table_info(inbox)", row => row.GetString(1)).Contains("created_at"))
                 Exec("ALTER TABLE inbox ADD COLUMN created_at TEXT");
             if (!Read("PRAGMA table_info(inbox)", row => row.GetString(1)).Contains("acknowledged"))
                 Exec("ALTER TABLE inbox ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0");
             Exec("CREATE INDEX IF NOT EXISTS inbox_topic_recent ON inbox(topic_id); CREATE INDEX IF NOT EXISTS inbox_source_recent ON inbox(source)");
-            if (!customPaths) ConfigureHandoffs(handoffs);
+            if (!customPaths) ConfigureHandoffs(keepHandoffs ? CurrentHandoffs(handoffs) : handoffs);
             Exec("DELETE FROM settings WHERE key='backup_source'");
             Exec("UPDATE windows SET grant_hash=NULL, online=0 WHERE online=1 OR grant_hash IS NOT NULL");
             Exec("UPDATE inbox SET state='delivery_uncertain' WHERE state='writing'");

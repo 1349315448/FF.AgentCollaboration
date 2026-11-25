@@ -6,5 +6,6 @@ internal static class CollaborationTools
     internal const string Send = "send_to_agent";
     internal const string ReadDocument = "read_handoff_doc";
     internal const string FinishTopic = "finish_topic";
-    internal static readonly string[] Names = [ListWindows, Send, ReadDocument, FinishTopic];
+    internal const string ReadSkill = "read_collaboration_skill";
+    internal static readonly string[] Names = [ListWindows, Send, ReadDocument, FinishTopic, ReadSkill];
 }

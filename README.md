@@ -4,17 +4,16 @@ FF.Agent 是 Windows 上的 Codex、GitHub Copilot 和 Claude Code 原生终端�
 
 ## 启动
 
-在 Windows 上安装 .NET 10 SDK。双击仓库根目录的 `start-workbench.bat`，浏览器会在服务就绪后打开。脚本以仓库所在目录为默认项目，使用端口 `5186`。可传入其他项目和端口，例如 `.\start-workbench.bat "..\my-project" 5190`。控制台按 `Ctrl+C` 退出。
+在 Windows 上安装 .NET 10 SDK。双击仓库根目录的 `start-workbench.bat`，浏览器会在服务就绪后打开，默认端口为 `5186`。无参数启动会恢复上次打开的项目，新工作台从空列表开始。点击「打开项目文件夹」或项目栏的「＋」添加目录。点击项目卡片标题右侧的「移除」，以后重新打开同一目录即可找回原有话题和 Agent。需要在启动时明确打开某个项目时，可使用 `.\start-workbench.bat "..\my-project" 5190`。控制台按 `Ctrl+C` 退出。
 
-首次打开时，选择数据库、话题归档、长消息交接三个目录并点击「初始化」。工作台随后在选定位置创建 `workbench.sqlite` 并进入主页。下次启动会直接打开已有工作台。需要关联已有知识库时，可在运行脚本前设置 `KNOWLEDGE` 为该目录。旧布局中位于仓库旁的 `.project-knowledge` 也会自动识别。安装和登录需要使用的 CLI 后即可创建 Agent。
+首次打开时，选择数据库、话题归档、长消息交接三个目录并点击「初始化」。默认在程序目录的 `workbench-data` 下分别使用 `database`、`topics` 和 `handoffs`。从启动脚本运行时，程序目录取脚本所在位置；直接运行 EXE 时取程序文件所在位置。已有工作台沿用已保存的目录。需要关联知识库时，可显式设置 `KNOWLEDGE`。安装和登录 CLI 后即可创建 Agent。
 
 也可以直接从 PowerShell 启动。
 
 ```powershell
 dotnet build -c Release
 $exe = (Resolve-Path .\src\FF.AgentCollaboration\bin\Release\net10.0\FF.AgentCollaboration.exe).Path
-$data = Join-Path $env:LOCALAPPDATA 'FF.AgentCollaboration\workbench'
-& $exe workbench $data --project (Get-Location).Path --port 5186 --open-browser
+& $exe workbench --port 5186 --open-browser
 ```
 
 可在配置抽屉修改目录。变更数据库位置会先做在线备份，下次启动同步最新记录并切换。首次升级兼容原知识库缓存，双库并存时会单独创建迁移目标并保留原数据。隔离测试使用 `--fixed-data-dir` 或通过 `FF_LOCATION_CONFIG` 指定独立的引导文件。
@@ -26,7 +25,7 @@ $data = Join-Path $env:LOCALAPPDATA 'FF.AgentCollaboration\workbench'
 
 点品牌旁的 ⚙ 可查看引擎路径和版本、安装缺失的引擎、检查 ConPTY、WinGet、Node.js、npm、Git 和目录读写权限。WinGet 缺失时可从 Windows 应用安装程序安装。Claude 的 WinGet 安装失败后会尝试 npm。支持原生 exe、npm 的 Node 入口和 Windows cmd 启动器。Claude 会话可按项目恢复、归档与删除，额度请在原生终端使用 /usage。
 
-独立启动可省略 --knowledge。归档和托管正文分别位于数据目录的 topics 和 handoffs。保存自定义目录后，新话题和长消息各自使用所选目录，已有话题保留原归档。切换交接目录会复制已登记的全局托管正文，并保留旧文件。使用知识库且沿用原配置的工作台继续按话题归档交接文档。Release 输出同时提供历史 LX 名称入口，用于兼容旧启动器。
+设置中的「恢复默认」可分别选回 `workbench-data/database`、`workbench-data/topics` 和 `workbench-data/handoffs`。保存自定义目录后，新话题和长消息各自使用所选目录，已有话题保留原归档。切换交接目录会复制已登记的全局托管正文，并保留旧文件。使用知识库且沿用原配置的工作台继续按话题归档交接文档。Release 输出同时提供历史 LX 名称入口，用于兼容旧启动器。
 
 ## 使用
 
@@ -39,24 +38,32 @@ $data = Join-Path $env:LOCALAPPDATA 'FF.AgentCollaboration\workbench'
 - 新建窗格时可选项目、引擎和新建或恢复历史会话。模型、推理档位和模式用于设定启动参数。Copilot 的初始模式可跟随引擎默认、使用 Agent 或启用 Autopilot。窗格标题栏右侧和建窗弹窗均可查看 Codex 额度或 Copilot 高级交互剩余额度，点击额度即可刷新。同引擎共享五分钟缓存。
 - 在建窗时选择「新建」，或在窗格「会话记录」点「新建会话」，原生标题均为 `话题名-Agent 名称`，例如 `协作平台开发-前端`。恢复历史会话沿用原标题。Codex 在首次提交消息后将该对话列入原生历史。
 - 关闭 Agent 或退出工作台会释放窗格的原生进程及其子进程，随后可以在其他应用继续同一对话。仅关闭浏览器标签页会保留终端以供重新连接。
-- 窗格底栏按顺序提供 @ Agent、文件、指令、自动接收、会话记录、改名、主对话和关闭终端。宽度不足时，末尾操作收进「更多 ▾」。新建 Agent 默认开启自动接收，手动开关的选择会保存。点「改名」后可用新名称 @ 该 Agent，当前终端和收件队列继续使用原窗口 ID。Copilot 默认恢复当前项目最近可用会话，重开窗格优先恢复该窗格的历史绑定。
+- 窗格标题的电源键可启停终端，在线为绿色，离线为灰色。底栏左侧提供 @ Agent、文件、指令和自动接收，右侧提供会话记录、主对话切换和「更多 ▾」。窄窗将放不下的操作收进「更多」，移除 Agent 也在此菜单内。新建 Agent 默认开启自动接收，手动开关的选择会保存。点击标题中的 Agent 名称改名后，可用新名称 @ 该 Agent，当前终端和收件队列继续使用原窗口 ID。Copilot 默认恢复当前项目最近可用会话，重开窗格优先恢复该窗格的历史绑定。
 - 打开底栏「会话记录」，从右侧抽屉查看该项目、该引擎的最近会话和已归档会话。Codex 的归档和还原同步至 CLI，Copilot 的归档保存在工作台。两种引擎的「永久删除」都会删除原生会话记录。绑定在窗格或仍在使用的会话需先释放。
 - Codex 返回 credits 时，窗格标题栏显示余额与额度百分比。余额取整数部分，例如剩余 12.50 点时显示 `12 credits`。只有点数时直接显示余额，点击额度可刷新。`∞` 表示不限量，`—` 表示暂时无法读取。
 - 主对话在桌面固定于左栏。点其他窗格的「⤡ 缩小」，终端会收进「＋ Agent」右侧的双行卡片，继续显示名称、状态、引擎和可刷新的额度。右侧窗格全部缩小时，主对话占满宽度。点卡片的「⤢ 展开」或话题里的 `@Agent` 标签，可回到原终端。缩小状态按话题保存，窗口宽度小于 720px 时展开的终端按单列排列。工作时状态灯灰蓝交替，待命常绿，未启动常灰，等待确认时为琥珀色。
 - 话题底部的协作日志按时间向下排列，桌面默认显示五行，自动滚到最新记录，可拖动调高、收起或点击消息预览。窄屏默认收起。
-- 用 `@ 指定 Agent`（Alt+Shift+A）或 `选择文件`（Alt+Shift+F）插入别名或项目相对路径，按 Enter 可提交当前输入。
+- 在终端按 Alt+Shift+A 或点击底栏的 `@ Agent`，按别名、会话标题或话题搜索在线 Agent。↑/↓ 选择，Enter 插入提及，Esc 返回草稿。普通 `@` 和 `@@` 仍交给原生 CLI。可在工作台配置里更换提及快捷键。
+- 用 `选择文件`（Alt+Shift+F）插入项目相对路径。
 - 在原生 CLI 中请 Agent 调用协作 MCP 发送消息。打开自动接收的窗格会在可识别的空闲提示符处提交消息。也可在线时点击收件横幅的「写入终端」，将消息写入当前位置并提交。
-- 已人工处理的待交接消息、送达待核对的消息，都可在收件横幅点「忽略」。横幅收起，日志保留「已忽略」记录，重开工作台后仍然有效。被忽略的待交接消息会退出投递队列，后续消息继续按顺序接收。
+- 更新同一 Agent 的需求时，`send_to_agent` 默认覆盖自己发往该窗口的待收、待核对消息。两项任务都要执行时，发送后一项请带 `supersedePrevious: false`。传 `cancel: "完整消息 ID"` 可撤回自己的单条消息，传 `cancel: true` 和 `target` 可撤回发往该窗口的最新可撤消息。
+- 收件横幅支持「忽略」和「全部忽略」，日志预览可撤回或忽略单条。待核对表示终端可能已收到；忽略只移出队列，已经开始的工作会继续。
+- 设置中的「协作日志清理」可清理 7、15、30 天前或全部记录。正在投递的消息和项目正式文档会保留。
+- 从工作台打开的 Codex、Copilot 和 Claude Code 通过窗口专属的 `lx_collab` 获得 [ff-agent-collab 协作规范与案例](src/FF.AgentCollaboration/Skills/ff-agent-collab/SKILL.md)。模型可调用 `read_collaboration_skill` 按需读取正文。普通控制台独立启动时不会注册这个窗口工具。升级会将旧版带平台标记的全局技能文件改名备份，个人同名技能继续保留。
+- 发布包在 EXE 旁附带 `ff-agent-collab/SKILL.md`，工作台和窗口都从此处读取规范。文件缺失时，工作台会停止启动并显示需要补回的完整路径。部署时请复制整个发布目录。
 - 顶部话题标签按标题和成员名单的实际宽度排列。未读数和「进行中」状态在预留位置更新，超过 99 条显示为 `99+`，悬停可查看准确数量。
 
 ## 开发
 
 后端按领域、应用服务、交互入口、CLI 适配器与基础设施组织。增加引擎、修改消息投递或调整存储时，可从[架构与验证说明](docs/architecture.md)定位实现和回归入口。
 
+前端源码在 `web/`。进入该目录后运行 `npm ci` 和 `npm run build` 即可生成并同步工作台静态资源。日常启动继续使用仓库内的构建产物。关闭终端会保留 Agent 配置和已绑定会话。点击标题或离线窗格中央的电源键即可重新打开。
+
 ## 验证
 
 ```powershell
 python .\tests\check_workbench.py $exe
+python .\tests\check_collaboration.py $exe
 python .\tests\check_session_history.py $exe
 python .\tests\check_recovery.py .\src\FF.AgentCollaboration\bin\Release\net10.0\FF.AgentCollaboration.dll
 ```

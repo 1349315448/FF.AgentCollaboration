@@ -42,6 +42,12 @@ internal static class TerminalSocket
         var header = new byte[8];
         async ValueTask Frame(TerminalFrame frame)
         {
+            if (frame.MentionRequest != 0)
+            {
+                var ack = JsonSerializer.SerializeToUtf8Bytes(new { type = "mention-ready", request = frame.MentionRequest });
+                await socket.SendAsync(ack, WebSocketMessageType.Text, true, ct);
+                return;
+            }
             BinaryPrimitives.WriteInt64LittleEndian(header, frame.Revision);
             await socket.SendAsync(header.AsMemory(), WebSocketMessageType.Binary, false, ct);
             await socket.SendAsync(frame.Data.AsMemory(), WebSocketMessageType.Binary, true, ct);
@@ -85,6 +91,10 @@ internal static class TerminalSocket
             if (!command.TryGetProperty("type", out var type)) continue;
             switch (type.GetString())
             {
+                case "mention-picker":
+                    terminal.SetMentionPicker(viewerId, command.GetProperty("open").GetBoolean(),
+                        command.TryGetProperty("request", out var token) && token.TryGetInt32(out int sequence) ? sequence : 0);
+                    break;
                 case "resize":
                     terminal.Resize(Math.Clamp(command.GetProperty("cols").GetInt32(), 12, 500),
                         Math.Clamp(command.GetProperty("rows").GetInt32(), 5, 250));

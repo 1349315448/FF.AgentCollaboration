@@ -8,3 +8,5 @@ internal sealed record HistoryAction(string? Session, bool Archived);
 internal sealed record ChangeAutoReceive(bool Enabled);
 internal sealed record RenameAgent(string? Name);
 internal sealed record SelectProject(string? Path);
+
+internal sealed record MentionTarget(string SourceTerminal, string TargetId, string TargetTerminal);

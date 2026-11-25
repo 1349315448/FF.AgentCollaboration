@@ -12,7 +12,7 @@ using FF.AgentCollaboration.Infrastructure.Terminal;
 namespace FF.AgentCollaboration.Application;
 
 // [01、04] 工作台持有原生终端实例。SQLite 中的消息在写入管道之前认领。
-internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog, ILogger<Workbench> logger) : BackgroundService
+internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog, ILogger<Workbench> logger, WorkbenchEvents events) : BackgroundService
 {
     private string Root => startup.Root;
     private readonly ConcurrentDictionary<string, TerminalSession> terminals = new();
@@ -38,9 +38,9 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
                 members.Any(w => w.Activity == "waiting" || w.Inbox.Any(i => i.State is "pending" or "delivery_uncertain")) ? "waiting" : "idle";
             return topic with { Activity = activity };
         }).ToArray();
-        string current = state.Project();
-        var projects = state.Projects(topics.Select(t => t.Project).Prepend(current).Concat(windows.Select(w => w.Agent.Project)));
-        return new(current, projects, topics, windows, topicId, topicId == null ? [] : state.Timeline(topicId, recent));
+        var (current, projects) = state.ProjectList(topics.Select(t => t.Project).Concat(windows.Select(w => w.Agent.Project)));
+        return new(current, projects, topics, windows, topicId, topicId == null ? [] : state.Timeline(topicId, recent),
+            state.MentionShortcut(), state.RecentHandoffs());
     }
 
     internal TerminalSession Terminal(string id) => terminals.TryGetValue(id, out var terminal)
@@ -55,35 +55,38 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         {
             using var state = new WorkbenchStore(Root);
             var window = state.Window(windowId);
+            using var engine = Engine.Create(window.Engine, window.Project);
+            if (!engine.Capabilities.Allows(action)) throw new WorkbenchError("这个引擎不支持该会话操作");
             var history = await catalog.Sessions(window.Engine, window.Project, ct, input.Archived, includeBound: true);
             var item = history.FirstOrDefault(s => s.Id == session) ?? throw new WorkbenchError("该会话已移除，或不在当前列表中", WorkbenchFailure.Conflict);
             if (item.MayBeInUse) throw new WorkbenchError("会话已绑定或可能仍在运行，请先切换或关闭对应终端", WorkbenchFailure.Conflict);
             if ((action == "archive" && input.Archived) || (action == "restore" && !input.Archived))
                 throw new WorkbenchError("会话归档状态已变化，请刷新列表", WorkbenchFailure.Conflict);
-            if (window.Engine == "codex" || action == "delete")
+            if (engine.Capabilities.NativeArchive || action == "delete")
             {
-                using var engine = Engine.Create(window.Engine, window.Project);
                 using var deadline = SessionCatalog.Deadline(ct);
                 await engine.ChangeHistory(item.Id, action, deadline.Token);
             }
             // Copilot 无原生归档 API；仅归档标记留在工作台，删除始终由原生 CLI 执行。
-            if (window.Engine != "codex") state.SetArchive(window.Engine, item.Id, action == "archive");
+            if (!engine.Capabilities.NativeArchive) state.SetArchive(window.Engine, item.Id, action == "archive");
         }
         finally { lifecycle.Release(); }
     }
 
-    private async Task<string?> LatestCopilotSession(WorkbenchStore state, string id, string project, CancellationToken request)
+    private async Task<HistorySession?> LatestSession(WorkbenchStore state, AgentWindow candidate, CancellationToken request)
     {
+        using var engine = Engine.Create(candidate.Engine, candidate.Project);
+        if (!engine.Capabilities.Allows("latest")) return null;
         // 原生新会话尚未绑定历史 ID 时，避免自动接管同项目的另一个在线窗格。
-        if (state.Windows().Any(window => window.Id != id && window.Engine == "copilot" && window.Session == null &&
-            ProjectFolders.Same(window.Project, project) && terminals.TryGetValue(window.Id, out var terminal) && terminal.Online))
+        if (state.Windows().Any(window => window.Id != candidate.Id && window.Engine == candidate.Engine && window.Session == null &&
+            ProjectFolders.Same(window.Project, candidate.Project) && terminals.TryGetValue(window.Id, out var terminal) && terminal.Online))
             return null;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(request);
         deadline.CancelAfter(TimeSpan.FromSeconds(8));
-        try { return (await catalog.Sessions("copilot", project, deadline.Token)).FirstOrDefault()?.Id; }
+        try { return (await catalog.Sessions(candidate.Engine, candidate.Project, deadline.Token)).FirstOrDefault(); }
         catch (Exception error) when (!request.IsCancellationRequested)
         {
-            logger.LogDebug("Copilot history lookup unavailable: {Type}", error.GetType().Name);
+            logger.LogDebug("{Engine} history lookup unavailable: {Type}", candidate.Engine, error.GetType().Name);
             return null;
         }
     }
@@ -107,10 +110,18 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         await lifecycle.WaitAsync(ct);
         try
         {
-            if (session != null && !(await catalog.Sessions(engineName, project, ct, includeBound: request.ForkSession)).Any(item => item.Id == session))
-                throw new WorkbenchError("这个历史会话不属于所选项目，或已在工作台打开", WorkbenchFailure.Conflict);
-            if (engineName == "copilot" && session == null && !request.NewSession)
-                window = window with { Session = await LatestCopilotSession(state, window.Id, project, ct) };
+            if (session != null)
+            {
+                var history = await catalog.Sessions(engineName, project, ct, includeBound: request.ForkSession);
+                var source = history.FirstOrDefault(item => item.Id == session)
+                    ?? throw new WorkbenchError("这个历史会话不属于所选项目，或已在工作台打开", WorkbenchFailure.Conflict);
+                window = window with { SessionTitle = source.Name };
+            }
+            if (session == null && !request.NewSession)
+            {
+                var latest = await LatestSession(state, window, ct);
+                window = window with { Session = latest?.Id, SessionTitle = latest?.Name };
+            }
             state.AddWindow(window);
             try { return await Open(state, window, ct, request.ForkSession ? session : null); }
             catch
@@ -134,8 +145,11 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             using var state = new WorkbenchStore(Root);
             var window = state.Window(id);
             if (terminals.TryGetValue(id, out var existing) && existing.Online) return;
-            if (window.Engine == "copilot" && window.Session == null)
-                window = window with { Session = await LatestCopilotSession(state, id, window.Project, ct) };
+            if (window.Session == null)
+            {
+                var latest = await LatestSession(state, window, ct);
+                window = window with { Session = latest?.Id, SessionTitle = latest?.Name };
+            }
             await Open(state, window, ct);
         }
         finally { lifecycle.Release(); }
@@ -150,9 +164,13 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         try
         {
             var window = state.Window(id);
-            if (session != null && session != window.Session &&
-                !(await catalog.Sessions(window.Engine, window.Project, ct)).Any(item => item.Id == session))
-                throw new WorkbenchError("这个历史会话不属于所选项目，或已在工作台打开", WorkbenchFailure.Conflict);
+            if (session != null && session != window.Session)
+            {
+                var history = await catalog.Sessions(window.Engine, window.Project, ct);
+                var chosen = history.FirstOrDefault(item => item.Id == session)
+                    ?? throw new WorkbenchError("这个历史会话不属于所选项目，或已在工作台打开", WorkbenchFailure.Conflict);
+                window = window with { SessionTitle = chosen.Name };
+            }
             if (session != null && state.Windows().Any(other => other.Id != id && other.Engine == window.Engine && other.Session == session))
                 throw new WorkbenchError("这个历史会话已在工作台打开", WorkbenchFailure.Conflict);
             if (session != null && session == window.Session && terminals.TryGetValue(id, out var current) && current.Online)
@@ -166,7 +184,9 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
     private async Task<AgentWindow> Open(WorkbenchStore state, AgentWindow window, CancellationToken ct, string? forkSource = null)
     {
         using var engine = Engine.Create(window.Engine, window.Project);
-        if (window.Mode != null && !engine.SupportsMode(window.Mode))
+        if (!engine.Capabilities.Allows(forkSource != null ? "fork" : window.Session == null ? "new" : "resume"))
+            throw new WorkbenchError("这个引擎不支持所选的会话操作");
+        if (window.Mode != null && !engine.Capabilities.Modes.Any(mode => mode.Id == window.Mode))
             throw new WorkbenchError("这个引擎不支持所选的初始模式");
         string? newTitle = null;
         if (window.Session == null)
@@ -175,27 +195,42 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             using var timeout = SessionCatalog.Deadline(ct);
             string id = await engine.NewSession(newTitle, window.Model, forkSource, timeout.Token);
             if (id == forkSource || !Guid.TryParse(id, out _)) throw new WorkbenchError("引擎未返回独立的会话编号", WorkbenchFailure.Unavailable);
-            window = window with { Session = id };
+            window = window with { Session = id, SessionTitle = newTitle };
+        }
+        else if (window.SessionTitle == null)
+        {
+            // 升级前的窗口只保存了会话 ID。仅在打开该窗口时补取一次已有标题。
+            using var lookup = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            lookup.CancelAfter(TimeSpan.FromSeconds(3));
+            try
+            {
+                var history = await catalog.Sessions(window.Engine, window.Project, lookup.Token, includeBound: true);
+                window = window with { SessionTitle = history.FirstOrDefault(item => item.Id == window.Session)?.Name };
+            }
+            catch (Exception error) when (!ct.IsCancellationRequested)
+            {
+                logger.LogDebug("Session title unavailable: {Type}", error.GetType().Name);
+            }
         }
         var grant = WorkbenchStore.NewGrant();
-        var mcp = new EngineMcp(Root, "workbench-mcp", grant, CollaborationTools.Names);
+        var mcp = new EngineMcp(Root, "workbench-mcp", grant, CollaborationTools.Names, events.NotifyPort);
         var arguments = engine.NativeArguments(window, mcp, newTitle, forkSource);
         if (terminals.TryGetValue(window.Id, out var previous))
         {
             state.Offline(window.Id);
             await Task.Run(previous.Dispose);
         }
-        string? previousSession = state.Window(window.Id).Session;
-        state.Start(window.Id, grant, window.Session);
+        var previousBinding = state.Window(window.Id);
+        state.Start(window.Id, grant, window.Session, window.SessionTitle);
         try
         {
             terminals[window.Id] = new TerminalSession(EngineExecutable.FindExecutable(window.Engine), arguments,
-                ProjectFolders.Resolve(window.Project), grant, 100, 30);
+                ProjectFolders.Resolve(window.Project), grant, 100, 30, events.Changed);
             return window with { Online = true };
         }
         catch
         {
-            state.RestoreSession(window.Id, previousSession);
+            state.RestoreSession(previousBinding);
             throw;
         }
     }
@@ -210,7 +245,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         return value;
     }
 
-    internal async Task Close(string id, CancellationToken ct)
+    internal async Task Stop(string id, CancellationToken ct, bool removeWindow = false)
     {
         await lifecycle.WaitAsync(ct);
         try
@@ -219,7 +254,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             state.Window(id);
             state.Offline(id);
             if (terminals.TryGetValue(id, out var terminal)) await Task.Run(terminal.Dispose);
-            state.Close(id);
+            if (removeWindow) state.Close(id);
             terminals.TryRemove(id, out _);
         }
         finally { lifecycle.Release(); }
@@ -230,6 +265,25 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         using var state = new WorkbenchStore(Root);
         state.Window(id);
         state.AutoReceive(id, enabled);
+    }
+
+    // 同一把生命周期锁保护会话切换与插入，避免向刚更换的原生会话写入旧选择。
+    internal async Task InsertMention(string id, MentionTarget selection, CancellationToken ct)
+    {
+        await lifecycle.WaitAsync(ct);
+        try
+        {
+            var source = Terminal(id);
+            var target = Terminal(WorkbenchInput.Id(selection.TargetId));
+            if (id == selection.TargetId || !source.Online || !target.Online ||
+                source.Generation != selection.SourceTerminal || target.Generation != selection.TargetTerminal)
+                throw new WorkbenchError("窗口已离线或切换会话，请重新选择", WorkbenchFailure.Conflict);
+            using var store = new WorkbenchStore(Root);
+            var peer = store.Window(selection.TargetId);
+            string prefix = store.Window(id).TopicId == peer.TopicId ? "" : store.Topic(peer.TopicId).Name + "/";
+            await source.Input(Encoding.UTF8.GetBytes("@" + prefix + peer.Name + " "), ct);
+        }
+        finally { lifecycle.Release(); }
     }
 
     internal async Task WriteInput(string id, TerminalInput request, CancellationToken ct)
@@ -254,13 +308,12 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         bool claimed = false;
         try
         {
-            bool written = await terminal.Deliver(message, automatic,
-                () => claimed = state.ClaimMessage(message.Id, automatic),
-                () =>
-                {
-                    state.FinishMessage(message.Id, "pending");
-                    claimed = false;
-                }, ct);
+            bool written = await terminal.Deliver(message, automatic, () =>
+            {
+                claimed = state.ClaimMessage(message.Id, automatic);
+                if (claimed) events.RefreshPages();
+                return claimed;
+            }, ct);
             if (written) state.FinishMessage(message.Id, "delivered");
             return written;
         }
@@ -269,17 +322,24 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             if (claimed) state.FinishMessage(message.Id, "delivery_uncertain");
             throw;
         }
+        finally { if (claimed) events.Changed(); }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await startup.Ready.WaitAsync(stoppingToken);
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(400));
+        // 同一连接的 data_version 可识别老版本 MCP 提交或通知丢失的情况。
+        using var state = new WorkbenchStore(Root);
+        long version = state.DataVersion;
+        using var fallback = new Timer(_ => events.Wake(), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        events.Wake();
         try
         {
-            while (await timer.WaitForNextTickAsync(stoppingToken))
+            while (await events.WaitAsync(stoppingToken))
             {
-                using var state = new WorkbenchStore(Root);
+                long current = state.DataVersion;
+                if (current != version) events.RefreshPages();
+                version = current;
                 foreach (var window in state.Windows())
                     if (window.Online && terminals.TryGetValue(window.Id, out var terminal) && !terminal.Online)
                         await ReleaseExited(state, window.Id, terminal, stoppingToken);
@@ -306,6 +366,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             {
                 state.Offline(id);
                 await Task.Run(() => ReleaseInBackground(id, terminal));
+                events.RefreshPages();
             }
         }
         finally { lifecycle.Release(); }

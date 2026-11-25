@@ -6,7 +6,10 @@ namespace FF.AgentCollaboration.Engines;
 
 internal sealed class CodexEngine(string cwd) : RpcEngine
 {
-    internal override bool SupportsMode(string mode) => mode is "on-request" or "never";
+    internal override EngineCapabilities Capabilities => Profile;
+    private static readonly EngineCapabilities Profile = new("审批策略",
+        [new("on-request", "按需请求审批"), new("never", "不发起审批请求")],
+        ["new", "resume", "fork", "archive", "restore", "delete"], NativeArchive: true);
 
     internal async Task Start(EngineMcp? mcp, CancellationToken ct)
     {
