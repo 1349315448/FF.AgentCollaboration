@@ -1,4 +1,5 @@
 using FF.AgentCollaboration.Domain;
+using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Engines;
 
@@ -14,6 +15,24 @@ internal static class EngineExecutable
         {
             string? configured = Environment.GetEnvironmentVariable(prefix + name.ToUpperInvariant() + "_EXE");
             if (File.Exists(configured)) return Path.GetFullPath(configured);
+        }
+        if (name == "zcode")
+        {
+            string archName = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? "arm64" : "x64";
+            // The similarly named Electron desktop launcher does not include the native TUI.
+            return WindowsCommand.Dependency(path =>
+                !File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "resources", "app.asar")),
+                $"zcode-windows-{archName}.exe", "zcode.cmd", "zcode.exe");
+        }
+        if (name is "traecli" or "codebuddy" or "qwen")
+        {
+            string? path = WindowsCommand.Dependency(name + ".exe", name + ".cmd");
+            if (name == "traecli" && path != null && Path.GetExtension(path).Equals(".cmd", StringComparison.OrdinalIgnoreCase))
+            {
+                string native = Path.Combine(Path.GetDirectoryName(path)!, "traex.exe");
+                if (File.Exists(native)) return native;
+            }
+            return path;
         }
         if (name == "claude")
         {

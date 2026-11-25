@@ -1,3 +1,4 @@
+import { manualInboxEngines } from "../services/engines";
 import { request } from "../services/api";
 import { showPeers } from "./mentions.js";
 import { clearSubmitError, windowRoute } from "./pane.js";
@@ -100,7 +101,7 @@ function reportPrompt(pane, prompt = observePrompt(pane)) {
 
 function observePrompt(pane) {
   const prompt = readNativePrompt(pane);
-  if (pane.agent.engine === "codex") {
+  if (["codex", "traecli"].includes(pane.agent.engine)) {
     if (prompt.screen === "blocked" || prompt.draft) pane.runningUntil = 0;
     else if (prompt.screen === "running") pane.runningUntil = Date.now() + 3000;
     if (pane.runningUntil > Date.now())
@@ -113,11 +114,12 @@ function observePrompt(pane) {
 function readNativePrompt(pane) {
   const term = pane.term;
   const unknown = { empty: false, clear: false, draft: false };
+  if (manualInboxEngines.has(pane.agent.engine)) return { ...unknown, screen: "unknown" };
   const buffer = term.buffer.active;
   const lines = Array.from({ length: term.rows }, (_, offset) =>
     buffer.getLine(buffer.baseY + offset)?.translateToString(true).trimEnd() || "");
   const blocking = /esc (to )?(interrupt|cancel|back)|ctrl\s*\+\s*c (?:to )?interrupt|enter (to )?select|allow this (command|tool)|would you like to run|do you (want to run|trust)|approval request|press esc to stop|select model/i;
-  const codex = pane.agent.engine === "codex";
+  const codex = ["codex", "traecli"].includes(pane.agent.engine);
   // 完成行以上是上一轮的输出，可能仍留有 Tip、计时器或审批提示。
   const completedTurn = /^\s*(?:[─━]+\s*)?Worked for\s+(?:\d+[hms]\s*)+(?:[•·]\s*\d{1,2}:\d{2})?\s*[─━]*$/i;
   const turnStart = codex ? lines.findLastIndex((line, y) => y < buffer.cursorY && completedTurn.test(line)) + 1 : 0;

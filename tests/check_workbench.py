@@ -177,12 +177,18 @@ def verify(executable, directory):
         assert files == ["interface notes.md"], files
         assert http(base, "/api/handoffs", {}, "POST")[0] == 404
         capabilities = http(base, "/api/engines/capabilities")[1]
-        assert set(capabilities) == {"codex", "copilot", "claude"}
+        assert set(capabilities) == {"codex", "copilot", "claude", "codebuddy", "traecli", "qwen", "zcode"}
         for engine, profile in capabilities.items():
-            assert {"new","resume","fork","archive","restore","delete"} <= set(profile["sessionActions"])
+            assert {"new","resume","archive","restore"} <= set(profile["sessionActions"])
+            assert ("delete" in profile["sessionActions"]) == (engine in {"codex","copilot","claude","traecli"})
+            assert ("fork" in profile["sessionActions"]) == (engine in {"codex","copilot","claude","traecli","codebuddy"})
             assert ("latest" in profile["sessionActions"]) == (engine == "copilot")
-            assert profile["nativeArchive"] == (engine == "codex")
-            assert profile["models"] and profile["efforts"] and all(m["id"] and m["label"] for m in profile["modes"])
+            assert profile["nativeArchive"] == (engine in {"codex","traecli"})
+            assert profile["models"] == (engine not in {"qwen","zcode"})
+            assert profile["efforts"] == (engine in {"codex","copilot","claude","traecli"})
+            assert all(m["id"] and m["label"] for m in profile["modes"])
+        for engine in ("codebuddy", "qwen", "zcode"):
+            assert http(base, "/api/quota/" + engine)[1]["status"] == "unsupported"
         chord = "/api/settings/mention-shortcut"
         assert http(base, "/api/state")[1]["mentionShortcut"] == "Alt+Shift+A"
         for invalid in ("A", "Alt", "Enter", "Escape", "Tab", "Ctrl+W", "Alt+Shift+F", "Alt+A\\n"):
@@ -726,7 +732,8 @@ def verify_install(executable, directory, fixture):
     # Only the temporary profile and native test binaries are visible to this host.
     with patch.dict(os.environ, LOCALAPPDATA=str(local), USERPROFILE=str(local), PATH=str(apps), LX_CODEX_EXE="", LX_COPILOT_EXE="", LX_CLAUDE_EXE="", FF_CODEX_EXE="", FF_COPILOT_EXE="", FF_CLAUDE_EXE=""):
         with host(executable, directory / "install-state", directory) as base:
-            assert http(base, "/api/engines")[1] == {"codex": False, "copilot": False, "claude": False}
+            engines = http(base, "/api/engines")[1]
+            assert all(not engines[key] for key in ("codex", "copilot", "claude"))
             route = "/api/engines/codex/install"
             assert http(base, route, method="POST")[0] == 503  # missing WinGet
             (apps / "winget.exe").write_bytes(fixture.read_bytes())
@@ -739,7 +746,8 @@ def verify_install(executable, directory, fixture):
             with ThreadPoolExecutor(max_workers=2) as pool:
                 assert list(pool.map(lambda _: http(base, route, method="POST")[0], range(2))) == [204, 204]
             assert http(base, "/api/engines/copilot/install", method="POST")[0] == 204
-            assert http(base, "/api/engines")[1] == {"codex": True, "copilot": True, "claude": False}
+            engines = http(base, "/api/engines")[1]
+            assert engines["codex"] and engines["copilot"] and not engines["claude"]
             commands = (local / "installs.txt").read_text().splitlines()
             expected = " --exact --source winget --silent --disable-interactivity --accept-package-agreements --accept-source-agreements"
             assert commands == ["install --id OpenAI.Codex" + expected + " --scope user"] * 2 + [
@@ -769,7 +777,8 @@ def verify_ff(executable, directory, fixture):
     foreign.write_text(json.dumps({"sessionId":collision_id, "cwd":str(directory)}), encoding="utf8")
     with patch.dict(os.environ, FF_CLAUDE_EXE=str(shim), CLAUDE_CONFIG_DIR=str(home)):
         with host(executable, state, project) as base:
-            assert http(base, "/api/engines?detail=true")[1][-1]["version"] == "fixture 2.1"
+            details = {item["engine"]: item for item in http(base, "/api/engines?detail=true")[1]}
+            assert details["claude"]["version"] == "fixture 2.1"
             assert len(http(base, "/api/models/claude")[1]) == 6
             quota = http(base, "/api/quota/claude")[1]
             assert not quota["supported"] and quota["status"] == "unsupported" and "/usage" in quota["message"]
@@ -853,11 +862,49 @@ def verify_ff(executable, directory, fixture):
             assert http(base, "/api/settings", defaults, "PUT")[0] == 200
 
 
+def verify_new_engines(executable, directory, fixture):
+    state = directory / "multi-engine-data"
+    env = {"FF_" + engine.upper() + "_EXE": str(fixture) for engine in ("codebuddy", "qwen", "traecli", "zcode")}
+    with patch.dict(os.environ, env), host(executable, state) as base:
+        for engine in ("codebuddy", "qwen", "traecli", "zcode"):
+            project = directory / ("project " + engine)
+            project.mkdir()
+            topic = http(base, "/api/topics", {"name": engine, "project": str(project)})[1]
+            payload = {"topic":topic["id"], "name":"助手", "engine":engine, "project":str(project), "newSession":True}
+            status, window = http(base, "/api/windows", payload)
+            assert status == 200 and window["online"], (engine, window)
+            route = "/api/windows/" + window["id"]
+            for iteration in range(2):
+                if engine != "traecli":
+                    captured = project / ("zcode-launch.txt" if engine == "zcode" else "claude-args.txt")
+                    for _ in range(100):
+                        if captured.exists() and captured.stat().st_size: break
+                        time.sleep(.03)
+                    args = captured.read_text(encoding="utf-8-sig").splitlines()
+                    assert window["session"] in args, args
+                    if engine == "zcode":
+                        assert "--resume" in args and window["session"] == "sess_fixture1"
+                        config = state / "engine-profiles" / window["id"] / ".zcode/cli/config.json"
+                        server = json.loads(config.read_text())["mcp"]["servers"]["lx_collab"]
+                        assert "env" not in server and not (project / ".zcode").exists()
+                    else:
+                        assert args[0] == ("--resume" if iteration else "--session-id")
+                        server = json.loads(args[args.index("--mcp-config")+1])["mcpServers"]["lx_collab"]
+                        if engine == "qwen": assert "env" not in server
+                        else: assert server["env"]["LX_P0_WINDOW_GRANT"] == "${LX_P0_WINDOW_GRANT}"
+                    assert server["args"][-4:] == ["workbench-mcp", str(state), "--notify-port", str(urlsplit(base).port)]
+                assert http(base, route + "/stop", method="POST")[0] == 204
+                if iteration == 0:
+                    if engine != "traecli": captured.unlink()
+                    assert http(base, route + "/start", method="POST")[0] == 204
+
+
 def verify_native(executable, directory):
     compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework/v4.0.30319/csc.exe"
     fixture = directory / "engine.exe"
     subprocess.run([compiler, "/nologo", "/out:" + str(fixture),
                     Path(__file__).with_name("WorkbenchEngineFixture.cs")], check=True)
+    verify_new_engines(executable, directory, fixture)
     verify_install(executable, directory, fixture)
     verify_ff(executable, directory, fixture)
     snapshots = directory / "quota.json"

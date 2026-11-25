@@ -217,6 +217,8 @@ const [base, , root] = process.argv.slice(2);
       },60);
     });
     await page.locator("#new-agent").click();
+    assert.deepEqual(await page.locator("#agent-engine input").evaluateAll(items => items.map(item => item.value)),
+      ["codex", "copilot", "claude", "codebuddy", "traecli", "zcode", "qwen"]);
     await page.locator("#agent-name").pressSequentially("create-agent-latency-test",{delay:45});
     const available = await page.locator("#create-agent").isEnabled();
     await page.waitForTimeout(1100);

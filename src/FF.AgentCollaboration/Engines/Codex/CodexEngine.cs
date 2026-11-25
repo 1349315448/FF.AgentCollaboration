@@ -4,7 +4,7 @@ using FF.AgentCollaboration.Infrastructure.Files;
 
 namespace FF.AgentCollaboration.Engines;
 
-internal sealed class CodexEngine(string cwd) : RpcEngine
+internal sealed class CodexEngine(string cwd, string executable = "codex") : RpcEngine
 {
     internal override EngineCapabilities Capabilities => Profile;
     private static readonly EngineCapabilities Profile = new("审批策略",
@@ -13,7 +13,7 @@ internal sealed class CodexEngine(string cwd) : RpcEngine
 
     internal async Task Start(EngineMcp? mcp, CancellationToken ct)
     {
-        Connect(new RpcPipe(EngineExecutable.FindExecutable("codex"), ["app-server", "--listen", "stdio://"], cwd, mcp?.Grant));
+        Connect(new RpcPipe(EngineExecutable.FindExecutable(executable), ["app-server", "--listen", "stdio://"], cwd, mcp?.Grant));
         await Rpc.Request("initialize", new { clientInfo = Client, capabilities = new { experimentalApi = true } }, ct);
         await Rpc.Notify("initialized", ct);
     }
@@ -76,7 +76,7 @@ internal sealed class CodexEngine(string cwd) : RpcEngine
         var credits = unlimited || !string.IsNullOrWhiteSpace(balance) ? new QuotaCredits(balance, unlimited) : null;
         var timestamp = DateTimeOffset.UtcNow;
         return primary == null && secondary == null && credits == null
-            ? new(false, "Codex 未返回账号额度", CheckedAt: timestamp)
+            ? new(false, $"{executable} 未返回账号额度", CheckedAt: timestamp)
             : new(true, null, primary, secondary, credits, timestamp);
     }
 
@@ -106,8 +106,9 @@ internal sealed class CodexEngine(string cwd) : RpcEngine
 
     protected override bool ProbeWriter(string id)
     {
-        string home = Environment.GetEnvironmentVariable("CODEX_HOME") ??
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        bool trae = executable == "traecli";
+        string home = Environment.GetEnvironmentVariable(trae ? "TRAE_HOME" : "CODEX_HOME") ??
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), trae ? ".trae" : ".codex");
         string path = Path.Combine(home, "thread-writer-locks", id + ".lock");
         using var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
         if (OperatingSystem.IsWindows()) file.Lock(0, 1);
@@ -120,7 +121,7 @@ internal sealed class CodexEngine(string cwd) : RpcEngine
         var reply = source == null ? await Rpc.Request("thread/start", new { cwd, model }, ct)
             : await Rpc.Request("thread/fork", new { threadId = source, cwd, model }, ct);
         string? id = (string?)reply["thread"]?["id"];
-        if (!Guid.TryParse(id, out _) || id == source) throw new WorkbenchError("Codex 未返回独立的会话编号", WorkbenchFailure.Unavailable);
+        if (!Guid.TryParse(id, out _) || id == source) throw new WorkbenchError($"{executable} 未返回独立的会话编号", WorkbenchFailure.Unavailable);
         await Rpc.Request("thread/name/set", new { threadId = id, name = title }, ct);
         return id;
     }

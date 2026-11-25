@@ -29,6 +29,23 @@ class WorkbenchEngineFixture
     static int Main(string[] args)
     {
         if (args.Length == 1 && args[0] == "--version") { Console.WriteLine("fixture 2.1"); return 0; }
+        if (args.Length > 1 && args[0] == "app-server" && args[1] == "--stdio")
+        {
+            string create = Console.ReadLine();
+            if (create.Contains("jsonrpc") || !create.Contains("createSession")) return 1;
+            Console.WriteLine("{\"id\":1,\"result\":{\"status\":\"accepted\",\"result\":{\"sessionId\":\"sess_fixture1\"}}}");
+            if (!Console.ReadLine().Contains("renameSession")) return 1;
+            Console.WriteLine("{\"id\":2,\"result\":{\"status\":\"accepted\"}}");
+            return 0;
+        }
+        if (args.Length > 1 && args[0] == "--cwd")
+        {
+            string config = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE"), ".zcode", "cli", "config.json");
+            if (!File.Exists(config) || !File.ReadAllText(config).Contains("lx_collab")) return 1;
+            File.WriteAllLines("zcode-launch.txt", args);
+            Thread.Sleep(120000);
+            return 0;
+        }
         if (Array.IndexOf(args, "--mcp-config") >= 0)
         {
             File.WriteAllLines("claude-args.txt", args);

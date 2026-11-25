@@ -106,7 +106,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         string? mode = EmptyToNull(request.Mode);
 
         var window = new AgentWindow(Guid.NewGuid().ToString("N"), name, engineName, project, model, request.ForkSession ? null : session, effort, mode,
-            AutoReceive: true, Online: false, TopicId: topic.Id);
+            AutoReceive: EngineNames.HasPromptObserver(engineName), Online: false, TopicId: topic.Id);
         await lifecycle.WaitAsync(ct);
         try
         {
@@ -194,7 +194,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             newTitle = state.Topic(window.TopicId).Name + "-" + window.Name;
             using var timeout = SessionCatalog.Deadline(ct);
             string id = await engine.NewSession(newTitle, window.Model, forkSource, timeout.Token);
-            if (id == forkSource || !Guid.TryParse(id, out _)) throw new WorkbenchError("引擎未返回独立的会话编号", WorkbenchFailure.Unavailable);
+            if (id == forkSource || !engine.ValidSessionId(id)) throw new WorkbenchError("引擎未返回独立的会话编号", WorkbenchFailure.Unavailable);
             window = window with { Session = id, SessionTitle = newTitle };
         }
         else if (window.SessionTitle == null)
@@ -215,6 +215,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         var grant = WorkbenchStore.NewGrant();
         var mcp = new EngineMcp(Root, "workbench-mcp", grant, CollaborationTools.Names, events.NotifyPort);
         var arguments = engine.NativeArguments(window, mcp, newTitle, forkSource);
+        var environment = engine.TerminalEnvironment(window, mcp);
         if (terminals.TryGetValue(window.Id, out var previous))
         {
             state.Offline(window.Id);
@@ -225,7 +226,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         try
         {
             terminals[window.Id] = new TerminalSession(EngineExecutable.FindExecutable(window.Engine), arguments,
-                ProjectFolders.Resolve(window.Project), grant, 100, 30, events.Changed);
+                ProjectFolders.Resolve(window.Project), grant, 100, 30, events.Changed, environment);
             return window with { Online = true };
         }
         catch
@@ -263,7 +264,9 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
     internal void Toggle(string id, bool enabled)
     {
         using var state = new WorkbenchStore(Root);
-        state.Window(id);
+        var window = state.Window(id);
+        if (enabled && !EngineNames.HasPromptObserver(window.Engine))
+            throw new WorkbenchError("此引擎请在收件栏点击写入终端");
         state.AutoReceive(id, enabled);
     }
 

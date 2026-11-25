@@ -1,3 +1,5 @@
+import { engineNames } from "../../services/engines";
+
 export function NewAgentDialog() {
   return (
     <dialog id="new-dialog" aria-labelledby="new-title">
@@ -18,9 +20,10 @@ export function NewAgentDialog() {
           <div className="field-pair">
             <div className="field" role="radiogroup" aria-labelledby="engine-label" id="agent-engine">
               <span id="engine-label"><span className="required">*必填</span> 引擎</span>
-              <div className="engine-row"><label><input type="radio" name="engine" value="codex" defaultChecked /> Codex</label><button type="button" className="text-button" data-install="codex" aria-label="安装 Codex" hidden>安装</button></div>
-              <div className="engine-row"><label><input type="radio" name="engine" value="copilot" /> GitHub Copilot</label><button type="button" className="text-button" data-install="copilot" aria-label="安装 GitHub Copilot" hidden>安装</button></div>
-              <div className="engine-row"><label><input type="radio" name="engine" value="claude" /> Claude Code</label><button type="button" className="text-button" data-install="claude" aria-label="安装 Claude Code" hidden>安装</button></div>
+              {Object.entries(engineNames).map(([id, label]) => <div className="engine-row" key={id}>
+                <label><input type="radio" name="engine" value={id} defaultChecked={id === "codex"} /> {label}</label>
+                <button type="button" className="text-button" data-install={id} aria-label={"安装 " + label} hidden>安装</button>
+              </div>)}
             </div>
             <label className="field"><span><span className="required">*必填</span> 会话</span><select id="session-source"><option value="new">新建</option><option value="latest" hidden disabled>恢复最近会话</option><option value="history">恢复已有会话</option></select></label>
           </div>

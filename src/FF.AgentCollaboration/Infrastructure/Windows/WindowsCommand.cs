@@ -12,7 +12,7 @@ internal static class WindowsCommand
         return Find(Environment.GetEnvironmentVariable("PATH"), names);
     }
 
-    private static string? Find(string? paths, string[] names)
+    private static string? Find(string? paths, string[] names, Func<string, bool>? accept = null)
     {
         foreach (string dir in (paths ?? "").Split(Path.PathSeparator))
         {
@@ -21,16 +21,19 @@ internal static class WindowsCommand
             foreach (string name in names)
             {
                 string path = Path.Combine(folder, name);
-                if (File.Exists(path)) return path;
+                if (File.Exists(path) && (accept == null || accept(path))) return path;
             }
         }
         return null;
     }
 
     // 安装程序可更新用户/系统 PATH，正在运行的宿主仍持有旧副本。
-    internal static string? Dependency(params string[] names) => OnPath(names) ??
-        Find(Environment.ExpandEnvironmentVariables(Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User) ?? ""), names) ??
-        Find(Environment.ExpandEnvironmentVariables(Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine) ?? ""), names);
+    internal static string? Dependency(params string[] names) => Dependency(null, names);
+
+    internal static string? Dependency(Func<string, bool>? accept, params string[] names) =>
+        Find(Environment.GetEnvironmentVariable("PATH"), names, accept) ??
+        Find(Environment.ExpandEnvironmentVariables(Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User) ?? ""), names, accept) ??
+        Find(Environment.ExpandEnvironmentVariables(Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine) ?? ""), names, accept);
 
     internal static ProcessStartInfo Resolve(string executable, IReadOnlyList<string> arguments)
     {
@@ -43,7 +46,7 @@ internal static class WindowsCommand
             if (File.Exists(binary)) executable = binary;
             else if (File.Exists(js)) executable = js;
         }
-        if (Path.GetExtension(executable).Equals(".js", StringComparison.OrdinalIgnoreCase))
+        if (Path.GetExtension(executable).ToLowerInvariant() is ".js" or ".mjs" or ".cjs")
         {
             args.Insert(0, executable);
             string local = Path.Combine(directory, "node.exe");

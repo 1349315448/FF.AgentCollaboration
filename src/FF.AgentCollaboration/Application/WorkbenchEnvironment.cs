@@ -12,7 +12,7 @@ internal sealed record HealthItem(string Id, string Name, bool Ready, string Des
 
 internal static class WorkbenchEnvironment
 {
-    internal static readonly string[] Engines = ["codex", "copilot", "claude"];
+    internal static string[] Engines => EngineNames.All;
 
     internal static async Task<object> EngineDetails(string engine, CancellationToken ct)
     {

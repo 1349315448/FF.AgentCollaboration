@@ -13,7 +13,7 @@
 | MCP | `Presentation/Mcp/`、`Application/HandoffService.cs` | 解析 stdio 调用，按窗口授权发送、重发、读取交接文档 |
 | 领域模型与规则 | `Domain/` | 话题、窗口、收件、快捷指令及消息文本格式。领域代码只依赖标准库 |
 | 窗口与会话 | `Application/Workbench.cs`、`Application/SessionCatalog.cs` | 创建、恢复、切换、释放窗口，汇总状态，查询历史、模型和额度 |
-| 原生引擎 | `Engines/Codex/`、`Engines/Copilot/`、`Engines/Claude/` | 将引擎统一接口转换为各自的启动参数、协议请求和历史操作 |
+| 原生引擎 | `Engines/` 下的各 CLI 适配器 | 将引擎统一接口转换为各自的启动参数、协议请求和历史操作 |
 | SQLite | `Infrastructure/Storage/` | 模式升级、事务、投递认领、配置与一致性备份。按窗口、收件、偏好和话题分别维护 SQL |
 | 终端与文件 | `Infrastructure/Terminal/`、`Infrastructure/Windows/`、`Infrastructure/Files/` | 管理 ConPTY 与进程树、回放终端输出、校验路径、读写归档 |
 | 浏览器 | 仓库根目录的 `web/src/` | React 组件负责工作台界面。`store/workbenchStore.ts` 保存快照和话题布局，`services/terminalRegistry.ts` 按窗口 ID 管理 xterm 与 WebSocket。`runtime/terminal.js` 处理 ConPTY 字节流、提示符和提交确认 |
@@ -25,7 +25,9 @@
 
 工作台通过 `GET /api/engines/capabilities` 读取各引擎的模式、会话操作、模型与推理选项支持。适配器声明能力，建窗表单和会话抽屉使用同一份清单。动态模型、历史和额度仍通过各自接口读取。额度的 `status` 区分可用、无限额、不支持和暂时不可读。
 
-**打开窗口。** HTTP 接收建窗请求，工作台服务验证项目、话题和历史绑定。对应引擎生成新会话或分支的原生参数并注入窗口 MCP 授权。终端层启动进程，浏览器通过 WebSocket 重连同一窗格。修改某个 CLI 的参数或协议字段时，从该引擎的适配器开始。Codex 使用 app-server，Copilot 使用 ACP，Claude 使用原生 CLI 和本地会话历史。
+**打开窗口。** HTTP 接收建窗请求，工作台服务验证项目、话题和历史绑定。对应引擎生成新会话或分支的原生参数并注入窗口 MCP 授权。终端层启动进程，浏览器通过 WebSocket 重连同一窗格。Codex 与 TRAE CLI 2 共用 app-server 协议。Copilot 使用 ACP，Claude 和 CodeBuddy 读取项目会话文件，千问使用 `qwen sessions`。ZCode 使用自己的 app-server 协议创建、命名和查询会话，再用 `--resume` 打开终端。
+
+ZCode 的窗口专属 MCP 配置位于工作台数据目录的 `engine-profiles/<window-id>/`。窗格沿用用户的模型凭据、会话库和项目配置，独立的用户级配置包含工作台 MCP 和会话库位置。窗口授权只通过进程环境传递。
 
 **发送交接。** MCP 从进程环境取窗口授权，应用服务校验收件地址、正文、摘要和重发参数。存储层在同一事务中核对身份、解析目标、登记附件和消息。写终端前先把消息从 `pending` 认领为 `writing`，再根据原生输入状态记录结果。只有仍处于 `pending` 的消息可重新认领。若宿主在提交期间退出，下次启动将其标为待核对。首次看到新消息时，页面播放一次交接动画。信封从发件方指尖沿弧线旋转，水平滑入收件方邮箱。
 

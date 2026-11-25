@@ -2,7 +2,7 @@ import { request } from "../services/api";
 import { byId, feedback, folderName, setBusy } from "./dom.js";
 import { openFolders } from "./folders.js";
 import { focusAgent } from "./layout.js";
-import { engineNames } from "./pane.js";
+import { engineNames, installGuides } from "../services/engines";
 import { loadQuota, quotas } from "./quota.js";
 import { isDialogOpen, selectedProject, selectedTopicId, setSelectedProjectPath, snapshot } from "../store/workbenchStore";
 import { openTopicDialog, selectProject, selectedTopic } from "./topics.js";
@@ -114,9 +114,10 @@ async function loadCatalogs() {
     if (controller.signal.aborted) return;
     for (const button of byId("agent-engine").querySelectorAll("[data-install]")) {
       const id = button.dataset.install;
+      button.closest(".engine-row").hidden = !Object.hasOwn(installed, id);
       button.hidden = installed[id];
       button.disabled = installingEngines.has(id);
-      button.textContent = button.disabled ? "安装中…" : "安装";
+      button.textContent = button.disabled ? "安装中…" : installGuides[id] ? "安装指南" : "安装";
     }
     profile = capabilities[engine] || previousHostOptions(engine, installed);
     const actions = profile.sessionActions;
@@ -196,6 +197,7 @@ byId("agent-engine").addEventListener("click", async event => {
   const button = event.target.closest("[data-install]");
   if (!button || button.disabled) return;
   const engine = button.dataset.install;
+  if (installGuides[engine]) { window.open(installGuides[engine], "_blank", "noopener,noreferrer"); return; }
   if (selectedEngine() !== engine) {
     byId("new-form").elements.engine.value = engine;
     setSessionSource();

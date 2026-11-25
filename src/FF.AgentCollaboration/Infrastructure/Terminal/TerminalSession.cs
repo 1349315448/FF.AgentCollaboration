@@ -56,7 +56,8 @@ internal sealed class TerminalSession : IDisposable
     private readonly Timer? quietTimer;
     private (bool Online, bool InputReady, string Activity)? lastReported;
 
-    internal TerminalSession(string executable, IReadOnlyList<string> arguments, string cwd, string grant, int cols, int rows, Action changed)
+    internal TerminalSession(string executable, IReadOnlyList<string> arguments, string cwd, string grant, int cols, int rows, Action changed,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         this.changed = changed;
         columns = cols;
@@ -79,7 +80,7 @@ internal sealed class TerminalSession : IDisposable
             input = new FileStream(hostInput, FileAccess.Write, bufferSize: 1);
             output = new FileStream(hostOutput, FileAccess.Read, bufferSize: 4096);
             drain = Task.Factory.StartNew(Drain, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-            process = Launch(executable, arguments, cwd, grant);
+            process = Launch(executable, arguments, cwd, grant, environment);
             lock (outputLock) quietTimer = new Timer(_ => QuietElapsed(), null, Quiet, Timeout.InfiniteTimeSpan);
         }
         catch
@@ -595,7 +596,8 @@ internal sealed class TerminalSession : IDisposable
         }
     }
 
-    private SafeProcessHandle Launch(string executable, IReadOnlyList<string> arguments, string cwd, string grant)
+    private SafeProcessHandle Launch(string executable, IReadOnlyList<string> arguments, string cwd, string grant,
+        IReadOnlyDictionary<string, string>? overrides)
     {
         nint size = 0;
         Native.InitializeProcThreadAttributeList(0, 2, 0, ref size);
@@ -618,6 +620,8 @@ internal sealed class TerminalSession : IDisposable
             var variables = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (System.Collections.DictionaryEntry variable in Environment.GetEnvironmentVariables())
                 variables[(string)variable.Key] = (string)variable.Value!;
+            if (overrides != null)
+                foreach (var pair in overrides) variables[pair.Key] = pair.Value;
             variables["FF_P0_WINDOW_GRANT"] = variables["LX_P0_WINDOW_GRANT"] = grant;
             variables["TERM"] = "xterm-256color";
             environment = Marshal.StringToHGlobalUni(string.Join('\0', variables.Select(pair => $"{pair.Key}={pair.Value}")) + "\0\0");

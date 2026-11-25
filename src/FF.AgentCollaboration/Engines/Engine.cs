@@ -10,10 +10,16 @@ internal abstract class Engine : IDisposable
         "codex" => new CodexEngine(cwd),
         "copilot" => new CopilotEngine(cwd),
         "claude" => new ClaudeEngine(cwd),
+        "codebuddy" => new CodeBuddyEngine(cwd),
+        "qwen" => new QwenEngine(cwd),
+        "traecli" => new CodexEngine(cwd, name),
+        "zcode" => new ZCodeEngine(cwd),
         _ => throw new WorkbenchError("请选择受支持的引擎")
     };
 
     internal abstract EngineCapabilities Capabilities { get; }
+    internal virtual bool ValidSessionId(string id) => Guid.TryParse(id, out _);
+    internal virtual IReadOnlyDictionary<string, string>? TerminalEnvironment(AgentWindow window, EngineMcp mcp) => null;
     internal abstract Task<IReadOnlyList<ModelChoice>> ListModels(CancellationToken ct);
     internal abstract Task<EngineQuota> ReadQuota(CancellationToken ct);
     internal abstract Task<IReadOnlyList<HistorySession>> ListSessions(CancellationToken ct, bool archived);

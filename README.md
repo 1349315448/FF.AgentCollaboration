@@ -15,8 +15,14 @@ FF.AgentCollaboration 在 Windows 本机运行，把多个 AI 命令行终端放
 | OpenAI Codex | `codex` |
 | GitHub Copilot CLI | `copilot` |
 | Claude Code | `claude` |
+| 腾讯 CodeBuddy Code | `codebuddy` |
+| TRAE CLI 2 | `traecli` |
+| 智谱 ZCode（独立交互式 CLI） | `zcode` |
+| 千问 Qwen Code | `qwen` |
 
-只需安装并登录你打算使用的 CLI。工作台左上角的「⚙ 工作台配置」可以检查安装状态，也能安装缺少的引擎。
+只需安装并登录你打算使用的 CLI。在「⚙ 工作台配置」检查安装状态。CodeBuddy 和千问可以通过 npm 安装，npm 版千问需要 Node.js 22 或更高版本。TRAE 和 ZCode 提供官方安装指南。使用智谱时请选择带终端界面的独立 CLI。如果从官方源码构建，可将环境变量 `FF_ZCODE_EXE` 指向构建好的 CLI 入口。
+
+CodeBuddy、千问和 ZCode 的收件栏目前使用「写入终端」手动接收。三者均可通过窗口专属 MCP 向其他 Agent 发消息。千问和 ZCode 在原生终端中选择模型。这三个引擎的工作台额度显示为「暂不支持」。
 
 ## 启动
 
@@ -52,3 +58,7 @@ FF.AgentCollaboration 在 Windows 本机运行，把多个 AI 命令行终端放
 | 继续之前的工作 | 点「会话记录」查看历史。电源键可以关闭或重开终端，Agent 配置会保留。 |
 
 开发者可继续阅读[代码结构与验证说明](docs/architecture.md)。Agent 之间传文件、交接任务的更多示例见[协作规范](src/FF.AgentCollaboration/Skills/ff-agent-collab/SKILL.md)。
+
+## 开源许可
+
+本项目自有代码按 [Apache License 2.0](LICENSE) 发布。随包分发的第三方组件保留各自的许可证。

@@ -2,7 +2,7 @@ import { request } from "../services/api";
 import { byId, node } from "./dom.js";
 import { openFolders } from "./folders.js";
 import { applyMentionShortcut, mentionChord } from "./mentions.js";
-import { engineNames } from "./pane.js";
+import { engineNames, installGuides } from "../services/engines";
 import { mentionShortcut, snapshot } from "../store/workbenchStore";
 import { refresh, refreshing } from "./workbench.js";
 
@@ -55,7 +55,8 @@ async function settingsEngines() {
   const engines = await request("/engines?detail=true");
   if (!Array.isArray(engines)) return;
   byId("settings-engines").replaceChildren(...engines.map(item => {
-    const action = settingsButton(item.installed ? "重新检测" : "一键安装", async button => {
+    const action = settingsButton(item.installed ? "重新检测" : installGuides[item.engine] ? "安装指南" : "一键安装", async button => {
+      if (!item.installed && installGuides[item.engine]) { window.open(installGuides[item.engine], "_blank", "noopener,noreferrer"); return; }
       if (!item.installed) {
         button.textContent = "正在安装…";
         try { await request("/engines/" + item.engine + "/install", {method:"POST"}); }

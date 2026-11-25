@@ -19,11 +19,27 @@ internal static class EngineInstallation
 
     internal static async Task Install(string name, CancellationToken cancellation)
     {
-        string package = PackageId(name);
         await InstallationLock.WaitAsync(cancellation);
         try
         {
             if (EngineExecutable.TryFindExecutable(name) != null) return;
+            if (name is "traecli" or "zcode")
+                throw new WorkbenchError("请按此引擎的官方安装指南安装 Windows 交互式 CLI，再重新检测");
+            if (name is "codebuddy" or "qwen")
+            {
+                string installer = WindowsCommand.Dependency("npm.cmd", "npm.exe") ?? throw new WorkbenchError("请先安装 Node.js 和 npm");
+                if (name == "qwen")
+                {
+                    string? node = await WindowsCommand.Version(WindowsCommand.Dependency("node.exe"), cancellation);
+                    if (!Version.TryParse(node?.Trim().TrimStart('v'), out var version) || version.Major < 22)
+                        throw new WorkbenchError("npm 版 Qwen Code 需要 Node.js 22 或更高版本。请先升级 Node.js，或安装千问官方独立 CLI。");
+                }
+                string module = name == "qwen" ? "@qwen-code/qwen-code" : "@tencent-ai/codebuddy-code";
+                int result = await Run(installer, ["install", "-g", module]);
+                if (result == 0 && EngineExecutable.TryFindExecutable(name) != null) return;
+                throw new WorkbenchError($"npm 安装后未检测到 {name}（退出码 {result}）", WorkbenchFailure.Unavailable);
+            }
+            string package = PackageId(name);
             string? winget = Winget();
             int? code = null;
             if (winget != null)

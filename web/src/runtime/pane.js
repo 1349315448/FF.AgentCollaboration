@@ -13,7 +13,7 @@ import { layout, mentionShortcut } from "../store/workbenchStore";
 import { fitPane, replayReports, sendBytes, syncTerminal } from "./terminal.js";
 import { refresh, refreshing } from "./workbench.js";
 
-const engineNames = { codex: "Codex", copilot: "GitHub Copilot", claude: "Claude Code" };
+import { engineNames, manualInboxEngines } from "../services/engines";
 const bytes = new TextEncoder();
 function makePane(agent) {
   const { root, element, term, fit, viewport, slot } = mountTerminal(byId("panes"));
@@ -171,7 +171,10 @@ function updatePane(pane, view) {
   const {agent, inbox, activity} = view;
   pane.element.dataset.activity = activity;
   pane.element.setAttribute("aria-label", "@" + agent.name + " 终端");
-  pane.element.querySelector(".auto-receive input").checked = agent.autoReceive;
+  const autoReceive = pane.element.querySelector(".auto-receive input");
+  autoReceive.checked = agent.autoReceive;
+  autoReceive.disabled = manualInboxEngines.has(agent.engine);
+  autoReceive.parentElement.title = autoReceive.disabled ? "请在收件栏点击写入终端" : "";
   if (!agent.online) pane.element.querySelector(".shortcut-menu:popover-open")?.hidePopover();
   const message = inbox.find(item => item.id === pane.selectedMessage) || inbox.find(item => item.state === "pending") || inbox[0];
   pane.message = message;

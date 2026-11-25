@@ -48,7 +48,7 @@ internal static class ClaudeHistory
     [DllImport("kernel32.dll", EntryPoint = "GetShortPathNameW", CharSet = CharSet.Unicode)]
     private static extern uint GetShortPathName(string path, StringBuilder result, int size);
 
-    private static HistorySession? Read(string file, string project, CancellationToken ct)
+    internal static HistorySession? Read(string file, string project, CancellationToken ct)
     {
         string id = Path.GetFileNameWithoutExtension(file);
         if (!Guid.TryParseExact(id, "D", out _)) return null;
@@ -90,9 +90,9 @@ internal static class ClaudeHistory
         return sessions;
     }
 
-    internal static HashSet<string> ActiveSessions()
+    internal static HashSet<string> ActiveSessions(string? home = null)
     {
-        string directory = Path.Combine(Home, "sessions");
+        string directory = Path.Combine(home ?? Home, "sessions");
         var active = new HashSet<string>(StringComparer.Ordinal);
         if (!Directory.Exists(directory)) return active;
         foreach (string file in Directory.EnumerateFiles(directory, "*.json"))

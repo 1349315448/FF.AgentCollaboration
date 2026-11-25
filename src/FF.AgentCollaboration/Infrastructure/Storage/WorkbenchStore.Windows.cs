@@ -15,13 +15,13 @@ internal sealed partial class WorkbenchStore
     // Copilot 旧表沿用原 ID。Claude 用独立前缀以免两个引擎碰巧使用相同 UUID。
     internal HashSet<string> ArchivedSessions(string engine)
     {
-        string prefix = engine == "claude" ? "claude:" : "";
+        string prefix = engine == "copilot" ? "" : engine + ":";
         return Read("SELECT session FROM copilot_session_archives", row => row.GetString(0))
             .Where(id => id.StartsWith(prefix, StringComparison.Ordinal)).Select(id => id[prefix.Length..]).ToHashSet(StringComparer.Ordinal);
     }
     internal void SetArchive(string engine, string id, bool archived) =>
         Exec(archived ? "INSERT OR IGNORE INTO copilot_session_archives VALUES($p0)" :
-            "DELETE FROM copilot_session_archives WHERE session=$p0", engine == "claude" ? "claude:" + id : id);
+            "DELETE FROM copilot_session_archives WHERE session=$p0", engine == "copilot" ? id : engine + ":" + id);
 
     internal List<AgentWindow> Windows() => Read($"SELECT {AgentColumns} FROM windows WHERE closed=0 ORDER BY rowid", Agent);
     internal AgentWindow Window(string id) => Read($"SELECT {AgentColumns} FROM windows WHERE id=$p0 AND closed=0", Agent, id)

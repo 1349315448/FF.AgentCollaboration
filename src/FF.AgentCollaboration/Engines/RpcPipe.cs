@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Engines;
 
@@ -10,23 +11,19 @@ internal sealed class RpcPipe : IDisposable
 {
     private readonly Process child;
     private readonly bool contentLength;
+    private readonly bool bareEnvelope;
     private int nextId;
     internal Action<string, JsonNode?> Notice { get; set; } = (_, _) => { };
-    internal RpcPipe(string executable, IEnumerable<string> args, string cwd, string? grant, bool contentLength = false)
+    internal RpcPipe(string executable, IEnumerable<string> args, string cwd, string? grant, bool contentLength = false,
+        bool bareEnvelope = false)
     {
         this.contentLength = contentLength;
-        var start = new ProcessStartInfo(executable)
-        {
-            WorkingDirectory = cwd,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(false),
-            StandardOutputEncoding = Encoding.UTF8
-        };
-        foreach (string arg in args) start.ArgumentList.Add(arg);
+        this.bareEnvelope = bareEnvelope;
+        var start = WindowsCommand.Resolve(executable, args.ToArray());
+        start.WorkingDirectory = cwd;
+        start.RedirectStandardInput = start.RedirectStandardOutput = start.RedirectStandardError = true;
+        start.StandardInputEncoding = new UTF8Encoding(false);
+        start.StandardOutputEncoding = Encoding.UTF8;
         if (grant != null) start.Environment["FF_P0_WINDOW_GRANT"] = start.Environment["LX_P0_WINDOW_GRANT"] = grant;
         child = Process.Start(start) ?? throw new InvalidOperationException("无法启动引擎");
         // 引擎诊断可能含账号或握手参数，只消费 stderr，协议错误通过 RPC 返回。
@@ -44,7 +41,15 @@ internal sealed class RpcPipe : IDisposable
             await stream.FlushAsync(ct);
             return;
         }
-        await child.StandardInput.WriteLineAsync(JsonSerializer.Serialize(payload).AsMemory(), ct);
+        string line;
+        if (bareEnvelope)
+        {
+            var envelope = JsonSerializer.SerializeToNode(payload)!.AsObject();
+            envelope.Remove("jsonrpc");
+            line = envelope.ToJsonString();
+        }
+        else line = JsonSerializer.Serialize(payload);
+        await child.StandardInput.WriteLineAsync(line.AsMemory(), ct);
         await child.StandardInput.FlushAsync(ct);
     }
     internal Task Notify(string method, CancellationToken ct) => Write(new { jsonrpc = "2.0", method }, ct);
