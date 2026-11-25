@@ -2,7 +2,7 @@ import { request } from "../services/api";
 import { byId, node } from "./dom.js";
 import { openFolders } from "./folders.js";
 import { applyMentionShortcut, mentionChord } from "./mentions.js";
-import { engineNames, installGuides } from "../services/engines";
+import { engineNames, installGuides, updateGuides } from "../services/engines";
 import { mentionShortcut, snapshot } from "../store/workbenchStore";
 import { refresh, refreshing } from "./workbench.js";
 
@@ -51,23 +51,60 @@ function statusRow(title, ok, status, detail, action) {
   return row;
 }
 
-async function settingsEngines() {
-  const engines = await request("/engines?detail=true");
-  if (!Array.isArray(engines)) return;
-  byId("settings-engines").replaceChildren(...engines.map(item => {
-    const action = settingsButton(item.installed ? "重新检测" : installGuides[item.engine] ? "安装指南" : "一键安装", async button => {
-      if (!item.installed && installGuides[item.engine]) { window.open(installGuides[item.engine], "_blank", "noopener,noreferrer"); return; }
-      if (!item.installed) {
-        button.textContent = "正在安装…";
-        try { await request("/engines/" + item.engine + "/install", {method:"POST"}); }
-        finally { button.textContent = "一键安装"; }
-      }
-      await settingsEngines();
+function engineRow(engine, installed) {
+  const title = engine === "codex" ? "OpenAI Codex" : engineNames[engine];
+  const actions = node("div", "engine-actions");
+  const row = statusRow(title + " · " + engine, installed, installed ? "已安装" : "未安装", "", actions);
+  const label = row.querySelector(".health-title span"), detail = row.querySelector("small");
+  const release = node("small", "engine-release", "正在查询版本…");
+  detail.after(release);
+  const url = "/engines/" + engine;
+  function command(kind) {
+    const updating = kind === "update";
+    return settingsButton(updating ? "更新" : "一键安装", async button => {
+      for (const action of actions.children) action.disabled = true;
+      button.textContent = updating ? "更新中…" : "安装中…";
+      try {
+        await request(url + "/" + kind, {method:"POST"});
+        settingsNote(title + (updating ? " 已更新" : " 已安装"));
+      } finally { await detect(false); }
     });
-    const title = item.engine === "codex" ? "OpenAI Codex" : engineNames[item.engine];
-    return statusRow(title + " · " + item.engine, item.installed, item.installed ? "已安装" : "未安装",
-      item.installed ? (item.version || item.diagnostic || "版本暂不可读") + " · " + item.path : "", action);
-  }));
+  }
+  async function detect(refresh) {
+    actions.replaceChildren();
+    release.textContent = "正在查询版本…";
+    release.dataset.status = "";
+    try {
+      const result = await request(url + "/release" + (refresh ? "?refresh=true" : ""));
+      const item = result.installed;
+      installed = item.installed;
+      label.textContent = installed ? "已安装" : "未安装";
+      label.className = installed ? "health-ok" : "health-missing";
+      detail.textContent = installed ? [item.version || item.diagnostic || "版本暂不可读", item.path].filter(Boolean).join(" · ") : "";
+      const suffix = installed ? {available:" · 有更新", current:" · 已是最新", ahead:" · 本地版本较新", unknown:" · 当前版本未识别"}[result.status] || "" : "";
+      release.textContent = result.latestVersion ? "最新 " + result.latestVersion + suffix : "最新版本暂不可用";
+      release.dataset.status = result.status;
+      if (installed && result.status === "available") {
+        if (result.canUpdate) actions.append(command("update"));
+        else {
+          const guide = installGuides[engine] || updateGuides[engine];
+          if (guide) actions.append(settingsButton("更新指南 ↗", () => window.open(guide, "_blank", "noopener,noreferrer")));
+        }
+      }
+    } catch { release.textContent = "版本检测暂不可用"; }
+    if (!installed) {
+      const guide = installGuides[engine];
+      actions.append(guide ? settingsButton("安装指南", () => window.open(guide, "_blank", "noopener,noreferrer")) : command("install"));
+    }
+    actions.append(settingsButton("重新检测", () => detect(true)));
+  }
+  void detect(false);
+  return row;
+}
+
+async function settingsEngines() {
+  const installed = await request("/engines");
+  byId("settings-engines").replaceChildren(...Object.entries(installed).map(([engine, present]) => engineRow(engine, present)));
 }
 
 async function settingsEnvironment() {

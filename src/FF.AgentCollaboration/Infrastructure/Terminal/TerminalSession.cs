@@ -39,7 +39,7 @@ internal sealed class TerminalSession : IDisposable
     private long clearedAtRevision = -1;
     private long keyboardVersion;
     private readonly long launchedAt = Stopwatch.GetTimestamp();
-    private readonly Dictionary<int, (long Revision, string Screen, string? Draft, bool Idle)> screens = new();
+    private readonly Dictionary<int, (long Revision, string Screen, string? Draft, bool Idle, string? ApprovalDraft)> screens = new();
     private long? awaitingScreenSince;
     private bool bracketedPasteEnabled;
     private bool draftMayContainText;
@@ -53,13 +53,15 @@ internal sealed class TerminalSession : IDisposable
     private bool ended;
     private static readonly TimeSpan Quiet = TimeSpan.FromMilliseconds(1500);
     private readonly Action changed;
+    private readonly bool workingWithoutPrompt;
     private readonly Timer? quietTimer;
     private (bool Online, bool InputReady, string Activity)? lastReported;
 
-    internal TerminalSession(string executable, IReadOnlyList<string> arguments, string cwd, string grant, int cols, int rows, Action changed,
+    internal TerminalSession(string engine, string executable, IReadOnlyList<string> arguments, string cwd, string grant, int cols, int rows, Action changed,
         IReadOnlyDictionary<string, string>? environment = null)
     {
         this.changed = changed;
+        workingWithoutPrompt = engine is "codex" or "copilot";
         columns = cols;
         lines = rows;
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763))
@@ -99,6 +101,10 @@ internal sealed class TerminalSession : IDisposable
     }
 
     internal string Generation { get; } = Guid.NewGuid().ToString("N");
+    // 调用方在终端释放前注销等待。登录 CLI 可能先退出，ConPTY 的输出管道仍然打开。
+    internal WaitHandle ExitSignal() => new EventWaitHandle(false, EventResetMode.ManualReset) {
+        SafeWaitHandle = new SafeWaitHandle(process.DangerousGetHandle(), ownsHandle:false)
+    };
     internal uint? ExitCode
     {
         get
@@ -193,14 +199,14 @@ internal sealed class TerminalSession : IDisposable
     }
 
     internal void ObservePrompt(int viewerId, long observedRevision, bool emptyPastePrompt, bool bracketedPaste,
-        long? clearedDraft, string? retryDraft, string? screen, string? draftId)
+        long? clearedDraft, string? retryDraft, string? screen, string? draftId, string? approvalDraft)
     {
         lock (outputLock)
         {
             if (!viewers.ContainsKey(viewerId)) return;
             if (observedRevision == revision)
             {
-                screens[viewerId] = (revision, screen ?? "unknown", draftId, screen == "clear" && emptyPastePrompt);
+                screens[viewerId] = (revision, screen ?? "unknown", draftId, screen == "clear" && emptyPastePrompt, approvalDraft);
                 awaitingScreenSince = null;
             }
             if (observedRevision == revision && bracketedPaste && retryDraft != null && !emptyPastePrompt)
@@ -275,13 +281,13 @@ internal sealed class TerminalSession : IDisposable
             var visible = screens.Where(p => viewers.ContainsKey(p.Key) && p.Value.Revision >= nextPromptRevision &&
                     (p.Value.Revision == revision || rendering))
                 .Select(p => p.Value).OrderByDescending(s => s.Revision).ThenByDescending(s => s.Screen == "blocked")
-                .ThenByDescending(s => s.Screen == "running").ThenByDescending(s => s.Idle || s.Screen == "draft").FirstOrDefault();
+                .ThenByDescending(s => s.Screen is "running" or "active").ThenByDescending(s => s.Idle || s.Screen is "draft" or "idle").FirstOrDefault();
             string activity = visible.Screen switch
             {
                 "blocked" => "waiting",
-                "running" => "working",
-                "draft" => "idle",
-                _ => visible.Idle || inputReady ? "idle" : "working"
+                "running" or "active" => "working",
+                "draft" or "idle" => "idle",
+                _ => visible.Idle || inputReady || !workingWithoutPrompt ? "idle" : "working"
             };
             return (true, inputReady, activity);
         }
@@ -409,6 +415,44 @@ internal sealed class TerminalSession : IDisposable
             offset = end;
             if (offset < bytes.Length) await Task.Delay(15, ct);
         }
+    }
+
+    internal async Task OpenApprovalMenu(string keys, CancellationToken ct)
+    {
+        await inputLock.WaitAsync(ct);
+        try
+        {
+            lock (outputLock)
+            {
+                if (!CanDeliver(true) || automaticDeliveryInProgress)
+                    throw new WorkbenchError("请在终端待命且输入框为空时切换审批模式", WorkbenchFailure.Conflict);
+                keyboardVersion++;
+                MarkInput();
+            }
+            bool submit = keys.EndsWith('\r');
+            string command = submit ? keys[..^1] : keys;
+            await WriteChunkedAsync(Encoding.UTF8.GetBytes(command), ct);
+            if (submit)
+            {
+                // 回车只发给仍显示这条命令的编辑器。切到原生弹窗后不代替用户确认选项。
+                long started = Stopwatch.GetTimestamp();
+                do
+                {
+                    await Task.Delay(80, ct);
+                    lock (outputLock)
+                    {
+                        if (!Online) throw new WorkbenchError("终端已退出", WorkbenchFailure.Conflict);
+                        if (Stopwatch.GetElapsedTime(started).TotalMilliseconds < 600 ||
+                            !screens.Values.Any(s => s.Revision == revision && s.Screen == "draft" && s.ApprovalDraft == command)) continue;
+                        input.WriteByte(13);
+                        input.Flush();
+                        return;
+                    }
+                } while (Stopwatch.GetElapsedTime(started).TotalSeconds < 2);
+                throw new WorkbenchError("已输入审批命令，请在原生终端确认当前选项", WorkbenchFailure.Conflict);
+            }
+        }
+        finally { inputLock.Release(); }
     }
 
     private static readonly Regex TerminalReports = new(

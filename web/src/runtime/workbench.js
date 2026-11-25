@@ -58,8 +58,8 @@ function normalizeActivities(data) {
     if (!pane || pane.replaying || !view.agent.online || pane.socket?.readyState !== WebSocket.OPEN) continue;
     const screen = observePrompt(pane).screen;
     if (screen === "blocked") view.activity = "waiting";
-    else if (screen === "running") view.activity = "working";
-    else if (screen === "clear" || screen === "draft") view.activity = "idle";
+    else if (screen === "running" || screen === "active") view.activity = "working";
+    else if (screen === "clear" || screen === "draft" || screen === "idle") view.activity = "idle";
   }
   const byTopic = new Map(data.topics.map(t => [t.id, []]));
   for (const view of data.windows) byTopic.get(view.agent.topicId)?.push(view);

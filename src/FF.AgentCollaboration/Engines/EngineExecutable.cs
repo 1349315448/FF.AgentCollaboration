@@ -1,10 +1,44 @@
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Infrastructure.Windows;
+using System.Text.Json;
 
 namespace FF.AgentCollaboration.Engines;
 
 internal static class EngineExecutable
 {
+    internal static string? NpmPrefix(string name, string path)
+    {
+        if (EngineReleases.NpmPackage(name) is not { } package) return null;
+        for (var dir = new FileInfo(path).Directory; dir != null; dir = dir.Parent)
+        {
+            string module = Path.GetFullPath(Path.Combine(dir.FullName, "node_modules", package));
+            string shim = Path.Combine(dir.FullName, name + ".cmd");
+            if (File.Exists(shim) && File.Exists(Path.Combine(module, "package.json")) &&
+                (path.Equals(shim, StringComparison.OrdinalIgnoreCase) || path.StartsWith(module + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
+                return dir.FullName;
+        }
+        return null;
+    }
+
+    internal static async Task<string?> InstalledVersion(string engine, string? path, CancellationToken ct)
+    {
+        if (path != null && NpmPrefix(engine, path) is { } prefix)
+        {
+            string package = EngineReleases.NpmPackage(engine)!;
+            try
+            {
+                using var file = File.OpenRead(Path.Combine(prefix, "node_modules", package, "package.json"));
+                using var metadata = await JsonDocument.ParseAsync(file, cancellationToken: ct);
+                var root = metadata.RootElement;
+                if (root.TryGetProperty("name", out var name) && name.GetString() == package &&
+                    root.TryGetProperty("version", out var version) && version.GetString() is { Length: > 0 } installed)
+                    return installed;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }
+        }
+        return await WindowsCommand.Version(path, ct);
+    }
+
     internal static string FindExecutable(string name) => TryFindExecutable(name)
         ?? throw new FileNotFoundException($"找不到 {name} 原生可执行文件");
 

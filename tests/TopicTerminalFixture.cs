@@ -12,15 +12,20 @@ class TopicTerminalFixture
 
     static void Main(string[] args)
     {
+        if (args.Length > 0 && (args[0] == "login" || args[0] == "auth")) { Environment.ExitCode = WorkbenchEngineFixture.Main(args); return; }
         if (args.Contains("--version")) { Console.WriteLine("fixture 2.1"); return; }
+        if (args.Contains("--help") || args.Contains("--stdio")) { WorkbenchEngineFixture.Main(args); return; }
         if (args.Contains("app-server")) { WorkbenchEngineFixture.AppServer(); return; }
-        if (args.Any(a => a == "--acp" || a == "--headless")) return;
+        if (args.Contains("--headless")) { WorkbenchEngineFixture.Main(args); return; }
+        if (args.Contains("--acp")) { WorkbenchEngineFixture.Main(args); return; }
         Console.InputEncoding = new UTF8Encoding(false);
         Console.OutputEncoding = new UTF8Encoding(false);
         SetConsoleMode(GetStdHandle(-10), 0x200);
         SetConsoleMode(GetStdHandle(-11), 7);
         bool copilot = args.Any(a => a.Contains("--additional-mcp-config"));
         bool claude = args.Contains("--mcp-config");
+        var native = File.Exists("native-prompt.fixture") ? File.ReadAllText("native-prompt.fixture").Trim() : "";
+        bool busy = false;
         var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
         string draft = "";
         bool newline = false;
@@ -42,12 +47,28 @@ class TopicTerminalFixture
                 content = "──────────────────────────\r\n❯ " + draft + "\r\n──────────────────────────\r\n? for shortcuts";
                 cursor = "2;" + (3 + draft.Length);
             }
+            if (native == "qwen" || native == "codebuddy")
+            {
+                string indicator = native == "qwen" ? "⠋ Thinking (12s · esc to cancel)" : "∴ Thinking...";
+                string suggested = draft.Length > 0 ? draft : "\x1b[7m查\x1b[0;2m询回执投递状态\x1b[0m";
+                content = (busy ? indicator : "✓ Worked for 15s") + "\r\n──────────────────────────\r\n> " + suggested +
+                    "\r\n──────────────────────────\r\n" + (native == "qwen" ? "qwen4-max · 1.0m Context 1.9% used" : "hy4flash-free · ? for shortcuts");
+                cursor = "3;" + Math.Min(40,3 + draft.Length);
+            }
+            if (native == "zcode")
+            {
+                content = "╭─ Build ────────────────╮\r\n│ " + (draft.Length > 0 ? draft : "Type a prompt") +
+                    " │\r\n│                        │\r\n│ glm zai | high         │\r\n╰────────────────────────╯\r\n" +
+                    (busy ? "⠋ esc to interrupt" : "7%");
+                cursor = "2;" + Math.Min(40,3 + draft.Length);
+            }
             Console.Write("\x1b[?2004h\x1b[H\x1b[2J" + content + (approval ? "\r\nEnter to select" : "") + "\x1b[" + cursor + "H");
         };
         draw();
         int key;
         while ((key = input.Read()) != -1)
         {
+            if (key == 9) { File.AppendAllText("approval-key.txt", "Tab\n"); continue; }
             if (key == 27)
             {
                 // Consume CSI and OSC as packets; the log distinguishes live replies from stale replay replies.
@@ -64,6 +85,7 @@ class TopicTerminalFixture
                 }
                 if (seq.ToString().EndsWith("R") || seq.ToString().EndsWith("c") || prefix == ']')
                     File.AppendAllText("reports.txt", seq + Environment.NewLine);
+                if (prefix == '[' && seq.ToString() == "Z") File.AppendAllText("approval-key.txt", "Shift+Tab\n");
                 continue;
             }
             if (key == 7) { Console.Write("\x1b[6n\x1b[c\x1b]10;?\x07"); continue; }
@@ -73,7 +95,8 @@ class TopicTerminalFixture
                 for (int i = 0; i < 16; i++) { draw(); System.Threading.Thread.Sleep(250); }
                 continue;
             }
-            if (key == 21 || key == 24) { draft = ""; newline = approval = false; }
+            if (key == 2 && native != "") busy = true;
+            else if (key == 21 || key == 24) { draft = ""; newline = approval = busy = false; }
             else if (key == 13 || key == 10)
             {
                 string mode = File.Exists("mode.txt") ? File.ReadAllText("mode.txt").Trim() : "submit";

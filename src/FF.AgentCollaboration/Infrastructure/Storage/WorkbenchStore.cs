@@ -48,6 +48,9 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
             if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("session_title"))
                 Exec("ALTER TABLE windows ADD COLUMN session_title TEXT");
             if (requestedProject != null) SaveProject(requestedProject);
+            // 这三种引擎在旧版无法勾选自动接收。只升级一次，之后尊重每个窗口的开关。
+            if (Exec("INSERT OR IGNORE INTO settings VALUES('native_inbox_v2','1')") == 1)
+                Exec("UPDATE windows SET auto_receive=1 WHERE closed=0 AND engine IN ('qwen','codebuddy','zcode')");
             InitializeTopics();
             Exec("CREATE TABLE IF NOT EXISTS copilot_session_archives(session TEXT PRIMARY KEY)");
             bool customPaths = CustomPaths;

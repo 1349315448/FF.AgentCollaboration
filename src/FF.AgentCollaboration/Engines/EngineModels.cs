@@ -14,6 +14,7 @@ internal sealed record ModelChoice(string Id, string Name, bool IsDefault, strin
 internal sealed record HistorySession(string Id, string Name, string Project, string? UpdatedAt)
 {
     public bool MayBeInUse { get; init; }
+    public bool NativeInUse { get; init; }
 }
 internal sealed record QuotaWindow(decimal UsedPercent, decimal RemainingPercent, int? WindowDurationMins, long? ResetsAt);
 internal sealed record QuotaCredits(string? Balance, bool Unlimited);

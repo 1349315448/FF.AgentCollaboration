@@ -6,6 +6,7 @@ internal sealed record TerminalInput(string? Text, string? MessageId);
 internal sealed record ChangeSession(bool NewSession, string? Session);
 internal sealed record HistoryAction(string? Session, bool Archived);
 internal sealed record ChangeAutoReceive(bool Enabled);
+internal sealed record OpenApproval(string Terminal);
 internal sealed record RenameAgent(string? Name);
 internal sealed record SelectProject(string? Path);
 

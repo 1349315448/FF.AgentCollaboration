@@ -3,6 +3,7 @@ namespace FF.AgentCollaboration.Domain;
 internal enum WorkbenchFailure
 {
     InvalidInput,
+    LoginRequired,
     Forbidden,
     NotFound,
     Conflict,

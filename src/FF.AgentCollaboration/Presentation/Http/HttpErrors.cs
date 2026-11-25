@@ -9,6 +9,7 @@ internal static class HttpErrors
     internal static int Status(WorkbenchFailure failure) => failure switch
     {
         WorkbenchFailure.Forbidden => StatusCodes.Status403Forbidden,
+        WorkbenchFailure.LoginRequired => StatusCodes.Status401Unauthorized,
         WorkbenchFailure.NotFound => StatusCodes.Status404NotFound,
         WorkbenchFailure.Conflict => StatusCodes.Status409Conflict,
         WorkbenchFailure.Unavailable => StatusCodes.Status503ServiceUnavailable,

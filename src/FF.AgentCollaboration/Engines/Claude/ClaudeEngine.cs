@@ -6,6 +6,14 @@ namespace FF.AgentCollaboration.Engines;
 internal sealed class ClaudeEngine(string cwd) : Engine
 {
     internal override EngineCapabilities Capabilities => Profile;
+    internal override string[] LoginArguments => ["auth", "login"];
+    internal override async Task<EngineAccount> Account(CancellationToken ct)
+    {
+        var (_, output) = await EngineAuthentication.Command("claude", cwd, ["auth", "status"], ct);
+        using var result = JsonDocument.Parse(output);
+        return new(result.RootElement.GetProperty("loggedIn").GetBoolean() ? "authenticated" : "signed-out");
+    }
+    internal override string ApprovalKeys => "\u001b[Z"; // Shift+Tab 切换当前会话的审批模式。
     private static readonly EngineCapabilities Profile = new("权限模式",
         [new("default", "默认审批"), new("acceptEdits", "自动接受编辑"), new("plan", "计划"), new("bypassPermissions", "跳过权限确认")],
         ["new", "resume", "fork", "archive", "restore", "delete"], NativeArchive: false);
@@ -15,7 +23,7 @@ internal sealed class ClaudeEngine(string cwd) : Engine
             .Select(id => new ModelChoice(id, id, id == "sonnet", ["low", "medium", "high", "max"])).ToArray());
 
     internal override Task<EngineQuota> ReadQuota(CancellationToken ct) => Task.FromResult(
-        new EngineQuota(false, "Claude Code 暂不支持原生额度查询，可在终端内使用 /usage 查看", CheckedAt: DateTimeOffset.UtcNow) { Status = "unsupported" });
+        new EngineQuota(false, "请在 Claude Code 终端输入 /usage 查看订阅用量与限额。", CheckedAt: DateTimeOffset.UtcNow) { Status = "unsupported" });
 
     internal override Task<IReadOnlyList<HistorySession>> ListSessions(CancellationToken ct, bool archived)
     {

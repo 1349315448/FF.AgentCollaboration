@@ -1052,6 +1052,41 @@ async function run() {
         frame("", "• Working (5m 04s · es…"), frame("", "Approval request")];
     });
     assert.deepEqual(afterCompletion, ["clear","clear","running","blocked"]);
+    const adapterScreens = await page.evaluate(() => {
+      function read(engine, lines, cursorY = lines.length - 1) {
+        const prompt = readNativePrompt({agent:{engine}, term:{cols:80, rows:lines.length, modes:{bracketedPasteMode:true},
+          buffer:{active:{baseY:0,cursorX:2,cursorY,getLine:i=>({translateToString:()=>lines[i]})}}}});
+        return [prompt.screen, prompt.empty];
+      }
+      return [
+        read("qwen", ["╭────────╮","│ > Type your message or @path/to/file","╰────────╯"],1),
+        read("qwen", ["⠋ Thinking (12s · esc to cancel)","╭────────╮","│ >","╰────────╯"],2),
+        read("qwen", ["等待确认","按 Enter 确认，Esc 取消"]),
+        read("qwen", ["│ > Working. Escape to cancel."]),
+        read("qwen", ["──────────────────",">   输入您的消息或 @ 文件路径","──────────────────","  ➜ project · fixture-model","  自动模式 (按 Tab 切换)"],1),
+        read("qwen", ["Attachments: [cat.png]","────────","> ","────────","↑ to manage attachments","plan mode (tab to cycle)"],2),
+        read("qwen", ["────────","> ","────────","0% used"],1),
+        read("qwen", ["Assistant: press Enter to confirm when done.","────────","> ","────────","? for shortcuts"],2),
+        read("qwen", ["⠏ 等待用户确认...","────────","> ","────────","? for shortcuts"],2),
+        read("qwen", ["────────","> /approval-mode","────────","/approval-mode  View or change the approval mode"],1),
+        read("qwen", ["────────","* ","────────","YOLO mode (tab to cycle)"],1),
+        read("qwen", ["────────","! ","────────","shell mode"],1),
+        read("codebuddy", ["Do you trust the files in this folder?","❯ 1. Trust folder only","Enter to confirm • Esc to exit"]),
+        read("codebuddy", ["∴ Thinking...","────────","❯","────────","? for shortcuts"],2),
+        read("codebuddy", ["────────","❯ esc to interrupt","────────","? for shortcuts"],1),
+        read("zcode", ["╰────────╯","⠙ esc to interrupt          7%"]),
+        read("zcode", ["╰────────╯","                             7%"]),
+        read("claude", ["✻ Cooked for 34s","────────","❯","────────","? for shortcuts"],2),
+        read("claude", ["✻ Thinking…","────────","❯","────────","? for shortcuts"],2),
+        read("traecli", ["◦ Working (12s • esc to interrupt)","› "]),
+      ];
+    });
+    assert.deepEqual(adapterScreens, [
+      ["idle",false],["active",false],["blocked",false],["idle",false],["clear",true],["draft",false],["clear",true],
+      ["clear",true],["blocked",false],["draft",false],["clear",true],["idle",false],
+      ["blocked",false],["running",false],["draft",false],["active",false],["idle",false],
+      ["clear",true],["running",false],["running",false],
+    ]);
     const thick=await page.evaluate(()=>{
       function read(lines){
         return observePrompt({agent:{engine:"copilot"},term:{rows:lines.length,cols:40,modes:{bracketedPasteMode:true},
@@ -1348,6 +1383,20 @@ async function run() {
     assert(await launcher.isHidden() && await power.isEnabled());
     assert.equal(await power.evaluate(button => getComputedStyle(button).color), "rgb(54, 229, 121)");
     assert(await page.evaluate(({id,meta}) => Object.entries(meta).every(([k,v]) => panes.get(id).agent[k] === v), {id:claude.id,meta}));
+    await terminal.locator(".toggle-collapse").click();
+    await power.click();
+    await page.waitForFunction(id=>!panes.get(id).agent.online,claude.id);
+    assert(await power.isVisible() && await power.getAttribute("aria-pressed")==="false" && await launcher.isHidden());
+    let startCard;
+    const holdCard = new Promise(resolve=>{startCard=resolve;});
+    await page.route(startRoute, async route=>{await holdCard; await route.continue();}, {times:1});
+    await power.click();
+    assert(await power.isDisabled() && await power.getAttribute("aria-busy")==="true");
+    startCard();
+    await page.waitForFunction(id=>panes.get(id).agent.online && !panes.get(id).presentation.powerAction,claude.id);
+    assert.equal(await terminal.getAttribute("data-collapsed"),"true");
+    assert.equal(await power.getAttribute("aria-pressed"),"true");
+    await terminal.locator(".toggle-collapse").click();
     await toolbarAction(".close-pane");
     await page.waitForFunction(id => !panes.has(id) && !snapshot.windows.some(w => w.agent.id === id), claude.id);
     const inactive = page.locator(".project-button").filter({has:page.getByRole("button",{name:"移除项目",exact:true})}).first();
@@ -1359,6 +1408,51 @@ async function run() {
     console.log("PASS stop/reopen retains agent metadata, remove disposes runtime, inactive project removal keeps selection");
     assert.deepEqual(errors,[]);
     console.log("PASS pending-to-idle without new VT, multiline retry once, first-submit success, approval, typing, retry cap and stale error clearing");
+    for (const engine of ["qwen","codebuddy","zcode","claude","traecli","copilot","codex"]) {
+      const project = path.join(root,engine);
+      fs.mkdirSync(project);
+      fs.writeFileSync(path.join(project,"native-prompt.fixture"),engine);
+      const topic = await post("/topics",{name:engine,project});
+      const agent = await post("/windows",{name:engine,topic:topic.id,project,engine,newSession:true});
+      await choose(topic.id);
+      await ready(agent.id);
+      const generation = await page.evaluate(id=>panes.get(id).generation,agent.id);
+      const approvalUrl = base+"/api/windows/"+agent.id+"/approval";
+      assert.equal((await page.request.post(approvalUrl,{data:{terminal:"stale"}})).status(),409);
+      const applied = page.waitForResponse(r=>r.url()===approvalUrl && r.request().method()==="POST");
+      const approvalButton = pane(agent.id).getByRole("button",{name:"调整审批模式"});
+      if (!await approvalButton.isVisible()) await pane(agent.id).locator(".pane-more").click();
+      await approvalButton.click();
+      assert.equal((await applied).status(),204,engine);
+      if (["claude","codebuddy","qwen"].includes(engine)) {
+        await until(()=>logLines(engine,"approval-key.txt").includes(engine==="qwen"?"Tab":"Shift+Tab"),engine+" native mode shortcut");
+      } else if (engine==="zcode") {
+        await page.waitForFunction(id=>readNativePrompt(panes.get(id)).draftText?.trim()==="/mode",agent.id);
+        assert.equal(logLines(engine,"enters.txt").length,0);
+        await key(agent.id,"Control+u");
+      } else {
+        await until(()=>logLines(engine,"accepted.txt").includes("/permissions"),engine+" native approval picker");
+      }
+      assert.equal(await page.evaluate(id=>panes.get(id).generation,agent.id),generation);
+      if (!["qwen","codebuddy","zcode"].includes(engine)) continue;
+      await ready(agent.id);
+      assert(await pane(agent.id).locator(".auto-receive input").isChecked());
+      await key(agent.id,"Control+b");
+      await page.waitForFunction(id=>panes.get(id).view.activity==="working" && !panes.get(id).view.inputReady,agent.id);
+      const message = send("@"+engine+"/"+engine,"请验证收件");
+      await sleep(1650);
+      assert.equal(state(message),"pending");
+      await key(agent.id,"Control+u");
+      await key(agent.id,"x");
+      await sleep(1700);
+      assert.equal(state(message),"pending");
+      assert.equal((await page.request.post(approvalUrl,{data:{terminal:generation}})).status(),409);
+      await key(agent.id,"Control+u");
+      await until(()=>state(message)==="delivered",engine+" automatic receipt");
+      assert.equal(logLines(engine,"accepted.txt").filter(line=>line.includes(message.slice(0,8))).length,1);
+    }
+    console.log("PASS Qwen, CodeBuddy and ZCode queued through work and draft, then submitted once on idle");
+    console.log("PASS native approval controls in all seven current terminals, draft and stale-session protection");
   } finally { await browser.close(); }
 }
 run().catch(error=>{console.error(error);process.exitCode=1;});

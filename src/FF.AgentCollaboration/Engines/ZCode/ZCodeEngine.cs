@@ -7,6 +7,29 @@ namespace FF.AgentCollaboration.Engines;
 
 internal sealed class ZCodeEngine(string cwd) : Engine
 {
+    internal override Task<EngineAccount> Account(CancellationToken ct)
+    {
+        string home = Environment.GetEnvironmentVariable("ZCODE_DATA_BASE_DIR") ?? Environment.GetEnvironmentVariable("USERPROFILE") ??
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string file = Environment.GetEnvironmentVariable("ZCODE_CREDENTIALS_FILE") ?? Path.Combine(home, ".zcode", "v2", "credentials.json");
+        if (!Path.IsPathFullyQualified(file)) return Task.FromResult(new EngineAccount("unknown"));
+        var vault = EngineAuthentication.Settings(file) as JsonObject;
+        // 共享凭据库的字段名可读，值由原生 CLI 解密。忽略退出后保留的 revision 和其它工具的 OAuth。
+        bool hasOAuth = vault != null && (vault["oauth:bigmodel:access_token"] != null ||
+            (vault["oauth:active_provider"] != null && vault["oauth:zai:access_token"] != null));
+        bool configured = hasOAuth || (vault != null && vault.Any(entry => {
+            const string prefix = "account-provider:", suffix = ":auth-source";
+            if (!entry.Key.StartsWith(prefix, StringComparison.Ordinal) || !entry.Key.EndsWith(suffix, StringComparison.Ordinal) || entry.Value == null) return false;
+            string provider = entry.Key[prefix.Length..^suffix.Length];
+            string manualPrefix = $"account-provider:coding-plan:{provider}:account:key-";
+            return vault[prefix + provider + ":identity"] != null && vault.Any(key => key.Value != null &&
+                key.Key.StartsWith(manualPrefix, StringComparison.Ordinal) && key.Key.EndsWith(":api-key", StringComparison.Ordinal) &&
+                key.Key.Length == manualPrefix.Length + 24 + ":api-key".Length &&
+                key.Key.Substring(manualPrefix.Length, 24).All(char.IsAsciiHexDigit));
+        }));
+        return Task.FromResult(new EngineAccount(configured ? "configured" : "signed-out"));
+    }
+    internal override string ApprovalKeys => "/mode "; // 输入前缀就显示模式列表，由用户选中并回车。
     internal override EngineCapabilities Capabilities => new("运行模式",
         [new("build", "构建"), new("plan", "计划"), new("edit", "编辑"), new("guarded", "受限")],
         ["new", "resume", "archive", "restore"], NativeArchive: false, Models: false, Efforts: false);
@@ -14,7 +37,7 @@ internal sealed class ZCodeEngine(string cwd) : Engine
         id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
     internal override Task<IReadOnlyList<ModelChoice>> ListModels(CancellationToken ct) => Task.FromResult<IReadOnlyList<ModelChoice>>([]);
     internal override Task<EngineQuota> ReadQuota(CancellationToken ct) => Task.FromResult(
-        new EngineQuota(false, "ZCode 暂无已接入的账户额度接口", CheckedAt: DateTimeOffset.UtcNow) { Status = "unsupported" });
+        new EngineQuota(false, "请在 ZCode 客户端查看当前连接的用量；个人 GLM Coding Plan 也可用智谱官方用量查询插件查看。", CheckedAt: DateTimeOffset.UtcNow) { Status = "unsupported" });
     internal override Task ChangeHistory(string id, string action, CancellationToken ct) => throw new WorkbenchError("ZCode 未开放原生历史删除");
 
     private RpcPipe Connect() => new(EngineExecutable.FindExecutable("zcode"), ["app-server", "--stdio", "--cwd", cwd], cwd, null, bareEnvelope: true);

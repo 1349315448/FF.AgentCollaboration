@@ -18,6 +18,11 @@ internal abstract class Engine : IDisposable
     };
 
     internal abstract EngineCapabilities Capabilities { get; }
+    internal abstract Task<EngineAccount> Account(CancellationToken ct);
+    internal virtual string[] LoginArguments => ["login"];
+    internal virtual IReadOnlyDictionary<string, string>? LoginEnvironment => null;
+    // 指定原生终端的权限入口。末尾回车只执行打开菜单的命令。
+    internal virtual string ApprovalKeys => "/permissions\r";
     internal virtual bool ValidSessionId(string id) => Guid.TryParse(id, out _);
     internal virtual IReadOnlyDictionary<string, string>? TerminalEnvironment(AgentWindow window, EngineMcp mcp) => null;
     internal abstract Task<IReadOnlyList<ModelChoice>> ListModels(CancellationToken ct);
@@ -28,5 +33,10 @@ internal abstract class Engine : IDisposable
     internal virtual Task<string> NewSession(string title, string? model, string? source, CancellationToken ct) =>
         Task.FromResult(Guid.NewGuid().ToString("D"));
     internal abstract List<string> NativeArguments(AgentWindow window, EngineMcp mcp, string? newTitle, string? forkSource);
+    internal virtual Task<TerminalLaunch> PrepareTerminal(AgentWindow window, EngineMcp mcp, string? newTitle,
+        string? forkSource, bool reopening, CancellationToken ct) =>
+        Task.FromResult(new TerminalLaunch(NativeArguments(window, mcp, newTitle, forkSource), TerminalEnvironment(window, mcp)));
     public virtual void Dispose() { }
 }
+
+internal sealed record TerminalLaunch(List<string> Arguments, IReadOnlyDictionary<string, string>? Environment);

@@ -1,11 +1,13 @@
 """Exercise archive/restore and permanent deletion against installed CLIs using disposable, model-free history."""
 from contextlib import closing
 from datetime import datetime, timezone
+from functools import partial
 import json
 import msvcrt
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -13,7 +15,10 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 from uuid import uuid4
 
-from check_workbench import host, http
+from check_workbench import host, http as workbench_http
+
+# History requests can start several native CLI processes and probe their live sessions.
+http = partial(workbench_http, timeout=60)
 
 
 def seed(engine, home, project):
@@ -104,12 +109,30 @@ def verify(executable, case):
                 if engine == "codex":
                     assert not list(home.rglob(f"*{archived_id}*.jsonl"))
                 print(f"PASS {engine}: bound and foreign protection, archive across restart, restore, native delete from both lists")
+            engines = http(base, "/api/engines?detail=true")[1]
+            return next(item["path"] for item in engines if item["engine"] == "copilot")
 
 
-def verify_titles(executable, case):
+def verify_titles(executable, case, native_copilot):
     project = case / "project"
     project.mkdir(parents=True)
     env = {key: str(case / key) for key in ("CODEX_HOME", "COPILOT_HOME")}
+    codex_home = Path(env["CODEX_HOME"])
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(json.dumps({"OPENAI_API_KEY": "local-history-test"}), encoding="utf8")
+    env["OPENAI_BASE_URL"] = "http://127.0.0.1:1/v1"
+    # A disposable Copilot account answers the headless auth probe. The installed
+    # CLI still owns every terminal, history file, fork and title in this test.
+    assert native_copilot and Path(native_copilot).is_file(), "Copilot CLI is required"
+    compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework/v4.0.30319/csc.exe"
+    account_fixture = case / "account-fixture.exe"
+    subprocess.run([compiler, "/nologo", "/out:" + str(account_fixture),
+                    Path(__file__).with_name("WorkbenchEngineFixture.cs")], check=True)
+    copilot = case / "copilot-history.cmd"
+    copilot.write_text('@echo off\nif "%~1"=="--headless" goto account\n'
+                       '"%FF_TEST_NATIVE_COPILOT%" %*\nexit /b %errorlevel%\n'
+                       ':account\n"%~dp0account-fixture.exe" %*\n', encoding="ascii")
+    env.update(FF_COPILOT_EXE=str(copilot), FF_TEST_NATIVE_COPILOT=native_copilot)
     with patch.dict(os.environ, env), host(executable, case / "state", project) as base:
         for engine, key in (("codex", "CODEX_HOME"), ("copilot", "COPILOT_HOME")):
             home = Path(env[key])
@@ -183,5 +206,7 @@ if __name__ == "__main__":
     temp = Path(tempfile.gettempdir()) / "codex-task"
     temp.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=temp, prefix="lx-session-history-") as work:
-        verify(Path(sys.argv[1]).resolve(), Path(work).resolve())
-        verify_titles(Path(sys.argv[1]).resolve(), Path(work).resolve() / "titles")
+        executable = Path(sys.argv[1]).resolve()
+        case = Path(work).resolve()
+        native_copilot = verify(executable, case)
+        verify_titles(executable, case / "titles", native_copilot)

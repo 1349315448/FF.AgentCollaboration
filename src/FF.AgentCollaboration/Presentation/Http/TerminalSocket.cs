@@ -10,6 +10,21 @@ namespace FF.AgentCollaboration.Presentation.Http;
 // [01] 二进制消息承载 VT 字节。八字节序号用于确认浏览器已渲染的那次输出。
 internal static class TerminalSocket
 {
+    internal static async Task RunLogin(HttpContext context, TerminalSession terminal, CancellationToken stopping)
+    {
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+        using var signal = terminal.ExitSignal();
+        var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wait = ThreadPool.RegisterWaitForSingleObject(signal, (_, _) => exited.TrySetResult(), null, Timeout.Infinite, true);
+        try
+        {
+            var connection = Run(context, terminal, lifetime.Token);
+            if (await Task.WhenAny(connection, exited.Task) == exited.Task) await lifetime.CancelAsync();
+            await connection;
+        }
+        finally { wait.Unregister(null); }
+    }
+
     internal static async Task Run(HttpContext context, TerminalSession terminal, CancellationToken stopping)
     {
         if (!context.WebSockets.IsWebSocketRequest)
@@ -105,7 +120,8 @@ internal static class TerminalSocket
                         command.TryGetProperty("clearedDraft", out var cleared) && cleared.TryGetInt64(out var draft) ? draft : null,
                         command.TryGetProperty("retryDraft", out var candidate) ? candidate.GetString() : null,
                         command.TryGetProperty("screen", out var screen) ? screen.GetString() : null,
-                        command.TryGetProperty("draftId", out var draftId) ? draftId.GetString() : null);
+                        command.TryGetProperty("draftId", out var draftId) ? draftId.GetString() : null,
+                        command.TryGetProperty("approvalDraft", out var approvalDraft) ? approvalDraft.GetString() : null);
                     break;
             }
         }

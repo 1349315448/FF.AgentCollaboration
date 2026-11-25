@@ -21,7 +21,12 @@ def verify(exe, case):
     existing = knowledge / "development-tasks" / "existing"
     existing.mkdir(parents=True)
     (existing / "PLAN.md").write_bytes(b"original plan\r\n")
-    with patch.dict(os.environ, LX_CODEX_EXE=str(fixture), LX_COPILOT_EXE=str(fixture), FF_CLAUDE_EXE=str(fixture), CLAUDE_CONFIG_DIR=str(case / "claude")):
+    vault = case / "zcode-test-credentials.json"
+    vault.write_text('{"oauth:active_provider":"zai","oauth:zai:access_token":"test"}')
+    with patch.dict(os.environ, LX_CODEX_EXE=str(fixture), LX_COPILOT_EXE=str(fixture), FF_CLAUDE_EXE=str(fixture),
+                    OPENAI_API_KEY="test", CODEBUDDY_API_KEY="test", ZCODE_CREDENTIALS_FILE=str(vault),
+                    FF_QWEN_EXE=str(fixture), FF_CODEBUDDY_EXE=str(fixture), FF_ZCODE_EXE=str(fixture),
+                    FF_TRAECLI_EXE=str(fixture), CLAUDE_CONFIG_DIR=str(case / "claude")):
         create_test = "--create" in sys.argv
         with host(exe, state, case / "one" if create_test else None, knowledge=knowledge, initialize=create_test) as url:
             script = Path(__file__).with_name("check_create.cjs") if "--create" in sys.argv else Path(__file__).with_suffix(".cjs")

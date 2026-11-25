@@ -28,13 +28,8 @@ internal static class EngineInstallation
             if (name is "codebuddy" or "qwen")
             {
                 string installer = WindowsCommand.Dependency("npm.cmd", "npm.exe") ?? throw new WorkbenchError("请先安装 Node.js 和 npm");
-                if (name == "qwen")
-                {
-                    string? node = await WindowsCommand.Version(WindowsCommand.Dependency("node.exe"), cancellation);
-                    if (!Version.TryParse(node?.Trim().TrimStart('v'), out var version) || version.Major < 22)
-                        throw new WorkbenchError("npm 版 Qwen Code 需要 Node.js 22 或更高版本。请先升级 Node.js，或安装千问官方独立 CLI。");
-                }
-                string module = name == "qwen" ? "@qwen-code/qwen-code" : "@tencent-ai/codebuddy-code";
+                if (name == "qwen") await RequireQwenNode(cancellation);
+                string module = EngineReleases.NpmPackage(name)!;
                 int result = await Run(installer, ["install", "-g", module]);
                 if (result == 0 && EngineExecutable.TryFindExecutable(name) != null) return;
                 throw new WorkbenchError($"npm 安装后未检测到 {name}（退出码 {result}）", WorkbenchFailure.Unavailable);
@@ -61,6 +56,81 @@ internal static class EngineInstallation
         finally { InstallationLock.Release(); }
     }
 
+    private static async Task RequireQwenNode(CancellationToken ct)
+    {
+        string? node = await WindowsCommand.Version(WindowsCommand.Dependency("node.exe"), ct);
+        if (!Version.TryParse(node?.Trim().TrimStart('v'), out var version) || version.Major < 22)
+            throw new WorkbenchError("npm 版 Qwen Code 需要 Node.js 22 或更高版本。请先升级 Node.js，或安装千问官方独立 CLI。");
+    }
+
+    // 依据实际可执行文件的位置更新同一份安装，避免全局 npm 另装一份而原窗格仍用旧版。
+    private static (string Program, string[] Args)? Updater(string name, string path, string? local, string latest)
+    {
+        if (EngineExecutable.NpmPrefix(name, path) is { } prefix)
+        {
+            return WindowsCommand.Dependency("npm.cmd", "npm.exe") is { } npm
+                ? (npm, ["install", "--global", "--prefix", prefix, EngineReleases.NpmPackage(name) + "@" + latest]) : null;
+        }
+        if (name is "codex" or "copilot" or "claude")
+        {
+            string target;
+            try { target = File.ResolveLinkTarget(path, returnFinalTarget: true)?.FullName ?? path; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
+            string packageId = PackageId(name);
+            if (target.Split(Path.DirectorySeparatorChar).Any(part =>
+                part.StartsWith(packageId + "_Microsoft.Winget.Source_", StringComparison.OrdinalIgnoreCase)))
+            {
+                string? scope = WingetScope(target) ?? WingetScope(path);
+                return scope != null && Winget() is { } winget ? (winget, ["upgrade", "--id", packageId, "--exact", "--source", "winget",
+                    "--scope", scope, "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"]) : null;
+            }
+            if (path.Contains(@"\WinGet\Links\", StringComparison.OrdinalIgnoreCase) ||
+                target.Contains(@"\WinGet\Packages\", StringComparison.OrdinalIgnoreCase)) return null;
+        }
+        return name switch
+        {
+            "traecli" => (path, ["update", "--version", latest]),
+            "claude" or "codebuddy" or "copilot" => (path, ["update"]),
+            "qwen" when EngineReleases.Compare(local, "0.23.0") is "current" or "ahead" => (path, ["update", "--target-version", latest]),
+            _ => null
+        };
+    }
+
+    internal static bool CanUpdate(string name, string path, string? local, string latest) =>
+        Updater(name, path, local, latest) != null;
+
+    private static string? WingetScope(string path)
+    {
+        bool Under(string variable, string subdir) => Environment.GetEnvironmentVariable(variable) is { Length: > 0 } root &&
+            path.StartsWith(Path.Combine(root, subdir) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        if (Under("LOCALAPPDATA", @"Microsoft\WinGet")) return "user";
+        return Under("ProgramFiles", "WinGet") || Under("ProgramFiles(x86)", "WinGet") || Under("ProgramW6432", "WinGet") ? "machine" : null;
+    }
+
+    internal static async Task Update(string name, CancellationToken ct)
+    {
+        await InstallationLock.WaitAsync(ct);
+        try
+        {
+            string path = EngineExecutable.TryFindExecutable(name) ?? throw new WorkbenchError("请先安装此引擎");
+            string? current = await EngineExecutable.InstalledVersion(name, path, ct);
+            string latest = await EngineReleases.Latest(name, false, ct) ?? throw new WorkbenchError("暂时无法查询官方版本，请稍后重试");
+            switch (EngineReleases.Compare(current, latest))
+            {
+                case "current": case "ahead": return;
+                case "unknown": throw new WorkbenchError("无法识别当前版本，请先重新检测");
+            }
+            var update = Updater(name, path, current, latest) ?? throw new WorkbenchError("请根据官方指南更新当前安装");
+            if (name == "qwen" && update.Args[0] == "install") await RequireQwenNode(ct);
+            int code = await Run(update.Program, update.Args, TimeSpan.FromMinutes(10));
+            if (code != 0) throw new WorkbenchError($"更新程序返回退出码 {code}，请查看启动工作台的控制台输出", WorkbenchFailure.Unavailable);
+            string? after = await EngineExecutable.InstalledVersion(name, EngineExecutable.TryFindExecutable(name), ct);
+            if (EngineReleases.Compare(after, latest) is not ("current" or "ahead"))
+                throw new WorkbenchError($"更新程序已结束，当前入口仍为 {after ?? "未知版本"}，请检查安装渠道并重新检测", WorkbenchFailure.Unavailable);
+        }
+        finally { InstallationLock.Release(); }
+    }
+
     internal static string? Winget()
     {
         string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -68,10 +138,25 @@ internal static class EngineInstallation
         return File.Exists(alias) ? alias : WindowsCommand.OnPath("winget.exe");
     }
 
-    internal static async Task<int> Run(string exe, IReadOnlyList<string> args)
+    internal static async Task<int> Run(string exe, IReadOnlyList<string> args, TimeSpan? timeout = null)
     {
-        using var process = Process.Start(WindowsCommand.Resolve(exe, args)) ?? throw new WorkbenchError("安装程序无法启动", WorkbenchFailure.Unavailable);
-        await process.WaitForExitAsync();
+        var start = WindowsCommand.Resolve(exe, args);
+        start.RedirectStandardInput = timeout.HasValue;
+        using var process = Process.Start(start) ?? throw new WorkbenchError("安装程序无法启动", WorkbenchFailure.Unavailable);
+        if (timeout is { } limit)
+        {
+            process.StandardInput.Close();
+            using var deadline = new CancellationTokenSource(limit);
+            try { await process.WaitForExitAsync(deadline.Token); }
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
+            {
+                try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+                catch (InvalidOperationException) when (process.HasExited) { }
+                await process.WaitForExitAsync();
+                throw new WorkbenchError("更新程序超时，请重新检测当前版本并查看控制台输出", WorkbenchFailure.Unavailable);
+            }
+        }
+        else await process.WaitForExitAsync();
         return process.ExitCode;
     }
 }

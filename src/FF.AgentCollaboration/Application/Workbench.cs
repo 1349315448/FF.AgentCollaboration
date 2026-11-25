@@ -16,6 +16,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
 {
     private string Root => startup.Root;
     private readonly ConcurrentDictionary<string, TerminalSession> terminals = new();
+    private readonly ConcurrentDictionary<string, byte> updatingEngines = new();
     private readonly SemaphoreSlim lifecycle = new(1);
     private int disposed;
 
@@ -45,6 +46,21 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
 
     internal TerminalSession Terminal(string id) => terminals.TryGetValue(id, out var terminal)
         ? terminal : throw new WorkbenchError("终端未启动", WorkbenchFailure.NotFound);
+
+    internal async Task UpdateEngine(string engine, CancellationToken ct)
+    {
+        await lifecycle.WaitAsync(ct);
+        try
+        {
+            using var state = new WorkbenchStore(Root);
+            if (state.Windows().Any(w => w.Engine == engine && terminals.TryGetValue(w.Id, out var t) && t.Online))
+                throw new WorkbenchError("请先关闭使用此引擎的终端，再更新。Agent 和会话会保留。", WorkbenchFailure.Conflict);
+            if (!updatingEngines.TryAdd(engine, 0)) throw new WorkbenchError("此引擎正在更新", WorkbenchFailure.Conflict);
+        }
+        finally { lifecycle.Release(); }
+        try { await EngineInstallation.Update(engine, ct); }
+        finally { updatingEngines.TryRemove(engine, out _); }
+    }
 
     internal async Task ChangeHistory(string windowId, string action, HistoryAction input, CancellationToken ct)
     {
@@ -106,7 +122,8 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         string? mode = EmptyToNull(request.Mode);
 
         var window = new AgentWindow(Guid.NewGuid().ToString("N"), name, engineName, project, model, request.ForkSession ? null : session, effort, mode,
-            AutoReceive: EngineNames.HasPromptObserver(engineName), Online: false, TopicId: topic.Id);
+            AutoReceive: true, Online: false, TopicId: topic.Id);
+        await EngineAuthentication.Require(engineName, project, ct);
         await lifecycle.WaitAsync(ct);
         try
         {
@@ -145,12 +162,13 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             using var state = new WorkbenchStore(Root);
             var window = state.Window(id);
             if (terminals.TryGetValue(id, out var existing) && existing.Online) return;
+            await EngineAuthentication.Require(window.Engine, window.Project, ct);
             if (window.Session == null)
             {
                 var latest = await LatestSession(state, window, ct);
                 window = window with { Session = latest?.Id, SessionTitle = latest?.Name };
             }
-            await Open(state, window, ct);
+            await Open(state, window, ct, reopening: true);
         }
         finally { lifecycle.Release(); }
     }
@@ -164,6 +182,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         try
         {
             var window = state.Window(id);
+            await EngineAuthentication.Require(window.Engine, window.Project, ct);
             if (session != null && session != window.Session)
             {
                 var history = await catalog.Sessions(window.Engine, window.Project, ct);
@@ -181,8 +200,9 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         finally { lifecycle.Release(); }
     }
 
-    private async Task<AgentWindow> Open(WorkbenchStore state, AgentWindow window, CancellationToken ct, string? forkSource = null)
+    private async Task<AgentWindow> Open(WorkbenchStore state, AgentWindow window, CancellationToken ct, string? forkSource = null, bool reopening = false)
     {
+        if (updatingEngines.ContainsKey(window.Engine)) throw new WorkbenchError("此引擎正在更新，请稍后打开", WorkbenchFailure.Conflict);
         using var engine = Engine.Create(window.Engine, window.Project);
         if (!engine.Capabilities.Allows(forkSource != null ? "fork" : window.Session == null ? "new" : "resume"))
             throw new WorkbenchError("这个引擎不支持所选的会话操作");
@@ -214,8 +234,8 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         }
         var grant = WorkbenchStore.NewGrant();
         var mcp = new EngineMcp(Root, "workbench-mcp", grant, CollaborationTools.Names, events.NotifyPort);
-        var arguments = engine.NativeArguments(window, mcp, newTitle, forkSource);
-        var environment = engine.TerminalEnvironment(window, mcp);
+        using var launchTimeout = SessionCatalog.Deadline(ct);
+        var launch = await engine.PrepareTerminal(window, mcp, newTitle, forkSource, reopening, launchTimeout.Token);
         if (terminals.TryGetValue(window.Id, out var previous))
         {
             state.Offline(window.Id);
@@ -225,8 +245,8 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         state.Start(window.Id, grant, window.Session, window.SessionTitle);
         try
         {
-            terminals[window.Id] = new TerminalSession(EngineExecutable.FindExecutable(window.Engine), arguments,
-                ProjectFolders.Resolve(window.Project), grant, 100, 30, events.Changed, environment);
+            terminals[window.Id] = new TerminalSession(window.Engine, EngineExecutable.FindExecutable(window.Engine), launch.Arguments,
+                ProjectFolders.Resolve(window.Project), grant, 100, 30, events.Changed, launch.Environment);
             return window with { Online = true };
         }
         catch
@@ -264,9 +284,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
     internal void Toggle(string id, bool enabled)
     {
         using var state = new WorkbenchStore(Root);
-        var window = state.Window(id);
-        if (enabled && !EngineNames.HasPromptObserver(window.Engine))
-            throw new WorkbenchError("此引擎请在收件栏点击写入终端");
+        state.Window(id);
         state.AutoReceive(id, enabled);
     }
 
@@ -303,6 +321,21 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         if (string.IsNullOrEmpty(request.Text) || request.Text.Length > 8192 || request.Text.Any(char.IsControl))
             throw new WorkbenchError("只能插入单行文本");
         await terminal.Input(Encoding.UTF8.GetBytes(request.Text), ct);
+    }
+
+    internal async Task OpenApprovalMenu(string id, string generation, CancellationToken ct)
+    {
+        await lifecycle.WaitAsync(ct);
+        try
+        {
+            var terminal = Terminal(id);
+            if (terminal.Generation != generation) throw new WorkbenchError("终端已切换，请重新选择审批模式", WorkbenchFailure.Conflict);
+            using var store = new WorkbenchStore(Root);
+            var window = store.Window(id);
+            using var engine = Engine.Create(window.Engine, window.Project);
+            await terminal.OpenApprovalMenu(engine.ApprovalKeys, ct);
+        }
+        finally { lifecycle.Release(); }
     }
 
     private async Task<bool> Deliver(TerminalSession terminal, InboxItem message, bool automatic, CancellationToken ct)

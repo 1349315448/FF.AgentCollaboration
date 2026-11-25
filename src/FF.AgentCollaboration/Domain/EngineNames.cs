@@ -7,5 +7,4 @@ internal static class EngineNames
 
     internal static readonly string[] All = ["codex", "copilot", "claude", "codebuddy", "traecli", "zcode", "qwen"];
     internal static bool Supports(string? name) => Array.IndexOf(All, name) >= 0;
-    internal static bool HasPromptObserver(string name) => name is "codex" or "copilot" or "claude" or "traecli";
 }

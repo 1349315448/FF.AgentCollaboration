@@ -53,7 +53,10 @@ internal sealed class SessionCatalog(WorkbenchStartup startup) : IDisposable
         var bound = state.Windows().Where(w => w.Engine == engineName && w.Session != null).Select(w => w.Session).ToHashSet();
         var archives = !engine.Capabilities.NativeArchive ? state.ArchivedSessions(engineName) : null;
         return history.Where(s => archives == null || archives.Contains(s.Id) == archived)
-            .Select(s => s with { MayBeInUse = bound.Contains(s.Id) || s.MayBeInUse || engine.HasNativeWriter(s.Id) })
+            .Select(s => {
+                bool nativeInUse = s.MayBeInUse || engine.HasNativeWriter(s.Id);
+                return s with { NativeInUse = nativeInUse, MayBeInUse = bound.Contains(s.Id) || nativeInUse };
+            })
             .Where(s => includeBound || !s.MayBeInUse)
             .OrderByDescending(session => DateTimeOffset.TryParse(session.UpdatedAt, out var updated) ? updated : DateTimeOffset.MinValue)
             .ToArray();

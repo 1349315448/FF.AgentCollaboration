@@ -7,6 +7,7 @@ import { loadQuota, quotas } from "./quota.js";
 import { isDialogOpen, selectedProject, selectedTopicId, setSelectedProjectPath, snapshot } from "../store/workbenchStore";
 import { openTopicDialog, selectProject, selectedTopic } from "./topics.js";
 import { normalizeActivities, refresh, render } from "./workbench.js";
+import { accountReady, checkAccount, openEngineLogin } from "./engine-login.js";
 
 const installingEngines = new Set();
 const selectedEngine = () => byId("new-form").elements.engine.value;
@@ -107,7 +108,12 @@ async function loadCatalogs() {
   sessions.disabled = true;
   createHistory = [];
   submit.disabled = true;
-  summary.textContent = "正在读取引擎选项…";
+  sources.disabled = mode.disabled = true;
+  byId("history-field").hidden = byId("history-action").hidden = true;
+  byId("open-engine-login").hidden = true;
+  byId("refresh-quota").disabled = true;
+  byId("engine-quota").replaceChildren();
+  summary.textContent = "正在检查引擎登录状态…";
   byId("reload-catalog").hidden = true;
   try {
     const [installed, capabilities] = await Promise.all([request("/engines", {signal:controller.signal}), engineCapabilities()]);
@@ -151,6 +157,22 @@ async function loadCatalogs() {
       byId("refresh-quota").disabled = true;
       sessions.replaceChildren(new Option("请先安装引擎", ""));
       sessions.disabled = true;
+      return;
+    }
+    const account = await checkAccount(engine, selectedProject, controller.signal);
+    if (controller.signal.aborted) return;
+    if (!accountReady(account)) {
+      sources.value = "";
+      sessions.disabled = true;
+      byId("history-field").hidden = byId("history-action").hidden = true;
+      byId("open-engine-login").hidden = byId("reload-catalog").hidden = false;
+      summary.textContent = account.status === "signed-out" ? "请先登录，再选择新建或恢复会话" : "无法确认账号状态，请重新检测或打开登录终端";
+      return;
+    }
+    sources.disabled = mode.disabled = false;
+    if (!sources.value) {
+      summary.textContent = "请选择新建或恢复会话";
+      sources.focus();
       return;
     }
   } catch (error) {
@@ -220,6 +242,9 @@ byId("refresh-quota").addEventListener("click", () => loadQuota(selectedEngine()
 byId("session-source").addEventListener("change", () => { delete byId("session-source").dataset.chooseDefault; loadCatalogs(); });
 byId("agent-model").addEventListener("change", renderEfforts);
 byId("reload-catalog").addEventListener("click", loadCatalogs);
+byId("open-engine-login").onclick = async () => {
+  if (await openEngineLogin(selectedEngine(), selectedProject)) loadCatalogs();
+};
 byId("new-dialog").addEventListener("close", () => {
   catalogRequest?.abort();
   if (snapshot) { normalizeActivities(snapshot); render(); }
@@ -248,10 +273,13 @@ byId("new-form").addEventListener("submit", async event => {
     dialog.close();
     await refresh();
     focusAgent(agent.id);
-  } catch (error) { feedback("create-error", error.message); }
+  } catch (error) {
+    feedback("create-error", error.message);
+    if (error.status === 401) { setBusy(dialog, false); await loadCatalogs(); }
+  }
   finally {
     setBusy(dialog, false);
-    button.disabled = false;
+    button.disabled = byId("session-source").disabled || !byId("session-source").value;
     button.textContent = "打开终端";
   }
 });

@@ -8,6 +8,11 @@ namespace FF.AgentCollaboration.Engines;
 internal sealed class CopilotEngine(string cwd) : RpcEngine
 {
     internal override EngineCapabilities Capabilities => Profile;
+    internal override async Task<EngineAccount> Account(CancellationToken ct)
+    {
+        var reply = await CopilotSdk("auth.getStatus", new { }, ct);
+        return new((bool?)reply["isAuthenticated"] switch { true => "authenticated", false => "signed-out", null => "unknown" });
+    }
     private static readonly EngineCapabilities Profile = new("运行模式",
         [new("agent", "Agent"), new("autopilot", "Autopilot")],
         ["new", "latest", "resume", "fork", "archive", "restore", "delete"], NativeArchive: false);

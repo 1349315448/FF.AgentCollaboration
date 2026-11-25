@@ -8,12 +8,13 @@ import { showPreview } from "./preview.js";
 import { loadQuota } from "./quota.js";
 import { presentPane, mountTerminal, panes } from "../services/terminalRegistry";
 import { openPaneSessions } from "./session-history.js";
+import { openEngineLogin } from "./engine-login.js";
 import { loadShortcuts } from "./shortcuts.js";
 import { layout, mentionShortcut } from "../store/workbenchStore";
 import { fitPane, replayReports, sendBytes, syncTerminal } from "./terminal.js";
 import { refresh, refreshing } from "./workbench.js";
 
-import { engineNames, manualInboxEngines } from "../services/engines";
+import { engineNames } from "../services/engines";
 const bytes = new TextEncoder();
 function makePane(agent) {
   const { root, element, term, fit, viewport, slot } = mountTerminal(byId("panes"));
@@ -88,6 +89,10 @@ function makePane(agent) {
     input.select();
   };
   element.querySelector(".pane-quota").addEventListener("click", () => loadQuota(agent.engine, true));
+  const approval = element.querySelector(".pane-approval");
+  approval.title = ["claude", "codebuddy"].includes(agent.engine) ? "切换到下一个原生审批模式（Shift+Tab）" : "打开当前 CLI 的审批模式选择器";
+  approval.onclick = () => paneAction(pane, () =>
+    request(windowRoute(pane) + "/approval", {method:"POST", body:{terminal:pane.generation}}));
   element.querySelector(".preview-inbox").addEventListener("click", () => showPreview(pane.message));
   const ignore = element.querySelector(".ack-inbox");
   ignore.onclick = async () => {
@@ -120,7 +125,12 @@ function makePane(agent) {
     presentPane(pane, {...pane.presentation, powerAction:start ? "start" : "stop"});
     try {
       await paneAction(pane, async () => {
-        await request(windowRoute(pane) + (start ? "/start" : "/stop"), {method:"POST"});
+        try { await request(windowRoute(pane) + (start ? "/start" : "/stop"), {method:"POST"}); }
+        catch (error) {
+          if (!start || error.status !== 401) throw error;
+          if (await openEngineLogin(pane.agent.engine, pane.agent.project)) openPaneSessions(pane);
+          return;
+        }
         await refreshing;
       });
     } finally {
@@ -133,7 +143,7 @@ function makePane(agent) {
       }
     }
   }
-  power.onclick = () => changePower(false);
+  power.onclick = () => changePower(!pane.view.agent.online);
   launcher.onclick = () => changePower(true);
   element.querySelector(".close-pane").addEventListener("click", () => paneAction(pane, () =>
     request(windowRoute(pane), { method: "DELETE" })));
@@ -173,8 +183,6 @@ function updatePane(pane, view) {
   pane.element.setAttribute("aria-label", "@" + agent.name + " 终端");
   const autoReceive = pane.element.querySelector(".auto-receive input");
   autoReceive.checked = agent.autoReceive;
-  autoReceive.disabled = manualInboxEngines.has(agent.engine);
-  autoReceive.parentElement.title = autoReceive.disabled ? "请在收件栏点击写入终端" : "";
   if (!agent.online) pane.element.querySelector(".shortcut-menu:popover-open")?.hidePopover();
   const message = inbox.find(item => item.id === pane.selectedMessage) || inbox.find(item => item.state === "pending") || inbox[0];
   pane.message = message;

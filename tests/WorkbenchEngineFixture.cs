@@ -26,9 +26,80 @@ class WorkbenchEngineFixture
         return 0;
     }
 
-    static int Main(string[] args)
+    internal static int Main(string[] args)
     {
-        if (args.Length == 1 && args[0] == "--version") { Console.WriteLine("fixture 2.1"); return 0; }
+        if (args.Length == 2 && args[0] == "login" && args[1] == "status")
+        {
+            bool signedOut = File.Exists("signed-out.fixture");
+            Console.WriteLine(signedOut ? "Not logged in" : "Logged in");
+            return signedOut ? 1 : 0;
+        }
+        if (args.Length == 2 && args[0] == "auth" && args[1] == "status")
+        {
+            Console.WriteLine(File.Exists("signed-out.fixture") ? "{\"loggedIn\":false}" : "{\"loggedIn\":true}");
+            return 0;
+        }
+        if (args.Length == 1 && args[0] == "login")
+        {
+            Console.WriteLine("Fixture login terminal");
+            if (Console.ReadLine() == "login") File.Delete("signed-out.fixture");
+            return 0;
+        }
+        string versionFile = Environment.GetEnvironmentVariable("FF_TEST_ENGINE_VERSION_FILE");
+        if (args.Length == 1 && args[0] == "--version")
+        {
+            bool node = Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName).Equals("node.exe", StringComparison.OrdinalIgnoreCase);
+            Console.WriteLine(versionFile == null ? "fixture 2.1" : File.ReadAllText(node ? versionFile + ".node" : versionFile));
+            return 0;
+        }
+        if (versionFile != null && args.Length == 5 && args[0] == "install" && args[1] == "--global" && args[2] == "--prefix")
+        {
+            string prefix = Path.Combine(Path.GetDirectoryName(versionFile), "npm");
+            if (Path.GetFullPath(args[3]) != prefix || !args[4].StartsWith("@qwen-code/qwen-code@")) return 19;
+            File.Copy(versionFile + ".package", Path.Combine(prefix, "node_modules/@qwen-code/qwen-code/package.json"), true);
+            File.WriteAllText(versionFile + ".npm-call", args[4]);
+            return 0;
+        }
+        if (args.Length == 1 && args[0] == "update" && versionFile != null)
+        {
+            File.AppendAllText(versionFile + ".calls", "update\n");
+            File.Copy(versionFile + ".next", versionFile, true);
+            return 0;
+        }
+        if (versionFile != null && args.Length > 2 && args[0] == "upgrade")
+        {
+            File.WriteAllLines(versionFile + ".winget", args);
+            File.Copy(versionFile + ".next", versionFile, true);
+            return 0;
+        }
+        if (args.Length == 1 && args[0] == "--help")
+        {
+            Console.WriteLine(File.Exists("qwen-legacy.fixture") ? "--acp --session-id --resume" : "--mcp-config\n  qwen sessions list");
+            return 0;
+        }
+        if (args.Length == 1 && args[0] == "--acp")
+        {
+            if (!Console.ReadLine().Contains("initialize")) return 1;
+            Console.WriteLine("{\"id\":1,\"result\":{\"protocolVersion\":1}}");
+            string query = Console.ReadLine();
+            if (query.Contains("workspace/preflight"))
+            {
+                Console.WriteLine(File.Exists("qwen-legacy.fixture") ? "{\"id\":2,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}" :
+                    "{\"id\":2,\"result\":{\"cells\":[{\"kind\":\"auth\",\"status\":\"ok\",\"detail\":{\"hasToken\":true}}]}}");
+                return 0;
+            }
+            if (!query.Contains("session/list")) return 1;
+            var sessions = File.Exists("qwen-sessions.json") ? File.ReadAllText("qwen-sessions.json") : "[]";
+            Console.WriteLine("{\"id\":2,\"result\":{\"sessions\":" + sessions + "}}");
+            return 0;
+        }
+        if (File.Exists("qwen-legacy.fixture"))
+        {
+            if (Array.IndexOf(args, "--mcp-config") >= 0 || !String.IsNullOrEmpty(Environment.GetEnvironmentVariable("NO_COLOR"))) return 1;
+            File.WriteAllLines("qwen-launch.txt", args);
+            Thread.Sleep(120000);
+            return 0;
+        }
         if (args.Length > 1 && args[0] == "app-server" && args[1] == "--stdio")
         {
             string create = Console.ReadLine();
@@ -74,10 +145,14 @@ class WorkbenchEngineFixture
             string separator = Console.ReadLine();
             if (!header.StartsWith("Content-Length:") || separator != "") return 1;
             var request = new char[int.Parse(header.Substring(15))];
-            if (Console.In.ReadBlock(request, 0, request.Length) != request.Length ||
-                !new string(request).Contains("\"account.getQuota\"")) return 1;
-            string snapshot = File.ReadAllText(Environment.GetEnvironmentVariable("LX_TEST_QUOTA"));
-            string reply = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"quotaSnapshots\":" + snapshot + "}}";
+            if (Console.In.ReadBlock(request, 0, request.Length) != request.Length) return 1;
+            string result;
+            if (new string(request).Contains("\"auth.getStatus\""))
+                result = "{\"isAuthenticated\":" + (File.Exists("signed-out.fixture") ? "false" : "true") + "}";
+            else if (new string(request).Contains("\"account.getQuota\""))
+                result = "{\"quotaSnapshots\":" + File.ReadAllText(Environment.GetEnvironmentVariable("LX_TEST_QUOTA")) + "}";
+            else return 1;
+            string reply = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":" + result + "}";
             Console.Write("Content-Length: " + Encoding.UTF8.GetByteCount(reply) + "\r\n\r\n" + reply);
             return 0;
         }

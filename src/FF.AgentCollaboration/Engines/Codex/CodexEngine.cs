@@ -7,6 +7,12 @@ namespace FF.AgentCollaboration.Engines;
 internal sealed class CodexEngine(string cwd, string executable = "codex") : RpcEngine
 {
     internal override EngineCapabilities Capabilities => Profile;
+    internal override async Task<EngineAccount> Account(CancellationToken ct)
+    {
+        var (code, output) = await EngineAuthentication.Command(executable, cwd, ["login", "status"], ct);
+        if (output.Contains("not logged in", StringComparison.OrdinalIgnoreCase) || output.Contains("未登录")) return new("signed-out");
+        return new(code == 0 ? "authenticated" : "unknown");
+    }
     private static readonly EngineCapabilities Profile = new("审批策略",
         [new("on-request", "按需请求审批"), new("never", "不发起审批请求")],
         ["new", "resume", "fork", "archive", "restore", "delete"], NativeArchive: true);
@@ -118,8 +124,17 @@ internal sealed class CodexEngine(string cwd, string executable = "codex") : Rpc
     internal override async Task<string> NewSession(string title, string? model, string? source, CancellationToken ct)
     {
         await Start(null, ct);
-        var reply = source == null ? await Rpc.Request("thread/start", new { cwd, model }, ct)
-            : await Rpc.Request("thread/fork", new { threadId = source, cwd, model }, ct);
+        JsonNode reply;
+        try
+        {
+            reply = source == null ? await Rpc.Request("thread/start", new { cwd, model }, ct)
+                : await Rpc.Request("thread/fork", new { threadId = source, cwd, model }, ct);
+        }
+        catch (EngineRpcError error) when (executable == "traecli" &&
+            error.RemoteMessage.Contains("No Trae auth token available", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new WorkbenchError("TRAE 登录已失效，请重新登录后选择会话", WorkbenchFailure.LoginRequired);
+        }
         string? id = (string?)reply["thread"]?["id"];
         if (!Guid.TryParse(id, out _) || id == source) throw new WorkbenchError($"{executable} 未返回独立的会话编号", WorkbenchFailure.Unavailable);
         await Rpc.Request("thread/name/set", new { threadId = id, name = title }, ct);

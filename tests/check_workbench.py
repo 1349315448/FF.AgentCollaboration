@@ -78,12 +78,12 @@ def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=Tr
                     process.wait(timeout=10)
 
 
-def http(base, route, body=None, method=None, **headers):
+def http(base, route, body=None, method=None, *, timeout=10, **headers):
     if body is not None:
         body = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     try:
-        with urlopen(Request(base + route, data=body, headers=headers, method=method), timeout=10) as response:
+        with urlopen(Request(base + route, data=body, headers=headers, method=method), timeout=timeout) as response:
             return response.status, json.loads(response.read() or b"null")
     except HTTPError as error:
         detail = error.read()
@@ -187,8 +187,9 @@ def verify(executable, directory):
             assert profile["models"] == (engine not in {"qwen","zcode"})
             assert profile["efforts"] == (engine in {"codex","copilot","claude","traecli"})
             assert all(m["id"] and m["label"] for m in profile["modes"])
-        for engine in ("codebuddy", "qwen", "zcode"):
-            assert http(base, "/api/quota/" + engine)[1]["status"] == "unsupported"
+        for engine, guide in (("codebuddy", "套餐与用量"), ("qwen", "/usage"), ("zcode", "Coding Plan")):
+            quota = http(base, "/api/quota/" + engine)[1]
+            assert quota["status"] == "unsupported" and guide in quota["message"], (engine, quota)
         chord = "/api/settings/mention-shortcut"
         assert http(base, "/api/state")[1]["mentionShortcut"] == "Alt+Shift+A"
         for invalid in ("A", "Alt", "Enter", "Escape", "Tab", "Ctrl+W", "Alt+Shift+F", "Alt+A\\n"):
@@ -865,17 +866,32 @@ def verify_ff(executable, directory, fixture):
 def verify_new_engines(executable, directory, fixture):
     state = directory / "multi-engine-data"
     env = {"FF_" + engine.upper() + "_EXE": str(fixture) for engine in ("codebuddy", "qwen", "traecli", "zcode")}
+    vault = directory / "zcode-test-credentials.json"
+    vault.write_text('{"oauth:active_provider":"zai","oauth:zai:access_token":"test"}')
+    env.update(OPENAI_API_KEY="test", CODEBUDDY_API_KEY="test", ZCODE_CREDENTIALS_FILE=str(vault))
     with patch.dict(os.environ, env), host(executable, state) as base:
         for engine in ("codebuddy", "qwen", "traecli", "zcode"):
             project = directory / ("project " + engine)
             project.mkdir()
             topic = http(base, "/api/topics", {"name": engine, "project": str(project)})[1]
             payload = {"topic":topic["id"], "name":"助手", "engine":engine, "project":str(project), "newSession":True}
+            if engine == "traecli":
+                marker = project / "signed-out.fixture"
+                marker.touch()
+                account = "/api/engines/traecli/account?" + urlencode({"project": str(project)})
+                assert http(base, account)[1] == {"status":"signed-out"}
+                for selection in ({"newSession":True}, {"session":str(uuid4())}, {"session":str(uuid4()), "forkSession":True}):
+                    assert http(base, "/api/windows", {**payload, "newSession":False, **selection})[0] == 401
+                marker.unlink()
+                assert http(base, account)[1] == {"status":"authenticated"}
+                assert not any(w["agent"]["engine"] == engine for w in http(base, "/api/state")[1]["windows"])
             status, window = http(base, "/api/windows", payload)
             assert status == 200 and window["online"], (engine, window)
             route = "/api/windows/" + window["id"]
             for iteration in range(2):
                 if engine != "traecli":
+                    view = next(v for v in http(base, "/api/state")[1]["windows"] if v["agent"]["id"] == window["id"])
+                    assert view["activity"] == "idle" and not view["inputReady"] and view["agent"]["autoReceive"], view
                     captured = project / ("zcode-launch.txt" if engine == "zcode" else "claude-args.txt")
                     for _ in range(100):
                         if captured.exists() and captured.stat().st_size: break
@@ -888,7 +904,7 @@ def verify_new_engines(executable, directory, fixture):
                         server = json.loads(config.read_text())["mcp"]["servers"]["lx_collab"]
                         assert "env" not in server and not (project / ".zcode").exists()
                     else:
-                        assert args[0] == ("--resume" if iteration else "--session-id")
+                        assert args[0] == ("--resume" if iteration and engine != "qwen" else "--session-id")
                         server = json.loads(args[args.index("--mcp-config")+1])["mcpServers"]["lx_collab"]
                         if engine == "qwen": assert "env" not in server
                         else: assert server["env"]["LX_P0_WINDOW_GRANT"] == "${LX_P0_WINDOW_GRANT}"
@@ -898,6 +914,57 @@ def verify_new_engines(executable, directory, fixture):
                     if engine != "traecli": captured.unlink()
                     assert http(base, route + "/start", method="POST")[0] == 204
 
+    # 旧版将三个开关全部锁为关闭。升级只发生一次，用户后来关闭的开关应当保留。
+    with closing(sqlite3.connect(state / "workbench.sqlite")) as db, db:
+        db.execute("DELETE FROM settings WHERE key='native_inbox_v2'")
+        db.execute("UPDATE windows SET auto_receive=0")
+    with host(executable, state) as base:
+        agents = {v["agent"]["engine"]: v["agent"] for v in http(base, "/api/state")[1]["windows"]}
+        assert all(agents[e]["autoReceive"] for e in ("qwen","codebuddy","zcode"))
+        assert not agents["traecli"]["autoReceive"]
+        assert http(base, "/api/windows/" + agents["qwen"]["id"] + "/auto-receive", {"enabled":False}, "PUT")[0] == 204
+    with host(executable, state) as base:
+        qwen = next(v["agent"] for v in http(base, "/api/state")[1]["windows"] if v["agent"]["engine"] == "qwen")
+        assert not qwen["autoReceive"]
+
+
+def verify_legacy_qwen(executable, directory, fixture):
+    project = directory / "legacy qwen project"
+    project.mkdir()
+    (project / "qwen-legacy.fixture").touch()
+    state = directory / "legacy-qwen-state"
+    system = directory / "qwen-admin.json"
+    defaults = directory / "qwen-defaults.json"
+    defaults.write_text('{"ui":{"hideBanner":true}}')
+    env = dict(FF_QWEN_EXE=str(fixture), OPENAI_API_KEY="test", NO_COLOR="1", QWEN_CODE_SYSTEM_SETTINGS_PATH=str(system),
+               QWEN_CODE_SYSTEM_DEFAULTS_PATH=str(defaults))
+    with patch.dict(os.environ, env), host(executable, state, project) as base:
+        topic = http(base, "/api/topics", {"name":"旧版千问", "project":str(project)})[1]
+        status, agent = http(base, "/api/windows", {"name":"助手", "engine":"qwen", "topic":topic["id"], "newSession":True})
+        assert status == 200, agent
+        route = "/api/windows/" + agent["id"]
+        config = state / "engine-profiles" / agent["id"] / "qwen-mcp.json"
+        server = json.loads(config.read_text(encoding="utf8"))["mcpServers"]["lx_collab"]
+        assert server["args"][-4:] == ["workbench-mcp", str(state), "--notify-port", str(urlsplit(base).port)]
+        assert server["env"]["LX_P0_WINDOW_GRANT"] == "${LX_P0_WINDOW_GRANT}"
+        captured = project / "qwen-launch.txt"
+        for step, option in enumerate(("--session-id", "--session-id", "--resume")):
+            for _ in range(100):
+                if captured.exists() and captured.stat().st_size: break
+                time.sleep(.03)
+            assert captured.read_text(encoding="utf-8-sig").splitlines() == [option, agent["session"]]
+            assert http(base, route + "/stop", method="POST")[0] == 204
+            captured.unlink()
+            if step == 2: break
+            if step == 1:
+                (project / "qwen-sessions.json").write_text(json.dumps([{
+                    "sessionId":agent["session"], "cwd":str(project), "title":"已保存的千问会话"}]), encoding="utf8")
+                listed = http(base, "/api/sessions/qwen?" + urlencode({"project":project,"includeBound":"true"}))[1]
+                assert [(s["id"],s["name"]) for s in listed] == [(agent["session"],"已保存的千问会话")]
+            assert http(base, route + "/start", method="POST")[0] == 204
+        assert not system.exists() and defaults.read_text() == '{"ui":{"hideBanner":true}}'
+        assert not (project / ".qwen").exists()
+
 
 def verify_native(executable, directory):
     compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework/v4.0.30319/csc.exe"
@@ -905,6 +972,7 @@ def verify_native(executable, directory):
     subprocess.run([compiler, "/nologo", "/out:" + str(fixture),
                     Path(__file__).with_name("WorkbenchEngineFixture.cs")], check=True)
     verify_new_engines(executable, directory, fixture)
+    verify_legacy_qwen(executable, directory, fixture)
     verify_install(executable, directory, fixture)
     verify_ff(executable, directory, fixture)
     snapshots = directory / "quota.json"

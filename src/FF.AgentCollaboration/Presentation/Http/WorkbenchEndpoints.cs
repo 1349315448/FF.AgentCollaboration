@@ -5,6 +5,7 @@ using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Engines;
 using FF.AgentCollaboration.Infrastructure.Files;
 using FF.AgentCollaboration.Infrastructure.Storage;
+using FF.AgentCollaboration.Infrastructure.Terminal;
 
 namespace FF.AgentCollaboration.Presentation.Http;
 
@@ -111,6 +112,20 @@ internal static class WorkbenchEndpoints
             using var adapter = Engine.Create(name, Directory.GetCurrentDirectory());
             return adapter.Capabilities;
         }));
+        app.MapGet("/api/engines/{engine}/account", (string engine, string project, CancellationToken ct) =>
+            EngineAuthentication.Check(EngineNames.Require(engine), ProjectFolders.Resolve(project), ct));
+        // 登录终端只属于此 WebSocket；离开弹窗即释放，整个过程不创建窗口、会话或 MCP 授权。
+        app.MapGet("/api/engines/{engine}/login", async (string engine, string project, string? provider, HttpContext context) =>
+        {
+            if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = 400; return; }
+            string name = EngineNames.Require(engine), folder = ProjectFolders.Resolve(project);
+            using var adapter = Engine.Create(name, folder);
+            if (provider != null && (name != "zcode" || provider is not ("bigmodel" or "zai"))) throw new WorkbenchError("未知的登录方式");
+            IReadOnlyList<string> args = provider == null ? adapter.LoginArguments : ["login", provider];
+            using var terminal = new TerminalSession(name, EngineExecutable.FindExecutable(name), args, folder,
+                "", 90, 22, () => { }, adapter.LoginEnvironment);
+            await TerminalSocket.RunLogin(context, terminal, app.Lifetime.ApplicationStopping);
+        });
         app.MapGet("/api/engines", async (bool? detail, CancellationToken ct) =>
         {
             if (detail == true) return Results.Json(await Task.WhenAll(WorkbenchEnvironment.Engines.Select(e => WorkbenchEnvironment.EngineDetails(e, ct))));
@@ -119,6 +134,20 @@ internal static class WorkbenchEndpoints
         app.MapPost("/api/engines/{engine}/install", async (string engine, CancellationToken cancellation) =>
         {
             await EngineInstallation.Install(EngineNames.Require(engine), cancellation);
+            return Results.NoContent();
+        });
+        app.MapGet("/api/engines/{engine}/release", async (string engine, bool? refresh, CancellationToken ct) =>
+        {
+            string name = EngineNames.Require(engine);
+            var latest = EngineReleases.Latest(name, refresh == true, ct);
+            var installed = await WorkbenchEnvironment.EngineDetails(name, ct);
+            string? latestVersion = await latest;
+            return new { installed, latestVersion, status = EngineReleases.Compare(installed.Version, latestVersion),
+                canUpdate = installed.Path != null && latestVersion != null && EngineInstallation.CanUpdate(name, installed.Path, installed.Version, latestVersion) };
+        });
+        app.MapPost("/api/engines/{engine}/update", async (string engine, Workbench workbench, CancellationToken ct) =>
+        {
+            await workbench.UpdateEngine(EngineNames.Require(engine), ct);
             return Results.NoContent();
         });
         app.MapGet("/api/models/{engine}", (string engine, string? project, SessionCatalog catalog, CancellationToken cancellation) =>
@@ -172,6 +201,11 @@ internal static class WorkbenchEndpoints
         app.MapPut("/api/windows/{id}/auto-receive", (string id, ChangeAutoReceive request, Workbench workbench) =>
         {
             workbench.Toggle(WorkbenchInput.Id(id), request.Enabled);
+            return Results.NoContent();
+        });
+        app.MapPost("/api/windows/{id}/approval", async (string id, OpenApproval request, Workbench workbench, CancellationToken cancellation) =>
+        {
+            await workbench.OpenApprovalMenu(WorkbenchInput.Id(id), request.Terminal, cancellation);
             return Results.NoContent();
         });
         app.MapPost("/api/windows/{id}/stop", async (string id, Workbench workbench, CancellationToken cancellation) =>

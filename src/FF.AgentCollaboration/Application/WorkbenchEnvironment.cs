@@ -9,23 +9,18 @@ namespace FF.AgentCollaboration.Application;
 
 internal sealed record RepairRequest(string Item);
 internal sealed record HealthItem(string Id, string Name, bool Ready, string Description, string? Repair = null);
+internal sealed record InstalledEngine(string Engine, bool Installed, string? Path, string? Version, string? Diagnostic);
 
 internal static class WorkbenchEnvironment
 {
     internal static string[] Engines => EngineNames.All;
 
-    internal static async Task<object> EngineDetails(string engine, CancellationToken ct)
+    internal static async Task<InstalledEngine> EngineDetails(string engine, CancellationToken ct)
     {
         string? path = EngineExecutable.TryFindExecutable(engine);
-        string? version = await WindowsCommand.Version(path, ct);
-        return new
-        {
-            engine,
-            installed = path != null,
-            path,
-            version,
-            diagnostic = path != null && string.IsNullOrWhiteSpace(version) ? "版本检测失败，请检查此 CLI 和运行依赖" : null
-        };
+        string? version = await EngineExecutable.InstalledVersion(engine, path, ct);
+        return new(engine, path != null, path, version,
+            path != null && string.IsNullOrWhiteSpace(version) ? "版本检测失败，请检查此 CLI 和运行依赖" : null);
     }
 
     internal static async Task<HealthItem[]> Inspect(WorkbenchStore store, string data, CancellationToken ct)

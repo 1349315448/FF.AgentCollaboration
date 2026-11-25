@@ -1,4 +1,4 @@
-import { manualInboxEngines } from "../services/engines";
+import { readFramedPrompt } from "./framedPrompt.js";
 import { request } from "../services/api";
 import { showPeers } from "./mentions.js";
 import { clearSubmitError, windowRoute } from "./pane.js";
@@ -86,8 +86,9 @@ function reportPrompt(pane, prompt = observePrompt(pane)) {
   const draftIds = [...new Set([...(prompt.draftText?.replace(/\s/g, "").matchAll(/\bMSG_ID:([0-9a-f]{8})(?![0-9a-f])/gi) || [])].map(m => m[1].toLowerCase()))];
   const draftId = (writing && draftIds.find(id => id === writing.id.slice(0, 8))) || draftIds.at(-1);
   const sameDraft = prompt.editableText && draftId && (writing?.id.slice(0, 8) === draftId ? writing.id : draftId);
+  const approvalDraft = prompt.screen === "draft" && /^\/(?:permissions|approval-mode)$/.test(prompt.draftText) ? prompt.draftText : undefined;
   sendControl(pane, { type: "prompt", revision, empty: prompt.empty, clearedDraft, screen: prompt.screen, draftId,
-    retryDraft: sameDraft || undefined, bracketedPaste: pane.term.modes.bracketedPasteMode });
+    approvalDraft, retryDraft: sameDraft || undefined, bracketedPaste: pane.term.modes.bracketedPasteMode });
   clearTimeout(pane.runningTimer);
   const remaining = pane.runningUntil - Date.now();
   if (remaining > 0) {
@@ -110,14 +111,14 @@ function observePrompt(pane) {
   return prompt;
 }
 
-// 自动提交只接受两个 CLI 正常输入行的可见特征与原生粘贴模式。
+
 function readNativePrompt(pane) {
   const term = pane.term;
   const unknown = { empty: false, clear: false, draft: false };
-  if (manualInboxEngines.has(pane.agent.engine)) return { ...unknown, screen: "unknown" };
   const buffer = term.buffer.active;
   const lines = Array.from({ length: term.rows }, (_, offset) =>
     buffer.getLine(buffer.baseY + offset)?.translateToString(true).trimEnd() || "");
+  if (["qwen", "codebuddy", "zcode"].includes(pane.agent.engine)) return readFramedPrompt(pane.agent.engine, term, lines);
   const blocking = /esc (to )?(interrupt|cancel|back)|ctrl\s*\+\s*c (?:to )?interrupt|enter (to )?select|allow this (command|tool)|would you like to run|do you (want to run|trust)|approval request|press esc to stop|select model/i;
   const codex = ["codex", "traecli"].includes(pane.agent.engine);
   // 完成行以上是上一轮的输出，可能仍留有 Tip、计时器或审批提示。
@@ -176,8 +177,9 @@ function readNativePrompt(pane) {
   const claudeFooter = pane.agent.engine === "claude" && /permissions|accept edits|plan mode|bypass permissions|for shortcuts/i.test(statusLines);
   const interactive = (hasStatus || claudeFooter || last === separator) && !blocked && !blocking.test(lines.slice(Math.max(0, row - 5)).join("\n"));
   const claude = pane.agent.engine === "claude";
-  const claudeRun = claude && lines.slice(Math.max(0, row - 6), row - 1).some(line => /^\s*[✻✢✳✶✽⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(line));
-  const activeRun = claudeRun || /\bworking\b|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◎◉○]/i.test(lines.slice(Math.max(0, row - 3), separator + 2).join("\n"));
+  const activeRun = claude
+    ? /^\s*[✻✢✳✶✽⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*(?:…|\.{3})/.test(lines.slice(0, row - 1).findLast(line => line.trim()) || "")
+    : /\bworking\b|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◎◉○]/i.test(lines.slice(Math.max(0, row - 3), separator + 2).join("\n"));
   const copilotScreen = blocked ? screen : activeRun ? "running" : draft ? "draft" : clear ? "clear" : "unknown";
   return { clear: clear && !activeRun, draft, draftText: draft ? prompt : null, editableText: draft && interactive && !activeRun ? prompt : null,
     empty: clear && interactive && !activeRun, screen: copilotScreen };

@@ -2,7 +2,7 @@ import { engineNames } from "../../services/engines";
 
 export function NewAgentDialog() {
   return (
-    <dialog id="new-dialog" aria-labelledby="new-title">
+    <><dialog id="new-dialog" aria-labelledby="new-title">
       <form id="new-form">
         <header className="dialog-header"><h2 id="new-title">新建 Agent 窗口</h2><button type="button" className="icon-button" data-close="" aria-label="关闭">×</button></header>
         <div className="dialog-body">
@@ -25,7 +25,10 @@ export function NewAgentDialog() {
                 <button type="button" className="text-button" data-install={id} aria-label={"安装 " + label} hidden>安装</button>
               </div>)}
             </div>
-            <label className="field"><span><span className="required">*必填</span> 会话</span><select id="session-source"><option value="new">新建</option><option value="latest" hidden disabled>恢复最近会话</option><option value="history">恢复已有会话</option></select></label>
+            <div className="field"><label htmlFor="session-source"><span className="required">*必填</span> 会话</label>
+              <select id="session-source" disabled><option value="" disabled>请选择会话</option><option value="new">新建</option><option value="latest" hidden disabled>恢复最近会话</option><option value="history">恢复已有会话</option></select>
+              <button className="button" type="button" id="open-engine-login" hidden>打开登录终端</button>
+            </div>
           </div>
           <label className="field" id="history-field" hidden><span><span className="required">*必填</span> 历史会话</span><select id="history-session" required disabled></select></label>
           <fieldset id="history-action" hidden><legend>打开方式</legend>
@@ -44,5 +47,11 @@ export function NewAgentDialog() {
         <footer className="dialog-footer"><button className="button" type="button" data-close="">取消</button><button className="button primary" type="submit" id="create-agent">打开终端</button></footer>
       </form>
     </dialog>
+    <dialog id="engine-login-dialog" aria-labelledby="engine-login-title">
+      <header className="dialog-header"><h2 id="engine-login-title">引擎登录</h2><button type="button" className="icon-button" data-close="" aria-label="关闭">×</button></header>
+      <div id="zcode-login-providers" className="dialog-body" hidden><button type="button" className="button" value="bigmodel">智谱 BigModel 登录</button> <button type="button" className="button" value="zai">Z.AI 登录</button></div>
+      <div id="engine-login-terminal" />
+      <footer className="dialog-footer"><span id="engine-login-status" role="status"></span><button type="button" className="button primary" id="verify-engine-login">检查登录状态</button></footer>
+    </dialog></>
   );
 }
