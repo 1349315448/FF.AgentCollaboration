@@ -12,6 +12,8 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 
 ## 2. 信封与两类状态
 
+提供方的 `list_windows` 会列出已授权的申请方联系人，并标记 `returnContact: true`。如果来信包含 `RETURN_CONTACT`，该值就是发件 Agent 的联系人 ID。按用户要求主动发送文本结果时，把 ID 传给 `send_to_agent.target`，同名联系人也能准确区分。回应原任务时使用原信封的回信地址和 `replyTo`，可以附 Markdown。
+
 `MSG_ID` 标识本条消息，`FROM_AGENT` 是来源，`MSG` 是正文。`SUMMARY` 配合 `HANDOFF_DOC` 指向交接文档，`ATTACH_FILES` 列出附带路径，`RETURN_HINT` 说明回送要求。关联回信的 `REPLY_TO` 指向原任务，`REPLY_KIND` 区分进展和最终结果。遇到 `EXTERNAL_COLLAB_POLICY: READ_ONLY`，仅审阅并回信，禁止写文件、提交或推送。
 
 发送后返回 `queued`。收到原生信箱通知时，调用 `receive_message` 领取对应的完整消息；也可不传编号领取最早可收取的一封。返回 null 时结束本次检查。工具响应写出后，工作台登记已送达。协作状态独立记录。开始处理某条任务时上报 `working`；无须回信的任务做完后上报 `completed`，要求回信的任务用关联的最终结果结案。同一窗口收到多个任务时，逐条使用各自的 MSG_ID。普通回信无须再次回执。

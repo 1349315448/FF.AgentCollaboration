@@ -161,7 +161,8 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
         if (store.FederationNode().NodeName == null) throw new WorkbenchError("请先设置本端节点名称");
         var endpoint = new UriBuilder(Uri.UriSchemeHttps, uri.IdnHost, uri.Port == -1 ? 443 : uri.Port).Uri;
         return store.AddRemote(WorkbenchInput.Id(input.TopicId), endpoint.GetLeftPart(UriPartial.Authority), pin, WorkbenchInput.Id(query["node"]),
-            WorkbenchInput.Id(query["window"]), WorkbenchInput.AgentName(query["agent"]), share, WorkbenchInput.Text(input.Purpose, "申请用途", 300));
+            WorkbenchInput.Id(query["window"]), WorkbenchInput.AgentName(query["agent"]), share, WorkbenchInput.Text(input.Purpose, "申请用途", 300),
+            input.ContactSelected ? new ContactBinding(WorkbenchInput.Id(input.TopicId),input.AgentId) : null);
     }
     public void Dispose() => certificate?.Dispose();
 }

@@ -144,6 +144,7 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
         var remote = db.Remote(id);
         if (remote?.Status != "approved" || remote.Token == null) throw new FederationException(403, "peer_not_approved");
         var message = new PeerMessage(WorkbenchInput.Id(input.Id), WorkbenchInput.Text(input.Text, "消息", 8000),ExpectsReply:dispatch?.ExpectsReply??input.ExpectsReply);
+        if (dispatch != null) message = message with { ContactKey = db.SenderContactKey(id,dispatch.Window) };
         if (dispatch == null) db.TrackManual(id, message with { TopicId = input.TopicId });
         using var client = Connect(remote);
         if (dispatch?.Content != null)
@@ -198,29 +199,59 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
         while (!ct.IsCancellationRequested)
         {
             RemoteConnection? remote;
-            using (var db = Store()) remote = db.Remote(id);
+            using (var db = Store()) remote = db.Remote(id,includeWithdrawal:true);
             if (remote == null || remote.Status is not ("applying" or "pending" or "approved")) return;
             try
             {
                 using var client = Connect(remote);
                 if (remote.Status == "approved" && remote.Token != null)
                 {
+                    if (remote.Detached)
+                    {
+                        using var withdraw = Request(HttpMethod.Put,"contacts",remote.Token,Array.Empty<AdvertisedContact>());
+                        using var withdrawn = await client.SendAsync(withdraw,ct);
+                        if (withdrawn.StatusCode is not (HttpStatusCode.Forbidden or HttpStatusCode.NotFound or HttpStatusCode.Gone))
+                            withdrawn.EnsureSuccessStatusCode();
+                        using var store = Store();
+                        store.ContactsPublished(id,false);
+                        return;
+                    }
                     using var req = Request(HttpMethod.Get, "events", remote.Token);
                     req.Headers.Add("Last-Event-ID", remote.Cursor.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    req.Headers.Add("X-FF-Return-Contacts","1");
                     using var response = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
                     if (!response.IsSuccessStatusCode) await Read<JsonElement>(response, ct);
                     if (response.Content.Headers.ContentType?.MediaType != "text/event-stream") throw new InvalidDataException();
+                    bool supportsContacts = response.Headers.Contains("X-FF-Return-Contacts");
+                    List<AdvertisedContact>? published = null;
                     await using var stream = await response.Content.ReadAsStreamAsync(ct);
                     await foreach (string payload in DataFrames(stream, ct))
                     {
                         using var db = Store();
                         if (db.Remote(id)?.Endpoint != remote.Endpoint) return;
                         using var doc = JsonDocument.Parse(payload);
-                        if (doc.RootElement.TryGetProperty("state", out var state)) ApplySession(db, remote, state.Deserialize<PeerSession>(Json)!, true);
+                        if (doc.RootElement.TryGetProperty("state", out var state))
+                        {
+                            ApplySession(db, remote, state.Deserialize<PeerSession>(Json)!, true);
+                            if (supportsContacts)
+                            {
+                                var contacts = db.AdvertisedContacts(id);
+                                if (published == null || !published.SequenceEqual(contacts))
+                                {
+                                    // 服务端可能已保存而响应丢失，移除最后一个胶囊时仍须撤销该地址簿。
+                                    if (contacts.Count > 0) db.ContactsPublished(id,true);
+                                    using var update = Request(HttpMethod.Put,"contacts",remote.Token,contacts);
+                                    using var synced = await client.SendAsync(update,ct);
+                                    synced.EnsureSuccessStatusCode();
+                                    if (contacts.Count == 0) db.ContactsPublished(id,false);
+                                    published = contacts;
+                                }
+                            }
+                        }
                         else if (doc.RootElement.TryGetProperty("item", out var field))
                         {
                             var item = field.Deserialize<PeerEvent>(Json);
-                            if (item == null || item.Id <= 0 || item.Kind is not ("receipt" or "reply") || item.Text is not { Length: <= 8000 } ||
+                            if (item == null || item.Id <= 0 || item.Kind is not ("receipt" or "reply" or "contact") || item.Text is not { Length: <= 8000 } ||
                                 !Guid.TryParseExact(item.RequestId, "N", out _)) throw new InvalidDataException();
                             db.ReceivePeerEvent(id, item);
                             events.Changed();

@@ -31,6 +31,10 @@ internal sealed partial class WorkbenchStore
                 name TEXT NOT NULL, agent TEXT NOT NULL, status TEXT NOT NULL, online INTEGER NOT NULL DEFAULT 0,
                 connected INTEGER NOT NULL DEFAULT 0, cursor INTEGER NOT NULL DEFAULT 0, last_reply TEXT, error TEXT);
             CREATE TABLE IF NOT EXISTS fed_remote_topic(remote TEXT NOT NULL,topic TEXT NOT NULL,PRIMARY KEY(remote,topic));
+            CREATE TABLE IF NOT EXISTS fed_contact_binding(remote TEXT NOT NULL,topic TEXT NOT NULL,agent TEXT NOT NULL,
+                key TEXT NOT NULL UNIQUE,PRIMARY KEY(remote,topic));
+            CREATE TABLE IF NOT EXISTS fed_return_contact(id TEXT PRIMARY KEY,grant_id TEXT NOT NULL,key TEXT NOT NULL,
+                name TEXT NOT NULL,online INTEGER NOT NULL, UNIQUE(grant_id,key));
             CREATE TABLE IF NOT EXISTS fed_received(remote TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
                 request_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(remote,seq));
             CREATE TABLE IF NOT EXISTS fed_file(id TEXT PRIMARY KEY,owner TEXT NOT NULL,node TEXT NOT NULL,retry TEXT NOT NULL,
@@ -63,6 +67,10 @@ internal sealed partial class WorkbenchStore
             UPDATE fed_remote SET online=0,connected=0;
             UPDATE fed_grant SET streams=0 WHERE streams>0;
             """);
+        if (!Read("PRAGMA table_info(fed_incoming)", r => r.GetString(1)).Contains("contact_key"))
+            Exec("ALTER TABLE fed_incoming ADD COLUMN contact_key TEXT");
+        if (!Read("PRAGMA table_info(fed_remote)",r=>r.GetString(1)).Contains("contacts_published"))
+            Exec("ALTER TABLE fed_remote ADD COLUMN contacts_published INTEGER NOT NULL DEFAULT 0");
         if (!Read("PRAGMA table_info(fed_remote)", r => r.GetString(1)).Contains("quota_snapshot"))
             Exec("ALTER TABLE fed_remote ADD COLUMN quota_snapshot TEXT");
         if (!Read("PRAGMA table_info(inbox)", r => r.GetString(1)).Contains("work_state"))
@@ -163,7 +171,7 @@ internal sealed partial class WorkbenchStore
 
     internal FederationSummary FederationSummary() => new(
         Read($"SELECT {GrantFields} FROM fed_grant WHERE window_id IN (SELECT id FROM windows WHERE closed=0) ORDER BY rowid DESC", GrantView),
-        RemoteCapsules(), Read("SELECT window_id FROM fed_share WHERE window_id IN (SELECT id FROM windows WHERE closed=0)", r => r.GetString(0)), RecentPeerMail());
+        RemoteCapsules(), Read("SELECT window_id FROM fed_share WHERE window_id IN (SELECT id FROM windows WHERE closed=0)", r => r.GetString(0)), RecentPeerMail(), ReturnContacts());
 
     internal void DecidePeer(string id, PeerDecision decision) => Atomic(() =>
     {
@@ -351,9 +359,9 @@ internal sealed partial class WorkbenchStore
             """, r => new { id = r.GetString(0), text = r.GetString(1), permissionMode = r.GetString(2) }, grant);
     }
 
-    internal List<PeerEvent> PeerEvents(string grant, long after) => Read("""
+    internal List<PeerEvent> PeerEvents(string grant, long after, bool acceptsContacts) => Read("""
         SELECT e.seq,e.kind,e.request_id,e.body,d.file_id,f.name,e.final_reply FROM fed_event e
         LEFT JOIN fed_reply_doc d ON e.kind='reply' AND d.grant_id=e.grant_id AND d.event_id=e.id LEFT JOIN fed_file f ON f.id=d.file_id
-        WHERE e.grant_id=$p0 AND e.seq>$p1 ORDER BY e.seq LIMIT 32
-        """, r => new PeerEvent(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), Optional(r, 4), Optional(r, 5), r.IsDBNull(6) ? null : r.GetBoolean(6)), grant, after);
+        WHERE e.grant_id=$p0 AND e.seq>$p1 AND ($p2 OR e.kind!='contact') ORDER BY e.seq LIMIT 32
+        """, r => new PeerEvent(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), Optional(r, 4), Optional(r, 5), r.IsDBNull(6) ? null : r.GetBoolean(6)), grant, after, acceptsContacts);
 }

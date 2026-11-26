@@ -51,7 +51,7 @@ function TopicBranch({topic}:{topic:Topic}) {
         <button type="button" onClick={()=>navigation.archiveTopic(topic.id)}>{topic.status==="finished"?"重开":"归档"}</button>
       </span>
     </div>
-    {expanded && <ul className="tree-members"><TopicAgentList members={members} remotes={remotes} tree/></ul>}
+    {expanded && <ul className="tree-members"><TopicAgentList members={members} remotes={remotes} contacts={snapshot?.federation?.contacts} tree/></ul>}
   </li>;
 }
 

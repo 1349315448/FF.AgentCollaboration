@@ -33,18 +33,24 @@ function AgentNavigationItem({view, tree = false}:{view:WindowView; tree?:boolea
   </span>;
 }
 
-export function TopicAgentList({members, remotes, tree = false}:{
-  members:WindowView[]; remotes:Federation["remotes"]; tree?:boolean;
+export function TopicAgentList({members, remotes, contacts=[], tree = false}:{
+  members:WindowView[]; remotes:Federation["remotes"]; contacts?:Federation["contacts"]; tree?:boolean;
 }) {
   const entries = [
     ...members.map(view => ({
-      key:"local-"+view.agent.id, online:view.agent.online, item:<AgentNavigationItem view={view} tree={tree}/>
+      key:"local-"+view.agent.id, online:view.agent.online, item:<AgentNavigationItem view={view} tree={tree}/>,
+      children:tree?contacts.filter(c=>c.windowId===view.agent.id):[]
     })),
     ...remotes.map(remote => ({
-      key:"remote-"+remote.id, online:remoteOnline(remote), item:<RemoteCapsule remote={remote} tree={tree}/>
+      key:"remote-"+remote.id, online:remoteOnline(remote), item:<RemoteCapsule remote={remote} tree={tree}/>, children:[]
     }))
   ];
   entries.sort((a,b) => Number(b.online) - Number(a.online));
   const Row = tree ? "li" : Fragment;
-  return entries.map(entry => <Row key={entry.key}>{entry.item}</Row>);
+  return entries.map(entry => <Row key={entry.key}>{entry.item}
+    {entry.children.length>0 && <ul className="tree-return-contacts" aria-label="申请方 Agent">{entry.children.map(c=>
+      <li key={c.id} data-contact={c.id} title={`@${c.name} · ${c.nodeName} · ${c.online?"在线":"离线"}`}>
+        <WorkspaceIcon name="network"/><span>@{c.name}</span><small>{c.nodeName}</small>
+      </li>)}</ul>}
+  </Row>);
 }

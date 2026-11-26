@@ -64,13 +64,18 @@ def verify_documents(exe,case,provider,requester,client,local,topic,target,w,rem
         assert not response.get("isError"),response
         return response["content"][0]["text"]
     assert any(t.get("id")==remote for t in json.loads(tool(requester,sourcegrant,"list_windows",detail=True)))
-    mid=json.loads(tool(requester,sourcegrant,"send_to_agent",target="@Reviewer",message="请审阅",document=str(formal)))["id"]
+    assert http(client,"/api/peers/remotes/"+remote+"/contact",{"topicId":target,"agentId":sender},"PUT")[0]==204
+    mid=json.loads(tool(requester,sourcegrant,"send_to_agent",target="@Reviewer",message="请审阅",document=str(formal),autoReturnHint=True))["id"]
     row=wait_rows(provider,"SELECT f.local,i.document_ref FROM fed_incoming f JOIN inbox i ON i.id=f.local WHERE f.request=?",mid)[0]
     assert Path(row[1]).resolve().is_relative_to((provider/"federation-inbox").resolve()) and Path(row[1]).read_bytes()==formal.read_bytes(),row
     assert tool(provider,wgrant,"read_handoff_doc",pathOrId=row[0])=="跨端交接原文"
+    contact_id=wait_rows(provider,"SELECT id FROM fed_return_contact WHERE grant_id=? AND name='Writer'",grant)[0][0]
+    assert "[RETURN_CONTACT: "+contact_id+"]" in query(provider,"SELECT text FROM inbox WHERE id=?",row[0])[0][0]
     report=case/"project"/"result.md";report.write_text("回信正文",encoding="utf8")
     assert mcp(exe,requester,sourcegrant,"send_to_agent",target="@reply-"+row[0],message="wrong node").get("isError")
-    tool(provider,wgrant,"send_to_agent",target="@reply-"+row[0],message="已审阅",document=str(report))
+    assert mcp(exe,provider,wgrant,"send_to_agent",target=contact_id,replyTo=row[0],message="尚未收取").get("isError")
+    query(provider,"UPDATE inbox SET state='delivered' WHERE id=?",row[0])
+    tool(provider,wgrant,"send_to_agent",target=contact_id,replyTo=row[0],message="已审阅",document=str(report))
     received=wait_rows(requester,"SELECT id,document_ref FROM inbox WHERE target=? AND text LIKE '%已审阅%'",sender)
     assert len(received)==1 and Path(received[0][1]).resolve().is_relative_to((requester/"federation-inbox").resolve()),received
     assert tool(requester,sourcegrant,"read_handoff_doc",pathOrId=received[0][0])=="回信正文"

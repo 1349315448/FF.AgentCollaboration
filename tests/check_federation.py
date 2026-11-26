@@ -16,7 +16,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
-from check_workbench import host, http, new_id
+from check_workbench import host, http, mcp, new_id
 from check_federation_delivery import verify_documents
 from cloud_forwarder import forward_port
 
@@ -124,6 +124,56 @@ def verify(exe, case):
         assert approve()[0] == 200
         rem = lambda: next(r for r in view(client)["remotes"] if r["id"] == remote)
         until(rem,lambda r:r["status"]=="approved" and r["connected"])
+        applicant = new_id()
+        with closing(sqlite3.connect(requester / "workbench.sqlite")) as db:
+            db.execute("INSERT INTO windows(id,name,engine,project,topic_id,online,auto_receive) VALUES(?, 'Planner','codex',?,?,1,0)",(applicant,str(case),target))
+            db.commit()
+        binding = "/api/peers/remotes/"+remote+"/contact"
+        assert http(client,binding,{"topicId":target,"agentId":applicant},"PUT")[0] == 204
+        contacts = lambda: view(local)["contacts"]
+        contact = until(contacts,lambda rows:len(rows)==1 and rows[0]["online"])[0]
+        assert contact["windowId"] == w and contact["name"] == "Planner" and not view(local)["remotes"]
+        key = new_id()
+        with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
+            db.execute("UPDATE windows SET online=1,grant_hash=? WHERE id=?",(hashlib.sha256(key.encode()).hexdigest().upper(),w))
+            db.commit()
+        listed=json.loads(mcp(exe,provider,key,"list_windows")["content"][0]["text"])
+        assert any(r.get("id")==contact["id"] and r["name"]=="@Planner" for r in listed)
+        other = new_id()
+        with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
+            db.execute("INSERT INTO windows(id,name,engine,project,topic_id,online,grant_hash) VALUES(?, 'Other','codex',?,?,1,?)",
+                       (other,str(project),topic,hashlib.sha256(other.encode()).hexdigest().upper()))
+            db.commit()
+        others=json.loads(mcp(exe,provider,other,"list_windows")["content"][0]["text"])
+        assert all(row.get("id") != contact["id"] for row in others)
+        assert mcp(exe,provider,other,"send_to_agent",target=contact["id"],message="越窗").get("isError")
+        with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
+            db.execute("UPDATE windows SET online=0,closed=1,grant_hash=NULL WHERE id=?", (other,))
+            db.commit()
+        sent=mcp(exe,provider,key,"send_to_agent",target="@Planner",message="定时检查结果")
+        assert not sent.get("isError"),sent
+        def received():
+            with closing(sqlite3.connect(requester / "workbench.sqlite")) as db:
+                return db.execute("SELECT target FROM inbox WHERE text LIKE '%定时检查结果%'").fetchall()
+        until(received,lambda rows:rows==[(applicant,)])
+        with closing(sqlite3.connect(requester / "workbench.sqlite")) as db:
+            db.execute("UPDATE windows SET name='提供方/Reviewer' WHERE id=?",(applicant,))
+            db.commit()
+        until(contacts,lambda rows:rows and rows[0]["name"]=="提供方/Reviewer")
+        assert mcp(exe,provider,key,"send_to_agent",target="@提供方/Reviewer",message="本地限定地址不能被外部同名联系人接收").get("isError")
+        with closing(sqlite3.connect(requester / "workbench.sqlite")) as db:
+            db.execute("UPDATE windows SET name='Planner' WHERE id=?",(applicant,))
+            db.commit()
+        application = {"topicId":target,"link":link,"purpose":"代码审阅"}
+        assert http(client,"/api/peers/remotes",application)[1]["id"] == remote
+        assert rem()["contactAgentId"] == applicant
+        assert http(client,"/api/peers/remotes",dict(application,agentId=None))[1]["id"] == remote
+        until(contacts,lambda rows:not rows)
+        assert mcp(exe,provider,key,"send_to_agent",target=contact["id"],message="已取消绑定").get("isError")
+        with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
+            db.execute("UPDATE windows SET online=0,grant_hash=NULL WHERE id=?",(w,))
+            db.commit()
+        print("PASS scoped applicant contact, proactive SSE message and binding removal")
         with closing(sqlite3.connect(requester / "workbench.sqlite")) as db:
             claim, credential = db.execute("SELECT claim,token FROM fed_remote WHERE id=?",(remote,)).fetchone()
         # The original POST response may have been lost just before the host approved.
@@ -144,8 +194,12 @@ def verify(exe, case):
         assert view(local)["grants"][0]["used"] == 2
         until(rem,lambda r:r["quota"]["remaining"] == 0)
         # Reattaching or sharing the grant across topics preserves the credential and stream cursor.
+        assert http(client,binding,{"topicId":target,"agentId":applicant},"PUT")[0] == 204
+        rebound=until(contacts,lambda rows:len(rows)==1)[0]
+        assert rebound["id"]!=contact["id"]
         assert http(client,"/api/peers/remotes/"+remote+"?topic="+target,method="DELETE")[0] == 204
         assert not view(client)["remotes"]
+        until(contacts,lambda rows:not rows)
         until(lambda:view(local)["grants"][0],lambda item:not item["connected"])
         offline_reply={"id":new_id(),"requestId":first,"text":"断线时的回信"}
         assert http(local,grant_url+g["id"]+"/replies",offline_reply)[0] == 200

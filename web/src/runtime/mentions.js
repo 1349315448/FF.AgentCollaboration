@@ -123,7 +123,9 @@ function renderPeers(reset = false) {
   const remotes = (snapshot.federation?.remotes ?? []).filter(r => r.topicId === pane.agent.topicId && remoteOnline(r))
     .map(r => ({id:r.id, name:r.agentName, title:r.nodeName, topic:topics.get(r.topicId) ?? "", same:true,
       address:"@" + r.agentName, label:"外部 · " + r.nodeName}));
-  const rows = [...locals, ...remotes].filter(row => [row.name,row.title,row.topic,row.address].some(field => matchesPeer(field, query)))
+  const contacts = (snapshot.federation?.contacts ?? []).filter(c=>c.windowId===pane.agent.id && c.online && c.canMention)
+    .map(c=>({id:c.id,name:c.name,title:c.nodeName,topic:"",same:true,address:"@"+c.name,label:"回信 · "+c.nodeName}));
+  const rows = [...locals, ...remotes, ...contacts].filter(row => [row.name,row.title,row.topic,row.address].some(field => matchesPeer(field, query)))
     .sort((a,b) => Number(b.same) - Number(a.same));
   const signature = JSON.stringify(rows);
   if (!reset && state.signature === signature) return;

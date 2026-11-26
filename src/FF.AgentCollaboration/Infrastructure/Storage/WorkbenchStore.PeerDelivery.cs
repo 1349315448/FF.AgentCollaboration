@@ -89,7 +89,9 @@ internal sealed partial class WorkbenchStore
         string label = grant.NodeName + "#" + grant.NodeId[..8];
         string header = grant.PermissionMode == "read_only"
             ? "[EXTERNAL_COLLAB_POLICY: READ_ONLY | DO NOT EDIT/WRITE/COMMIT/PUSH ANY FILES] " : "[EXTERNAL_COLLAB_POLICY: READ_WRITE] ";
-        Exec("INSERT INTO fed_incoming(local,grant_id,request,upload) VALUES($p0,$p1,$p2,$p3)", id, grant.Id, input.Id, input.UploadId);
+        string? contactKey = input.ContactKey == null ? null : WorkbenchInput.Id(input.ContactKey);
+        if (contactKey != null) header += "[RETURN_CONTACT: " + ReturnContactId(grant.Id,contactKey) + "] ";
+        Exec("INSERT INTO fed_incoming(local,grant_id,request,upload,contact_key) VALUES($p0,$p1,$p2,$p3,$p4)", id, grant.Id, input.Id, input.UploadId, contactKey);
         QueueIncoming(id, window, "peer-mailbox", label, header + body, path, input.ExpectsReply ? "请用 send_to_agent 向 @reply-" + id + " 回信，replyTo 填本条 MSG_ID，可附 Markdown 文档。" : null);
         Exec("UPDATE inbox SET work_state='queued' WHERE id=$p0",id);
         Mail(window.TopicId, "incoming", "peer-mailbox", window.Id, label, body, input.UploadId,id);
@@ -162,6 +164,25 @@ internal sealed partial class WorkbenchStore
         var caller = Caller(callerGrant);
         string name = address.TrimStart('@');
         bool replying = name.StartsWith("reply-", StringComparison.Ordinal) && Guid.TryParseExact(name[6..], "N", out _);
+        if (!replying)
+        {
+            var contacts = ReturnContacts(caller.Id);
+            var contact = ReservedContactName(name) ? contacts.FirstOrDefault(c=>c.Id==name)
+                : contacts.FirstOrDefault(c=>c.Name.Equals(name,StringComparison.OrdinalIgnoreCase));
+            if (contact != null)
+            {
+                if (name != contact.Id && ContactNameCollides(caller,contact))
+                    throw new WorkbenchError("收件人重名，请使用联系人 ID 或完整的本地话题地址");
+                if (replyTo == null) return SendContactNotice(callerGrant,caller,contact,body,document,files,hint);
+                var original = ReceivedTaskFor(caller.Id,replyTo);
+                if (!Read("""
+                    SELECT 1 FROM fed_incoming f JOIN fed_return_contact c ON c.grant_id=f.grant_id AND c.key=f.contact_key
+                    WHERE f.local=$p0 AND c.id=$p1
+                    """,r=>true,original.Id,contact.Id).Any()) throw new WorkbenchError("该联系人不是原任务发件人",WorkbenchFailure.Forbidden);
+                name = "reply-"+original.Id;
+                replying = true;
+            }
+        }
         if (DedicatedReader(caller.Id) && (!replying || CurrentPeerRequest(caller.Id) != name[6..]))
             throw new WorkbenchError("专用审阅会话仅可向当前外部来信地址回信", WorkbenchFailure.Forbidden);
         var remote = replying ? null : RemoteAddress(caller, address);

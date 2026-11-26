@@ -1,12 +1,14 @@
 import { useRef, useState } from "react";
 import { request } from "../../services/api";
 import { engineNames, traeAccountNotice } from "../../services/engines";
+import {ReturnAgentSelect} from "../federation/ReturnAgentSelect";
 
 export function NewAgentDialog() {
+  const dialogRef=useRef<HTMLDialogElement>(null);
   const generation=useRef(0);
   const [external,choose]=useState(false), [busy,setBusy]=useState(false), [error,setError]=useState("");
   return (
-    <><dialog id="new-dialog" aria-labelledby="new-title" onClose={()=>{generation.current++;choose(false);setError("");setBusy(false);}}>
+    <><dialog ref={dialogRef} id="new-dialog" aria-labelledby="new-title" onClose={()=>{generation.current++;choose(false);setError("");setBusy(false);}}>
         <header className="dialog-header"><h2 id="new-title">新建 Agent 窗口</h2><button type="button" className="icon-button" data-close="" aria-label="关闭">×</button></header>
       <div className="new-agent-tabs" role="tablist" aria-label="Agent 来源">
         {["本地 Agent","外部协作 Agent"].map((label,i)=><button key={label} type="button" role="tab" disabled={busy} aria-selected={external===Boolean(i)} onClick={()=>choose(Boolean(i))}>{label}</button>)}
@@ -59,11 +61,12 @@ export function NewAgentDialog() {
       {external && <form className="dialog-body fed-fields" onSubmit={async e=>{
         e.preventDefault(); if(busy)return; const dialog=e.currentTarget.closest("dialog")!, form=new FormData(e.currentTarget);
         const attempt=generation.current;setBusy(true);setError("");
-        try {await request("/peers/remotes",{method:"POST",body:{topicId:dialog.dataset.topic,link:form.get("link"),purpose:form.get("purpose")}});if(attempt===generation.current)dialog.close();}
+        try {await request("/peers/remotes",{method:"POST",body:{topicId:dialog.dataset.topic,link:form.get("link"),purpose:form.get("purpose"),agentId:form.get("contactAgent")||null}});if(attempt===generation.current)dialog.close();}
         catch(err){if(attempt===generation.current)setError((err as Error).message);} finally{if(attempt===generation.current)setBusy(false);}
       }}>
         <label>分享链接<input name="link" required placeholder="ffcp://" autoComplete="off" spellCheck={false}/></label>
         <label>申请用途<input name="purpose" required maxLength={300}/></label>
+        <ReturnAgentSelect topicId={dialogRef.current?.dataset.topic}/>
         {error && <p role="alert">{error}</p>}<button disabled={busy} className="button primary">发送申请</button>
       </form>}
     </dialog>

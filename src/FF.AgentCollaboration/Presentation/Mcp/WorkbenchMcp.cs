@@ -197,7 +197,9 @@ internal static class WorkbenchMcp
                     var item = new Dictionary<string,object> { ["name"]="@"+r.AgentName, ["online"]=r.Online, ["id"]=r.Id, ["node"]=r.NodeName };
                     if ((bool?)input["detail"]==true) item["remote"]=true;
                     return item;
-                })));
+                }).Concat(state.ReturnContacts(caller.Id).Select(c=>new Dictionary<string,object> {
+                    ["name"]="@"+c.Name, ["online"]=c.Online, ["id"]=c.Id, ["node"]=c.NodeName, ["returnContact"]=true
+                }))));
             case CollaborationTools.Send:
                 if (input.AsObject().ContainsKey("cancel"))
                 {

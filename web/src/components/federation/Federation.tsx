@@ -5,6 +5,7 @@ import {copyText} from "../../services/clipboard";
 import {useWorkbench} from "../../store/workbenchStore";
 import {WorkspaceIcon} from "../layout/WorkspaceIcon";
 import "./federation.css";
+import {ReturnAgentSelect} from "./ReturnAgentSelect";
 
 type Mode = "unlimited" | "daily" | "hourly" | "total";
 export interface Grant {
@@ -12,9 +13,10 @@ export interface Grant {
   permissionMode:string; quotaMode:Mode; quotaLimit:number|null; used:number; blocked:number; paused:boolean;
   allowUpload:boolean; connected:boolean; lastReceived:number|null;
 }
-interface Capsule {quota?:{mode:Mode;limit:number|null;remaining:number|null;paused:boolean;resetsAt:number|null}; id:string; topicId:string; agentName:string; nodeName:string; nodeId:string; status:string; connected:boolean; online:boolean; lastReply?:string; error?:string}
+interface Capsule {quota?:{mode:Mode;limit:number|null;remaining:number|null;paused:boolean;resetsAt:number|null}; id:string; topicId:string; agentName:string; nodeName:string; nodeId:string; status:string; connected:boolean; online:boolean; lastReply?:string; error?:string; contactAgentId?:string|null}
 export interface PeerMail {seq:number;topicId:string;kind:string;source:string;target:string;label:string;text:string;createdAt:string;hasDocument:boolean;workState?:string|null;deliveryState?:string|null}
-export interface Federation {grants:Grant[]; remotes:Capsule[]; sharedWindows:string[]; mail:PeerMail[]}
+export interface ReturnContact {id:string; windowId:string; name:string; nodeName:string; online:boolean; canMention:boolean}
+export interface Federation {grants:Grant[]; remotes:Capsule[]; sharedWindows:string[]; mail:PeerMail[]; contacts?:ReturnContact[]}
 interface Share {enabled:boolean; permissionMode:string; dedicatedReadOnly:boolean; link:string|null; restarted:boolean}
 interface NodeInfo {nodeId:string; nodeName:string; selectedIp:string|null; activeIp:string|null; addresses:string[]; publicEndpoint:string|null; restartRequired:boolean}
 type Selection = {windowId:string} | {remoteId:string;topicId:string} | {grantId:string};
@@ -277,6 +279,7 @@ export function FederationDialog() {
     {selection && "windowId" in selection && <Provider key={selection.windowId} id={selection.windowId} run={run}/>}
     {remote && <><b>{remote.nodeName} · {remote.nodeId.slice(0,8)}</b><span>{states[remote.status]} · {remote.connected?(remote.online?"Agent 在线":"Agent 离线"):"未连接"}</span>
       {remote.status==="approved" && <span className="remote-quota-detail">{quotaText(remote,true)}</span>}
+      {remote.status==="approved" && <ReturnAgentSelect topicId={remote.topicId} value={remote.contactAgentId??""} onChange={agentId=>run(()=>put("remotes/"+remote.id+"/contact",{topicId:remote.topicId,agentId:agentId||null}))}/>}
       {remote.error && <small>{remote.error}</small>}{remote.lastReply && <p className="fed-text">最近回信　{remote.lastReply}</p>}
       <button className="button" onClick={()=>run(async()=>{await request("/peers/remotes/"+remote.id+"?topic="+remote.topicId,{method:"DELETE"});ref.current?.close();})}>移除本地胶囊</button></>}
     </fieldset>{note && <p role="alert" className="form-error">{note}</p>}

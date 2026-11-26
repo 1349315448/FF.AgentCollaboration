@@ -507,12 +507,19 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             using var store = new WorkbenchStore(Root);
             string topic = store.Window(id).TopicId;
             var remotes = store.RemoteRecipients(topic).ToList();
+            var contacts = store.ReturnContacts(id);
             string address;
-            if (selection.TargetTerminal == null)
+            if (selection.TargetTerminal == null && contacts.FirstOrDefault(c=>c.Id==targetId) is { } contact)
+            {
+                if (!contact.Online || !contact.CanMention) throw new WorkbenchError("该回信联系人当前不可提及",WorkbenchFailure.Conflict);
+                address = store.ContactNameCollides(store.Window(id),contact) ? contact.Id : contact.Name;
+            }
+            else if (selection.TargetTerminal == null)
             {
                 var peer = remotes.FirstOrDefault(r => r.Id == targetId && r.Online && r.Connected)
                     ?? throw new WorkbenchError("外部 Agent 已离线或授权已变更，请重新选择", WorkbenchFailure.Conflict);
                 bool sameName = remotes.Any(r => r.Id != peer.Id && r.AgentName.Equals(peer.AgentName, StringComparison.OrdinalIgnoreCase))
+                    || contacts.Any(c => c.Name.Equals(peer.AgentName,StringComparison.OrdinalIgnoreCase))
                     || store.Windows().Any(w => w.TopicId == topic && w.Name.Equals(peer.AgentName, StringComparison.OrdinalIgnoreCase));
                 address = sameName || peer.AgentName != WorkbenchInput.AgentName(peer.AgentName) || peer.AgentName.StartsWith("reply-", StringComparison.Ordinal)
                     ? peer.Id : peer.AgentName;
@@ -523,7 +530,8 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
                 if (!target.Online || target.Generation != selection.TargetTerminal)
                     throw new WorkbenchError("窗口已离线或切换会话，请重新选择", WorkbenchFailure.Conflict);
                 var peer = store.Window(targetId);
-                bool qualify = topic != peer.TopicId || remotes.Any(r => r.AgentName.Equals(peer.Name, StringComparison.OrdinalIgnoreCase));
+                bool qualify = topic != peer.TopicId || remotes.Any(r => r.AgentName.Equals(peer.Name, StringComparison.OrdinalIgnoreCase))
+                    || contacts.Any(c=>c.Name.Equals(peer.Name,StringComparison.OrdinalIgnoreCase));
                 address = qualify ? store.Topic(peer.TopicId).Name + "/" + peer.Name : peer.Name;
             }
             await source.Input(Encoding.UTF8.GetBytes("@" + address + " "), ct);

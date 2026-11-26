@@ -5,7 +5,7 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 
 internal sealed partial class WorkbenchStore
 {
-    internal string AddRemote(string topic, string endpoint, string pin, string provider, string window, string agent, string token, string purpose)
+    internal string AddRemote(string topic, string endpoint, string pin, string provider, string window, string agent, string token, string purpose, ContactBinding? binding)
     {
         string id = Guid.NewGuid().ToString("N");
         Atomic(() =>
@@ -25,22 +25,24 @@ internal sealed partial class WorkbenchStore
                 VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6,$p7,'',$p8,'applying')
                 """, id, window, endpoint, pin, provider, token, NewGrant(), purpose, agent);
             Exec("INSERT OR IGNORE INTO fed_remote_topic VALUES($p0,$p1)", id, topic);
+            if (binding != null) BindContact(id,binding);
         });
         return id;
     }
 
-    internal List<string> ActiveRemotes() => Read("SELECT id FROM fed_remote WHERE status IN ('applying','pending','approved') AND id IN (SELECT remote FROM fed_remote_topic)", r => r.GetString(0));
-    internal RemoteConnection? Remote(string id) => Read("""
-        SELECT id,window_id,endpoint,pin,provider,share,claim,token,status,purpose,cursor FROM fed_remote WHERE id=$p0 AND EXISTS(SELECT 1 FROM fed_remote_topic WHERE remote=$p0)
+    internal List<string> ActiveRemotes() => Read("SELECT id FROM fed_remote WHERE status IN ('applying','pending','approved') AND (contacts_published=1 OR id IN (SELECT remote FROM fed_remote_topic))", r => r.GetString(0));
+    internal RemoteConnection? Remote(string id,bool includeWithdrawal=false) => Read("""
+        SELECT id,window_id,endpoint,pin,provider,share,claim,token,status,purpose,cursor,NOT EXISTS(SELECT 1 FROM fed_remote_topic WHERE remote=$p0)
+        FROM fed_remote WHERE id=$p0 AND (EXISTS(SELECT 1 FROM fed_remote_topic WHERE remote=$p0) OR ($p1 AND contacts_published=1))
         """, r => new RemoteConnection(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4),
-        Optional(r, 5), r.GetString(6), Optional(r, 7), r.GetString(8), r.GetString(9), r.GetInt64(10)), id).SingleOrDefault();
+        Optional(r, 5), r.GetString(6), Optional(r, 7), r.GetString(8), r.GetString(9), r.GetInt64(10),r.GetBoolean(11)), id,includeWithdrawal).SingleOrDefault();
 
     private List<RemoteCapsule> RemoteCapsules() => Read("""
-        SELECT r.id,t.topic,r.provider,r.name,r.agent,r.status,r.online,r.connected,r.last_reply,r.error,r.quota_snapshot
-        FROM fed_remote r JOIN fed_remote_topic t ON t.remote=r.id ORDER BY r.rowid
+        SELECT r.id,t.topic,r.provider,r.name,r.agent,r.status,r.online,r.connected,r.last_reply,r.error,r.quota_snapshot,b.agent
+        FROM fed_remote r JOIN fed_remote_topic t ON t.remote=r.id LEFT JOIN fed_contact_binding b ON b.remote=r.id AND b.topic=t.topic ORDER BY r.rowid
         """, r => new RemoteCapsule(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5),
         r.GetBoolean(6), r.GetBoolean(7), Optional(r, 8), Optional(r, 9),
-        r.GetString(5) == "approved" && !r.IsDBNull(10) ? JsonSerializer.Deserialize<PeerQuota>(r.GetString(10)) : null));
+        r.GetString(5) == "approved" && !r.IsDBNull(10) ? JsonSerializer.Deserialize<PeerQuota>(r.GetString(10)) : null, Optional(r,11)));
 
     internal bool RemoteStatus(string id, PeerSession peer, bool connected) => Exec("""
         UPDATE fed_remote SET name=$p1,agent=$p2,status=$p3,online=$p4,connected=$p5,token=coalesce($p6,token),
@@ -56,6 +58,7 @@ internal sealed partial class WorkbenchStore
 
     internal void RemoveRemote(string id, string topic) => Atomic(() =>
     {
+        Exec("DELETE FROM fed_contact_binding WHERE remote=$p0 AND topic=$p1",id,topic);
         Exec("DELETE FROM fed_remote_topic WHERE remote=$p0 AND topic=$p1", id, topic);
         Exec("UPDATE fed_remote SET online=0,connected=0 WHERE id=$p0 AND NOT EXISTS(SELECT 1 FROM fed_remote_topic WHERE remote=$p0)", id);
     });
@@ -82,6 +85,7 @@ internal sealed partial class WorkbenchStore
             WHERE id=$p0 AND cursor<$p1 AND status='approved'
             """, remote, item.Id, item.Kind, item.Text) == 0) return;
         Exec("INSERT INTO fed_received(remote,seq,kind,request_id,body,final_reply) VALUES($p0,$p1,$p2,$p3,$p4,$p5)", remote, item.Id, item.Kind, item.RequestId, item.Text, item.FinalReply);
+        if (item.Kind == "contact") ReceiveContactNotice(remote,item);
         if (item.Kind != "reply") return;
         if (item.DocumentId != null)
         {

@@ -18,8 +18,16 @@ internal sealed record ShareSettings(bool Enabled, string PermissionMode = "read
 internal sealed record PeerDecision(string Action, string PermissionMode = "read_only", bool ConfirmWrite = false,
     string QuotaMode = "daily", int? QuotaLimit = 20, bool Paused = false, bool AllowUpload = true, bool ResetTotal = false);
 internal sealed record PeerApplication(string Claim, string Purpose);
-internal sealed record PeerMessage(string Id, string Text, string? RequestId = null, string? UploadId = null, string? TopicId = null, bool ExpectsReply = true, bool? FinalReply = null);
-internal sealed record RemoteApplication(string TopicId, string Link, string Purpose);
+internal sealed record PeerMessage(string Id, string Text, string? RequestId = null, string? UploadId = null, string? TopicId = null, bool ExpectsReply = true, bool? FinalReply = null, string? ContactKey = null);
+internal sealed record RemoteApplication(string TopicId, string Link, string Purpose)
+{
+    private string? agentId;
+    public string? AgentId { get => agentId; init { agentId = value; ContactSelected = true; } }
+    internal bool ContactSelected { get; private set; }
+}
+internal sealed record ContactBinding(string TopicId, string? AgentId);
+internal sealed record AdvertisedContact(string Key, string Name, bool Online);
+internal sealed record ReturnContact(string Id, string WindowId, string Name, string NodeName, bool Online, bool CanMention);
 internal sealed record PeerQuota(string Mode, int? Limit, long? Remaining, bool Paused, long? ResetsAt)
 {
     internal static PeerQuota From(PeerGrant grant) =>
@@ -35,11 +43,11 @@ internal sealed record PeerGrant(string Id, string WindowId, string NodeId, stri
     string Status, string PermissionMode, string QuotaMode, int? QuotaLimit, bool Paused, bool AllowUpload, long Used,
     long? ResetAt, long? LastReceived, long Blocked, bool Connected);
 internal sealed record RemoteCapsule(string Id, string TopicId, string NodeId, string NodeName, string AgentName,
-    string Status, bool Online, bool Connected, string? LastReply, string? Error, PeerQuota? Quota);
+    string Status, bool Online, bool Connected, string? LastReply, string? Error, PeerQuota? Quota, string? ContactAgentId = null);
 internal sealed record RemoteConnection(string Id, string WindowId, string Endpoint, string Pin, string Provider, string? Share,
-    string Claim, string? Token, string Status, string Purpose, long Cursor);
+    string Claim, string? Token, string Status, string Purpose, long Cursor, bool Detached);
 internal sealed record FederationSummary(IReadOnlyList<PeerGrant> Grants, IReadOnlyList<RemoteCapsule> Remotes,
-    IReadOnlyList<string> SharedWindows, IReadOnlyList<PeerMail> Mail);
+    IReadOnlyList<string> SharedWindows, IReadOnlyList<PeerMail> Mail, IReadOnlyList<ReturnContact> Contacts);
 
 internal sealed class FederationException(int status, string code, object? details = null) : Exception(code)
 {
