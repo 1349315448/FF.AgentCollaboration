@@ -16,7 +16,7 @@ internal static class EngineReleases
     internal static string? NpmPackage(string engine) => engine switch
     {
         "codex" => "@openai/codex", "copilot" => "@github/copilot", "claude" => "@anthropic-ai/claude-code",
-        "codebuddy" => "@tencent-ai/codebuddy-code", "qwen" => "@qwen-code/qwen-code", _ => null
+        "codebuddy" => "@tencent-ai/codebuddy-code", "qwen" => "@qwen-code/qwen-code", "qoder" => "@qoder-ai/qodercli", _ => null
     };
 
     internal static async Task<string?> Latest(string engine, bool refresh, CancellationToken ct)

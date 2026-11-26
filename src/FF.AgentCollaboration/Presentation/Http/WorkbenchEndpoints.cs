@@ -6,6 +6,7 @@ using FF.AgentCollaboration.Engines;
 using FF.AgentCollaboration.Infrastructure.Files;
 using FF.AgentCollaboration.Infrastructure.Storage;
 using FF.AgentCollaboration.Infrastructure.Terminal;
+using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Presentation.Http;
 
@@ -15,8 +16,12 @@ internal static class WorkbenchEndpoints
 {
     internal static void Map(WebApplication app, WorkbenchStartup startup, WorkbenchLocation location)
     {
+        WorkspaceFileEndpoints.Map(app, startup);
+        GitWorkspaceEndpoints.Map(app, startup);
+        ManagedMcpEndpoints.Map(app, startup);
+        ManagedSkillEndpoints.Map(app, startup);
         app.MapGet("/api/initialize", startup.Status);
-        app.MapPost("/api/initialize", (WorkbenchPaths paths) =>
+        app.MapPost("/api/initialize", (InitializeWorkbench paths) =>
         {
             startup.Initialize(paths);
             return Results.NoContent();
@@ -27,6 +32,13 @@ internal static class WorkbenchEndpoints
         {
             using var state = new WorkbenchStore(startup.Root);
             return state.Preview(WorkbenchInput.Id(id));
+        });
+        app.MapPost("/api/messages/{id}/resend", (string id, WorkbenchEvents events) =>
+        {
+            using var state = new WorkbenchStore(startup.Root);
+            var item = state.ResendLocal(WorkbenchInput.Id(id));
+            events.Changed();
+            return Results.Ok(new { item.Id });
         });
         app.MapPost("/api/windows/{id}/inbox/{messageId}/acknowledge", (string id, string messageId) =>
         {
@@ -110,7 +122,7 @@ internal static class WorkbenchEndpoints
         app.MapGet("/api/engines/capabilities", () => WorkbenchEnvironment.Engines.ToDictionary(name => name, name =>
         {
             using var adapter = Engine.Create(name, Directory.GetCurrentDirectory());
-            return adapter.Capabilities;
+            return adapter.Capabilities with { StartupApproval = StartupApproval.For(name) };
         }));
         app.MapGet("/api/engines/{engine}/account", (string engine, string project, CancellationToken ct) =>
             EngineAuthentication.Check(EngineNames.Require(engine), ProjectFolders.Resolve(project), ct));
@@ -130,6 +142,11 @@ internal static class WorkbenchEndpoints
         {
             if (detail == true) return Results.Json(await Task.WhenAll(WorkbenchEnvironment.Engines.Select(e => WorkbenchEnvironment.EngineDetails(e, ct))));
             return Results.Json(WorkbenchEnvironment.Engines.ToDictionary(name => name, name => EngineExecutable.TryFindExecutable(name) != null));
+        });
+        app.MapGet("/api/engines/{engine}/installed", async (string engine, CancellationToken ct) =>
+        {
+            string? path = EngineExecutable.TryFindExecutable(EngineNames.Require(engine));
+            return new { ready = path != null && !string.IsNullOrWhiteSpace(await WindowsCommand.Version(path, ct)) };
         });
         app.MapPost("/api/engines/{engine}/install", async (string engine, CancellationToken cancellation) =>
         {
@@ -192,20 +209,30 @@ internal static class WorkbenchEndpoints
             await workbench.SwitchSession(WorkbenchInput.Id(id), request, cancellation);
             return Results.NoContent();
         });
+        app.MapPut("/api/windows/{id}/config", async (string id, AgentConfiguration request, Workbench workbench, CancellationToken ct) =>
+        {
+            await workbench.ConfigureAgent(WorkbenchInput.Id(id), request, ct);
+            return Results.NoContent();
+        });
         app.MapPut("/api/windows/{id}/name", (string id, RenameAgent request) =>
         {
             using var state = new WorkbenchStore(startup.Root);
             state.RenameWindow(WorkbenchInput.Id(id), WorkbenchInput.AgentName(request.Name));
             return Results.NoContent();
         });
-        app.MapPut("/api/windows/{id}/auto-receive", (string id, ChangeAutoReceive request, Workbench workbench) =>
+        app.MapPut("/api/windows/{id}/auto-receive", async (string id, ChangeAutoReceive request, Workbench workbench, CancellationToken cancellation) =>
         {
-            workbench.Toggle(WorkbenchInput.Id(id), request.Enabled);
+            await workbench.Toggle(WorkbenchInput.Id(id), request, cancellation);
             return Results.NoContent();
         });
         app.MapPost("/api/windows/{id}/approval", async (string id, OpenApproval request, Workbench workbench, CancellationToken cancellation) =>
         {
             await workbench.OpenApprovalMenu(WorkbenchInput.Id(id), request.Terminal, cancellation);
+            return Results.NoContent();
+        });
+        app.MapPut("/api/windows/{id}/approval", async (string id, ChangeApproval request, Workbench workbench, CancellationToken cancellation) =>
+        {
+            await workbench.ChangeApprovalMode(WorkbenchInput.Id(id), request, cancellation);
             return Results.NoContent();
         });
         app.MapPost("/api/windows/{id}/stop", async (string id, Workbench workbench, CancellationToken cancellation) =>

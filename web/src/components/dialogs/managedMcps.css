@@ -1,0 +1,63 @@
+#resource-dialog {
+  position:fixed; inset:0 0 0 auto; margin:0; width:min(1100px,96vw); max-width:100vw;
+  height:100dvh; max-height:100dvh; padding:0; overflow:hidden;
+  border-width:0 0 0 1px; border-radius:0; background:var(--stage);
+}
+#resource-dialog[open] {display:flex; flex-direction:column}
+#resource-dialog::backdrop {background:#04040769; backdrop-filter:none}
+#resource-dialog .dialog-header {flex:none; background:var(--surface)}
+.resource-kinds,.catalog-heading,.catalog-tools,.mcp-actions,.mcp-engines {display:flex;align-items:center;gap:6px}
+.resource-kinds button,.catalog-sources button {border:0;border-radius:4px;background:transparent;color:var(--muted);font:inherit;text-align:left}
+.resource-kinds button {padding:6px 10px}
+.resource-kinds button[aria-pressed=true],.catalog-sources button[aria-current=true] {background:var(--raised);color:var(--text);box-shadow:inset 2px 0 var(--accent)}
+.mcp-manager {flex:1;min-height:0;display:grid;grid-template-columns:clamp(144px,20%,200px) minmax(0,1fr);font-size:12px}
+.catalog-sources,.catalog-main {min-width:0;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--line-hover) transparent}
+.catalog-sources {padding:12px 7px;border-right:1px solid var(--line);background:var(--surface)}
+.catalog-sources button {display:flex;align-items:center;gap:6px;width:100%;min-height:36px;padding:4px 7px;overflow-wrap:anywhere}
+.catalog-engines button {min-height:32px}
+.catalog-sources svg {flex:none;width:14px;height:14px}
+.catalog-sources button:hover,.resource-kinds button:hover,.catalog-item:hover {background:var(--raised);color:var(--text)}
+.catalog-engines {margin:1px 0 0 13px;padding-left:5px;border-left:1px solid var(--line)}
+.catalog-main {padding:12px clamp(12px,2vw,26px) 22px}
+.catalog-heading {min-height:30px;margin-bottom:8px}
+.catalog-heading h3 {margin:0;overflow-wrap:anywhere;font-size:15px}
+.catalog-heading h3+.text-button {margin-left:auto}
+.catalog-tools,.mcp-actions,.mcp-engines {flex-wrap:wrap}
+.catalog-tools {margin-bottom:12px}
+.catalog-tools select {max-width:min(48%,300px)}
+.catalog-tools input[type=search] {flex:1 1 120px;min-width:80px}
+.catalog-body,.catalog-body form>fieldset,.mcp-fields {border:0;margin:0;padding:0;min-width:0}
+.catalog-list {display:grid;gap:2px}
+.catalog-item {display:grid;grid-template-columns:minmax(100px,1fr) minmax(0,1.5fr) auto;align-items:center;gap:12px;
+  width:100%;min-height:38px;padding:7px 9px;background:transparent;color:var(--text);text-align:left;border:0;border-bottom:1px solid var(--line);border-radius:3px}
+.catalog-item strong,.catalog-item small {min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.catalog-item small,.catalog-item svg,.catalog-empty,.catalog-diagnostics,.native-config dt {color:var(--muted)}
+.catalog-empty {padding:8px 0}
+.catalog-item:focus-visible {outline-offset:-2px}
+.catalog-diagnostics {padding-top:12px;font-size:11px;overflow-wrap:anywhere}
+.catalog-diagnostics summary {cursor:pointer}
+.catalog-diagnostics p {margin-top:6px}
+.native-config dl {display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px 16px}
+.native-config dd {margin:0;overflow-wrap:anywhere}
+.mcp-manager input:not([type=checkbox],[type=file]),.mcp-manager select,.mcp-manager textarea {
+  min-width:0;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:var(--shell);color:var(--text);font:inherit
+}
+.catalog-body form input:not([type=checkbox]),.catalog-body form select,.catalog-body textarea {display:block;width:100%;margin-top:4px}
+.catalog-body form label,.catalog-body fieldset>small {display:block;margin:8px 0;color:var(--muted)}
+.catalog-body fieldset fieldset {min-width:0;border:0;margin:12px 0;padding:0}
+.catalog-body textarea {min-height:116px;resize:vertical}
+.catalog-body textarea.skill-editor {min-height:clamp(220px,41dvh,520px);font:13px/1.55 var(--mono)}
+.catalog-body .markdown-preview {padding:4px 0;line-height:1.65;overflow-wrap:anywhere}
+.mcp-fields>div {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:4px;margin-bottom:4px}
+.mcp-restart,.native-config em {color:var(--amber);font-size:11px}
+.skill-status,.skill-path {display:block;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted);margin:6px 0}
+@media(max-width:650px) {
+  #resource-dialog {width:100vw}
+  .mcp-manager {grid-template-columns:clamp(96px,25vw,150px) minmax(0,1fr)}
+  .catalog-sources {padding-inline:3px}
+  .catalog-engines {margin-left:4px;padding-left:3px}
+  .catalog-tools select {max-width:100%}
+  .catalog-item {grid-template-columns:minmax(0,1fr) auto;gap:3px}
+  .catalog-item small {grid-row:2;grid-column:1}
+  .catalog-item svg {grid-row:1 / 3;grid-column:2}
+}

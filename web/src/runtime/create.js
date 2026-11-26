@@ -2,7 +2,7 @@ import { request } from "../services/api";
 import { byId, feedback, folderName, setBusy } from "./dom.js";
 import { openFolders } from "./folders.js";
 import { focusAgent } from "./layout.js";
-import { engineNames, installGuides } from "../services/engines";
+import { engineNames, installEngine, installGuides } from "../services/engines";
 import { loadQuota, quotas } from "./quota.js";
 import { isDialogOpen, selectedProject, selectedTopicId, setSelectedProjectPath, snapshot } from "../store/workbenchStore";
 import { openTopicDialog, selectProject, selectedTopic } from "./topics.js";
@@ -91,6 +91,8 @@ async function loadCatalogs() {
   const controller = new AbortController();
   catalogRequest = controller;
   const engine = selectedEngine();
+  byId("trae-create-notice").hidden = engine !== "traecli";
+  byId("copilot-approval-field").hidden = true;
   const sources = byId("session-source");
   let history;
   let profile;
@@ -141,8 +143,20 @@ async function loadCatalogs() {
     sessions.disabled = !history;
     byId("history-field").hidden = byId("history-action").hidden = !history;
     byId("history-action").querySelector('[value="resume"]').disabled = !actions.includes("resume");
-    byId("mode-label").textContent = profile?.modeLabel || "初始模式";
-    for (const choice of profile?.modes || []) mode.add(new Option(choice.label, choice.id));
+    const policy = profile?.startupApproval;
+    const separate = engine === "copilot";
+    byId("copilot-approval-field").hidden = !separate || !policy;
+    byId("mode-label").textContent = separate ? "运行模式" : "审批权限";
+    if (policy && !separate) {
+      mode.add(new Option("需要审批", "approval:ask"));
+      const automatic = new Option("自动审批", "approval:auto");
+      automatic.title = policy.description;
+      mode.add(automatic);
+    }
+    for (const choice of profile?.modes || []) {
+      if (policy && !separate && [policy.ask,policy.auto].includes(choice.id)) continue;
+      mode.add(new Option(choice.label, choice.id));
+    }
     mode.closest("label").hidden = !profile?.modes?.length;
     model.closest("label").hidden = profile?.models === false;
     byId("agent-effort").closest("label").hidden = profile?.efforts === false;
@@ -166,7 +180,8 @@ async function loadCatalogs() {
       sessions.disabled = true;
       byId("history-field").hidden = byId("history-action").hidden = true;
       byId("open-engine-login").hidden = byId("reload-catalog").hidden = false;
-      summary.textContent = account.status === "signed-out" ? "请先登录，再选择新建或恢复会话" : "无法确认账号状态，请重新检测或打开登录终端";
+      byId("open-engine-login").hidden = account.status === "unavailable";
+      summary.textContent = account.message || (account.status === "signed-out" ? "请先登录，再选择新建或恢复会话" : "无法确认账号状态，请重新检测或打开登录终端");
       return;
     }
     sources.disabled = mode.disabled = false;
@@ -209,7 +224,7 @@ async function loadCatalogs() {
   byId("reload-catalog").hidden = !errors.length;
 }
 
-byId("new-agent").addEventListener("click", openCreate);
+
 byId("empty-create").addEventListener("click", openCreate);
 byId("agent-engine").addEventListener("change", () => {
   setSessionSource();
@@ -230,11 +245,13 @@ byId("agent-engine").addEventListener("click", async event => {
   feedback("create-error");
   loadCatalogs();
   try {
-    await request("/engines/" + engine + "/install", {method: "POST"});
+    await installEngine(engine);
     if (!quotas.get(engine)?.loading) quotas.delete(engine);
   } catch (error) { feedback("create-error", error.message); }
   finally {
     installingEngines.delete(engine);
+    button.disabled = false;
+    button.textContent = "安装";
     if (isDialogOpen("new-dialog")) loadCatalogs();
   }
 });
@@ -256,12 +273,14 @@ byId("new-form").addEventListener("submit", async event => {
   if (dialog.dataset.busy === "true" || button.disabled) return;
   const body = {
     topic: dialog.dataset.topic,
-    name: byId("agent-name").value, project: selectedProject, engine: selectedEngine(),
+    name: byId("agent-name").value, role: byId("agent-role").value, project: selectedProject, engine: selectedEngine(),
     session: byId("session-source").value === "history" ? byId("history-session").value : null,
     newSession: byId("session-source").value === "new",
     forkSession: byId("session-source").value === "history" && byId("new-form").elements.historyAction.value === "fork",
     model: byId("agent-model").value || null, effort: byId("agent-effort").value || null,
-    mode: byId("agent-mode").value || null
+    mode: byId("agent-mode").value.startsWith("approval:") ? null : byId("agent-mode").value || null,
+    approval: selectedEngine() === "copilot" ? byId("copilot-approval").value || null :
+      byId("agent-mode").value.split(":")[1] || null
   };
   catalogRequest?.abort();
   setBusy(dialog, true);

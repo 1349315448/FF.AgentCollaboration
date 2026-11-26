@@ -3,7 +3,7 @@ import { request } from "../services/api";
 import { selectedEngine } from "./create.js";
 import { byId, node } from "./dom.js";
 import { panes } from "../services/terminalRegistry";
-import { refresh } from "./workbench.js";
+import { publishEngineQuota } from "../services/engineQuota";
 
 const quotas = new Map();
 
@@ -67,6 +67,7 @@ function renderQuota(engine) {
   const value = [percent, credits != null ? credits + " credits" : ""].filter(Boolean).join(" · ") || (entry.loading ? "…" : "—");
   const checked = entry.quota?.checkedAt;
   const title = [...details, checked && "查询时间 " + quotaTime.format(new Date(checked)), "点击刷新"].filter(Boolean).join("\n");
+  publishEngineQuota(engine,percent || value,title,entry.loading);
   for (const pane of panes.values()) {
     if (pane.agent.engine !== engine) continue;
     const button = pane.element.querySelector(".pane-quota");

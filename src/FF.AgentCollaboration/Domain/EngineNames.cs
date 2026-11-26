@@ -5,6 +5,6 @@ internal static class EngineNames
     internal static string Require(string? name) => Supports(name)
         ? name! : throw new WorkbenchError("请选择受支持的引擎");
 
-    internal static readonly string[] All = ["codex", "copilot", "claude", "codebuddy", "traecli", "zcode", "qwen"];
+    internal static readonly string[] All = ["codex", "copilot", "claude", "codebuddy", "traecli", "zcode", "qwen", "qoder"];
     internal static bool Supports(string? name) => Array.IndexOf(All, name) >= 0;
 }

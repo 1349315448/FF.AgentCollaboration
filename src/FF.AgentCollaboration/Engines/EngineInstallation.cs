@@ -25,10 +25,10 @@ internal static class EngineInstallation
             if (EngineExecutable.TryFindExecutable(name) != null) return;
             if (name is "traecli" or "zcode")
                 throw new WorkbenchError("请按此引擎的官方安装指南安装 Windows 交互式 CLI，再重新检测");
-            if (name is "codebuddy" or "qwen")
+            if (name is "codebuddy" or "qwen" or "qoder")
             {
                 string installer = WindowsCommand.Dependency("npm.cmd", "npm.exe") ?? throw new WorkbenchError("请先安装 Node.js 和 npm");
-                if (name == "qwen") await RequireQwenNode(cancellation);
+                await RequireNpmRuntime(name, cancellation);
                 string module = EngineReleases.NpmPackage(name)!;
                 int result = await Run(installer, ["install", "-g", module]);
                 if (result == 0 && EngineExecutable.TryFindExecutable(name) != null) return;
@@ -56,11 +56,13 @@ internal static class EngineInstallation
         finally { InstallationLock.Release(); }
     }
 
-    private static async Task RequireQwenNode(CancellationToken ct)
+    private static async Task RequireNpmRuntime(string engine, CancellationToken ct)
     {
+        if (engine is not ("qwen" or "qoder")) return;
+        int minimum = engine == "qoder" ? 20 : 22;
         string? node = await WindowsCommand.Version(WindowsCommand.Dependency("node.exe"), ct);
-        if (!Version.TryParse(node?.Trim().TrimStart('v'), out var version) || version.Major < 22)
-            throw new WorkbenchError("npm 版 Qwen Code 需要 Node.js 22 或更高版本。请先升级 Node.js，或安装千问官方独立 CLI。");
+        if (!Version.TryParse(node?.Trim().TrimStart('v'), out var version) || version.Major < minimum)
+            throw new WorkbenchError($"npm 版 {(engine == "qoder" ? "Qoder CLI" : "Qwen Code")} 需要 Node.js {minimum} 或更高版本。");
     }
 
     // 依据实际可执行文件的位置更新同一份安装，避免全局 npm 另装一份而原窗格仍用旧版。
@@ -121,7 +123,7 @@ internal static class EngineInstallation
                 case "unknown": throw new WorkbenchError("无法识别当前版本，请先重新检测");
             }
             var update = Updater(name, path, current, latest) ?? throw new WorkbenchError("请根据官方指南更新当前安装");
-            if (name == "qwen" && update.Args[0] == "install") await RequireQwenNode(ct);
+            if (update.Args[0] == "install") await RequireNpmRuntime(name, ct);
             int code = await Run(update.Program, update.Args, TimeSpan.FromMinutes(10));
             if (code != 0) throw new WorkbenchError($"更新程序返回退出码 {code}，请查看启动工作台的控制台输出", WorkbenchFailure.Unavailable);
             string? after = await EngineExecutable.InstalledVersion(name, EngineExecutable.TryFindExecutable(name), ct);
@@ -141,22 +143,18 @@ internal static class EngineInstallation
     internal static async Task<int> Run(string exe, IReadOnlyList<string> args, TimeSpan? timeout = null)
     {
         var start = WindowsCommand.Resolve(exe, args);
-        start.RedirectStandardInput = timeout.HasValue;
+        start.RedirectStandardInput = true;
         using var process = Process.Start(start) ?? throw new WorkbenchError("安装程序无法启动", WorkbenchFailure.Unavailable);
-        if (timeout is { } limit)
+        process.StandardInput.Close();
+        using var deadline = new CancellationTokenSource(timeout ?? TimeSpan.FromMinutes(10));
+        try { await process.WaitForExitAsync(deadline.Token); }
+        catch (OperationCanceledException) when (deadline.IsCancellationRequested)
         {
-            process.StandardInput.Close();
-            using var deadline = new CancellationTokenSource(limit);
-            try { await process.WaitForExitAsync(deadline.Token); }
-            catch (OperationCanceledException) when (deadline.IsCancellationRequested)
-            {
-                try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-                catch (InvalidOperationException) when (process.HasExited) { }
-                await process.WaitForExitAsync();
-                throw new WorkbenchError("更新程序超时，请重新检测当前版本并查看控制台输出", WorkbenchFailure.Unavailable);
-            }
+            try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) when (process.HasExited) { }
+            await process.WaitForExitAsync();
+            throw new WorkbenchError("安装或更新超时，请重新检测当前版本并查看控制台输出", WorkbenchFailure.Unavailable);
         }
-        else await process.WaitForExitAsync();
         return process.ExitCode;
     }
 }

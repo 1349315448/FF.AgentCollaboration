@@ -14,7 +14,7 @@ const [base, , root] = process.argv.slice(2);
     const topic = await post("/topics", {name:"建窗响应",project:path.join(root,"one")});
     for (let i=0; i<4; i++) await post("/windows", {topic:topic.id, name:"终端"+i, engine:"claude",newSession:true});
     await page.goto(base);
-    await page.waitForFunction(() => panes.size === 4 && [...panes.values()].every(p => p.view.inputReady));
+    await page.waitForFunction(() => window.panes?.size === 4 && [...panes.values()].every(p => p.view.inputReady));
     const [source, target] = await page.evaluate(()=>[...panes.values()].slice(0,2).map(p=>({id:p.agent.id,gen:p.generation})));
     const pick = page.locator("#agents-dialog"), search = page.locator("#peer-search");
     await page.evaluate(id=>panes.get(id).term.focus(),source.id);
@@ -57,20 +57,23 @@ const [base, , root] = process.argv.slice(2);
     await pick.waitFor({state:"hidden"});
     await page.setViewportSize({width:1440,height:900});
     await page.waitForFunction(()=>[...panes.values()].every(p=>p.view.inputReady));
+    await page.evaluate(() => history.pushState({}, "", "#manual-tab"));
     const other = await browser.newPage({viewport:{width:1440,height:900}});
     await other.goto(base);
-    await other.waitForFunction(id=>panes.get(id)?.view.inputReady,source.id);
-    for (const view of [page,other]) {
-      await view.evaluate(id=>openPeers(panes.get(id)),source.id);
-      await view.locator("#peer-search").waitFor();
-    }
-    await page.locator("#peer-search").press("Escape");
-    await pick.waitFor({state:"hidden"});
-    await page.waitForFunction(id=>!panes.get(id).view.inputReady,source.id);
-    assert(await other.locator("#agents-dialog").isVisible());
-    await other.close(); // 断开的查看者应释放最后一个收件保护。
+    await other.waitForFunction(id=>window.panes?.get?.(id)?.view.inputReady,source.id);
+    await page.waitForURL("**/page-inactive.html");
+    assert.equal(await page.locator(".xterm, script").count(),0);
+    assert.equal(await other.evaluate(id=>panes.get(id).generation,source.id),source.gen);
+    const popupReady = other.waitForEvent("popup");
+    await other.evaluate(() => window.open("/", "_blank"));
+    const popup = await popupReady;
+    await popup.waitForFunction(id=>window.panes?.get?.(id)?.view.inputReady,source.id);
+    const popupClosed = popup.waitForEvent("close");
+    await page.goto(base);
+    await popupClosed;
     await page.bringToFront();
-    await page.waitForFunction(id=>panes.get(id).view.inputReady,source.id);
+    await page.waitForFunction(id=>window.panes?.get?.(id)?.view.inputReady,source.id);
+    assert.equal(await page.evaluate(id=>panes.get(id).generation,source.id),source.gen);
     const spare = await post("/windows",{topic:topic.id,name:"临时来源",engine:"claude",newSession:true});
     await page.waitForFunction(id=>panes.get(id)?.view.inputReady,spare.id);
     await page.evaluate(id=>openPeers(panes.get(id)),spare.id);
@@ -155,9 +158,10 @@ const [base, , root] = process.argv.slice(2);
       target.element.querySelector(".toggle-collapse").click();
       await motion.finished;
       const anchor = messageAnchor(target.agent.id), r = anchor.getBoundingClientRect(), [endX,endY] = coordinates().slice(-2);
-      const followed = !!anchor.closest("#collapsed-panes") && close(endX,r.left+r.width/2) && close(endY,r.top+r.height/2);
-      const sweep = target.element.querySelector(":scope > .receipt-sweep");
-      const box = target.element.getBoundingClientRect(), outline = sweep?.getBoundingClientRect();
+      const tab = anchor.closest(".topic-agent-tag");
+      const followed = anchor.dataset.agent === target.agent.id && !!tab && close(endX,r.left+r.width/2) && close(endY,r.top+r.height/2);
+      const sweep = tab?.querySelector(":scope > .receipt-sweep");
+      const box = tab?.getBoundingClientRect(), outline = sweep?.getBoundingClientRect();
       const outlinedCard = !!outline && target.element.dataset.collapsed === "true" &&
         Math.abs(outline.width - box.width) <= 2 && Math.abs(outline.height - box.height) <= 2 &&
         sweep.querySelectorAll(".receipt-highlight").length === 2 &&
@@ -174,6 +178,8 @@ const [base, , root] = process.argv.slice(2);
     for (const name of ["figures","handFirst","deliberateGrip","flightOK","welcome","followed","outlinedCard","caught","noTrail"]) assert.equal(animation[name],true,name);
     assert.equal(animation.remaining,0);
     await page.setViewportSize({width:2200,height:900});
+    await page.waitForFunction(()=>[...panes.values()].every(p=>!p.layoutFlight &&
+      p.element.getAnimations().every(a=>a.playState!=="running")));
     const spans = await page.evaluate(async () => {
       const [a,b] = [...panes.values()].map(p=>p.agent.id), points = [messageAnchor(a),messageAnchor(b)];
       const original = points.map(el=>el.style.cssText);
@@ -182,8 +188,14 @@ const [base, , root] = process.argv.slice(2);
         for (const [left,right] of [[100,760],[2090,90]]) {
           // 同一真实收发窗格，分别布置中距与超长反向路径检验转速和上下限。
           for (const [i,el] of points.entries()) {
-            Object.assign(el.style,{position:"fixed",left:(i?right:left)+"px",top:"320px",width:"28px"});
+            Object.assign(el.style,{position:"fixed",left:"0px",top:"0px",width:"28px"});
+            // 窗格的 contain 建立独立坐标系。测量原点，将本轮指定的屏幕坐标换算到真实锚点上。
+            const origin=el.getBoundingClientRect();
+            el.style.left=((i?right:left)-origin.left)+"px";
+            el.style.top=(320-origin.top)+"px";
           }
+          const dx=points[1].getBoundingClientRect().left-points[0].getBoundingClientRect().left;
+          if(Math.abs(dx-(right-left))>2) throw new Error("投递测试锚点尚未定位到指定距离");
           const flight = flyMessage({source:a,target:b});
           await document.querySelector(".message-flick-hand").getAnimations()[0].finished;
           const movement = document.querySelector(".message-flight").getAnimations()[0];
@@ -210,6 +222,8 @@ const [base, , root] = process.argv.slice(2);
     await page.getByRole("radio", {name:"TRAE CLI"}).check();
     const login = page.locator("#open-engine-login");
     await login.waitFor();
+    assert.match(await page.locator("#trae-create-notice").innerText(), /企业旗舰版/);
+    assert.equal(await page.locator("#mode-label").innerText(), "审批权限");
     assert(await page.locator("#create-agent").isDisabled() && await page.locator("#session-source").isDisabled());
     const count = async () => (await (await page.request.get(base+"/api/state")).json()).windows.length;
     const beforeLogin = await count();
@@ -233,6 +247,27 @@ const [base, , root] = process.argv.slice(2);
     await page.waitForFunction(() => !document.getElementById("create-agent").disabled);
     await page.locator("#new-dialog [data-close]").first().click();
     console.log("PASS native login cancel, verify and explicit session selection without creating a window");
+    let installed = false, finishInstall;
+    const holdInstall = new Promise(resolve => { finishInstall = resolve; });
+    await page.route("**/api/engines", async route => {
+      const response = await route.fetch();
+      await route.fulfill({json:{...await response.json(),codebuddy:installed}});
+    });
+    await page.route("**/api/engines/codebuddy/install", async route => {
+      await holdInstall;
+      await route.fulfill({status:204});
+    });
+    await page.route("**/api/engines/codebuddy/installed", route => { installed = true; return route.fulfill({json:{ready:true}}); });
+    await page.locator("#new-agent").click();
+    const install = page.locator('[data-install="codebuddy"]');
+    await install.click();
+    await install.waitFor({state:"hidden",timeout:12000});
+    assert(installed);
+    assert.equal(await page.locator("#new-form input[name=engine]:checked").inputValue(), "codebuddy");
+    finishInstall();
+    await page.unroute("**/api/engines");
+    await page.locator("#new-dialog [data-close]").first().click();
+    console.log("PASS installed CLI detected while installer is still exiting");
     await page.evaluate(() => {
       window.timings = []; window.layoutCalls = 0;
       const original = renderLayout;
@@ -248,7 +283,7 @@ const [base, , root] = process.argv.slice(2);
     });
     await page.locator("#new-agent").click();
     assert.deepEqual(await page.locator("#agent-engine input").evaluateAll(items => items.map(item => item.value)),
-      ["codex", "copilot", "claude", "codebuddy", "traecli", "zcode", "qwen"]);
+      ["codex", "copilot", "claude", "codebuddy", "traecli", "zcode", "qwen", "qoder"]);
     await page.locator("#agent-name").pressSequentially("create-agent-latency-test",{delay:45});
     const available = await page.locator("#create-agent").isEnabled();
     await page.waitForTimeout(1100);

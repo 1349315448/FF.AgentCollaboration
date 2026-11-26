@@ -4,14 +4,14 @@ import { createElement } from "react";
 import type { PanePresentation } from "../components/workspace/panePresentation";
 import { AgentPane } from "../components/workspace/AgentPane";
 
-interface TerminalHandle { dispose(): void; open(element: HTMLElement): void; loadAddon(addon: FitHandle): void }
+interface TerminalHandle { dispose(): void; open(element: HTMLElement): void; loadAddon(addon: FitHandle): void; options: { cursorBlink: boolean } }
 interface FitHandle { fit(): void }
 interface PaneHost {
   root: Root; element: HTMLElement; slot: HTMLElement; presentation?: PanePresentation;
 }
 interface PaneRuntime extends PaneHost {
   term: TerminalHandle; observer: ResizeObserver;
-  socket?: WebSocket; runningTimer?: number; reconnectTimer?: number;
+  socket?: WebSocket; runningTimer?: number; promptTimer?: number; reconnectTimer?: number; fitRaf?: number;
 }
 declare const Terminal: new(options: object) => TerminalHandle;
 declare const FitAddon: { FitAddon: new() => FitHandle };
@@ -57,6 +57,9 @@ export function removeMissingWindows(ids: Set<string>) {
     if (ids.has(id)) continue;
     panes.delete(id);
     clearTimeout(pane.runningTimer);
+    clearTimeout(pane.promptTimer);
+    clearTimeout(pane.reconnectTimer);
+    if (pane.fitRaf) cancelAnimationFrame(pane.fitRaf);
     clearTimeout(pane.reconnectTimer);
     pane.observer.disconnect();
     const socket = pane.socket;

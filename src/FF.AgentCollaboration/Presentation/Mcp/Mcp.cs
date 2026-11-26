@@ -22,7 +22,7 @@ internal static class Mcp
     internal static string WindowGrant() =>
         Environment.GetEnvironmentVariable("LX_P0_WINDOW_GRANT") ?? Environment.GetEnvironmentVariable("FF_P0_WINDOW_GRANT") ?? throw new InvalidOperationException("缺少窗口绑定");
 
-    internal static async Task Serve(object[] tools, Func<string, JsonNode, string> call, Func<string>? instructions = null)
+    internal static async Task Serve(object[] tools, Func<string, JsonNode, string> call, Func<string>? instructions = null, Func<string?>? contextUpdate = null)
     {
         while (await Console.In.ReadLineAsync() is { } line)
         {
@@ -50,7 +50,9 @@ internal static class Mcp
                     case "tools/list": result = new { tools }; break;
                     case "tools/call":
                         string message = call((string)p!["name"]!, p["arguments"] ?? new JsonObject());
-                        result = new { content = new[] { new { type = "text", text = message } } };
+                        var content = new List<object> { new { type = "text", text = message } };
+                        if (contextUpdate?.Invoke() is string update) content.Add(new {type = "text", text = update});
+                        result = new { content };
                         break;
                     default:
                         Console.WriteLine(JsonSerializer.Serialize(new { jsonrpc = "2.0", id, error = new { code = -32601, message = "Unknown method" } }));

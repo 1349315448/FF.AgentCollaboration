@@ -65,6 +65,7 @@ internal static class WorkbenchMigration
             using (var snapshot = Open(staging, SqliteOpenMode.ReadWriteCreate))
             {
                 source.BackupDatabase(snapshot);
+                CopyFederationDocuments(snapshot,old,data);
                 string destination = Path.Combine(data, "handoffs");
                 string previous = Path.Combine(old, "handoffs");
                 if (Directory.Exists(previous))
@@ -167,6 +168,36 @@ internal static class WorkbenchMigration
             string target = Path.Combine(destination, item.Name);
             if (item is DirectoryInfo) CopyTree(item.FullName, target);
             else CopyFile(item.FullName, target);
+        }
+    }
+
+    private static void CopyFederationDocuments(SqliteConnection snapshot,string old,string target)
+    {
+        using var query=snapshot.CreateCommand();
+        query.CommandText="SELECT 1 FROM sqlite_master WHERE type='table' AND name='fed_file'";
+        if(query.ExecuteScalar()==null) return;
+        var from=Path.Combine(old,"federation-inbox");
+        var to=Path.Combine(target,"federation-inbox");
+        query.CommandText="SELECT relative,bound FROM fed_file";
+        var files=new List<(string Relative,string? Bound)>();
+        using(var rows=query.ExecuteReader())
+            while(rows.Read()) files.Add((rows.GetString(0),rows.IsDBNull(1)?null:rows.GetString(1)));
+        foreach(var file in files)
+        {
+            string source=Path.GetFullPath(file.Relative,from),destination=Path.GetFullPath(file.Relative,to);
+            if(!source.StartsWith(from+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase) ||
+                !destination.StartsWith(to+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase))
+                throw new WorkbenchError("跨端文件的登记路径无效");
+            if(!File.Exists(source) && file.Bound==null) continue;
+            CopyFile(source,destination);
+            if(file.Bound!=null)
+            {
+                using var rebind=snapshot.CreateCommand();
+                rebind.CommandText="UPDATE inbox SET document_ref=$path WHERE id=$id AND document=1";
+                rebind.Parameters.AddWithValue("$path",destination);
+                rebind.Parameters.AddWithValue("$id",file.Bound);
+                rebind.ExecuteNonQuery();
+            }
         }
     }
 

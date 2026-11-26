@@ -24,11 +24,13 @@ def new_id():
 
 
 @contextmanager
-def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=True, graceful=False, initialize=True, use_defaults=False):
+def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=True, graceful=False, initialize=True, use_defaults=False, lan_http_port=None):
     command = [executable, "workbench", "--port", "0"] if use_defaults else [
         executable, "workbench", root, "--port", "0", "--handoffs", handoffs or Path(root) / "handoffs"]
     if fixed:
         command.append("--fixed-data-dir")
+    if lan_http_port:
+        command += ["--lan-http-port", str(lan_http_port)]
     if knowledge is not None:
         command += ["--knowledge", knowledge]
     if project:
@@ -61,7 +63,7 @@ def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=Tr
             if initialize:
                 _, setup = http(url, "/api/initialize")
                 if not setup["initialized"]:
-                    assert http(url, "/api/initialize", setup, "POST")[0] == 204
+                    assert http(url, "/api/initialize", dict(setup, nodeName="Test node"), "POST")[0] == 204
             yield url
         finally:
             try:
@@ -177,11 +179,11 @@ def verify(executable, directory):
         assert files == ["interface notes.md"], files
         assert http(base, "/api/handoffs", {}, "POST")[0] == 404
         capabilities = http(base, "/api/engines/capabilities")[1]
-        assert set(capabilities) == {"codex", "copilot", "claude", "codebuddy", "traecli", "qwen", "zcode"}
+        assert set(capabilities) == {"codex", "copilot", "claude", "codebuddy", "traecli", "qwen", "zcode", "qoder"}
         for engine, profile in capabilities.items():
             assert {"new","resume","archive","restore"} <= set(profile["sessionActions"])
             assert ("delete" in profile["sessionActions"]) == (engine in {"codex","copilot","claude","traecli"})
-            assert ("fork" in profile["sessionActions"]) == (engine in {"codex","copilot","claude","traecli","codebuddy"})
+            assert ("fork" in profile["sessionActions"]) == (engine in {"codex","copilot","claude","traecli","codebuddy","qoder"})
             assert ("latest" in profile["sessionActions"]) == (engine == "copilot")
             assert profile["nativeArchive"] == (engine in {"codex","traecli"})
             assert profile["models"] == (engine not in {"qwen","zcode"})
@@ -421,7 +423,9 @@ def verify_first_run(executable, directory):
                 ("data_dir", "database"), ("archive_root", "topics"), ("handoffs", "handoffs"))}
             assert not (app / "workbench-data").exists()
             assert all(suggested[key] == value for key, value in expected.items())
+            assert suggested["nodeName"] and not suggested["needsNodeName"]
             assert http(base, "/api/initialize", expected)[0] == 204
+            assert http(base, "/api/initialize")[1]["nodeName"] == suggested["nodeName"]
             assert http(base, "/api/settings")[1]["defaults"] == expected
             assert (Path(expected["data_dir"]) / "workbench.sqlite").is_file()
             assert all(Path(path).is_dir() for path in expected.values())
@@ -447,13 +451,14 @@ def verify_first_run(executable, directory):
     with host(executable, str(fixed) + os.sep, directory, initialize=False) as base:
         setup = http(base, "/api/initialize")[1]
         assert setup["fixed_data_dir"] and not setup["initialized"]
-        assert http(base, "/api/initialize", setup)[0] == 204
+        assert http(base, "/api/initialize", dict(setup, nodeName="Fixed"))[0] == 204
         assert (fixed / "workbench.sqlite").is_file()
     with patch.dict(os.environ, LOCALAPPDATA=str(sandbox), FF_LOCATION_CONFIG=str(config)):
         with host(executable, initial, directory, fixed=False, initialize=False) as base:
             assert http(base, "/api/initialize")[1]["initialized"] is False
             assert http(base, "/api/state")[0] == 409 and not initial.exists()
             assert not config.exists()
+            chosen["nodeName"] = "First node"
             existing = sandbox / "existing"
             existing.mkdir()
             old_file = existing / "workbench.sqlite"
@@ -467,7 +472,7 @@ def verify_first_run(executable, directory):
             assert sorted(statuses) == [204, 409], statuses
             assert http(base, "/api/initialize")[1]["initialized"]
             settings = http(base, "/api/settings")[1]
-            assert all(settings[key] == value for key, value in chosen.items()), settings
+            assert all(settings[key] == chosen[key] for key in ("data_dir","archive_root","handoffs")), settings
             assert not initial.exists() and not list(data.glob(".initialize-*"))
             topic = http(base, "/api/topics", {"name":"首次配置"})[1]
             assert Path(topic["folder"]).parent == archive
@@ -475,7 +480,7 @@ def verify_first_run(executable, directory):
             assert http(base, "/api/initialize")[1]["initialized"]
             assert [t["id"] for t in http(base, "/api/topics")[1]] == [topic["id"]]
             settings = http(base, "/api/settings")[1]
-            assert all(settings[key] == value for key, value in chosen.items()), settings
+            assert all(settings[key] == chosen[key] for key in ("data_dir","archive_root","handoffs")), settings
 
 
 def verify_location(executable, directory):
@@ -865,12 +870,14 @@ def verify_ff(executable, directory, fixture):
 
 def verify_new_engines(executable, directory, fixture):
     state = directory / "multi-engine-data"
-    env = {"FF_" + engine.upper() + "_EXE": str(fixture) for engine in ("codebuddy", "qwen", "traecli", "zcode")}
+    env = {"FF_" + engine.upper() + "_EXE": str(fixture) for engine in ("codebuddy", "qwen", "traecli", "zcode", "qoder")}
+    env["QODER_PERSONAL_ACCESS_TOKEN"] = ""
+    env["QODER_CONFIG_DIR"] = str(directory / "qoder-profile")
     vault = directory / "zcode-test-credentials.json"
     vault.write_text('{"oauth:active_provider":"zai","oauth:zai:access_token":"test"}')
     env.update(OPENAI_API_KEY="test", CODEBUDDY_API_KEY="test", ZCODE_CREDENTIALS_FILE=str(vault))
     with patch.dict(os.environ, env), host(executable, state) as base:
-        for engine in ("codebuddy", "qwen", "traecli", "zcode"):
+        for engine in ("codebuddy", "qwen", "traecli", "zcode", "qoder"):
             project = directory / ("project " + engine)
             project.mkdir()
             topic = http(base, "/api/topics", {"name": engine, "project": str(project)})[1]
@@ -888,7 +895,8 @@ def verify_new_engines(executable, directory, fixture):
             status, window = http(base, "/api/windows", payload)
             assert status == 200 and window["online"], (engine, window)
             route = "/api/windows/" + window["id"]
-            for iteration in range(2):
+            launches = 3 if engine == "qoder" else 2
+            for iteration in range(launches):
                 if engine != "traecli":
                     view = next(v for v in http(base, "/api/state")[1]["windows"] if v["agent"]["id"] == window["id"])
                     assert view["activity"] == "idle" and not view["inputReady"] and view["agent"]["autoReceive"], view
@@ -903,6 +911,14 @@ def verify_new_engines(executable, directory, fixture):
                         config = state / "engine-profiles" / window["id"] / ".zcode/cli/config.json"
                         server = json.loads(config.read_text())["mcp"]["servers"]["lx_collab"]
                         assert "env" not in server and not (project / ".zcode").exists()
+                    elif engine == "qoder":
+                        assert args[0] == ("--session-id" if iteration < 2 else "--resume"), args
+                        assert ("--name" in args) == (iteration < 2), args
+                        path = Path(args[args.index("--mcp-config")+1])
+                        assert path.parent == state / "engine-profiles" / window["id"]
+                        server = json.loads(path.read_text(encoding="utf8"))["mcpServers"]["lx_collab"]
+                        assert server["env"] == {"LX_P0_WINDOW_GRANT": "${LX_P0_WINDOW_GRANT}"}
+                        assert json.loads(args[args.index("--settings")+1])["ui"]["terminalBuffer"] is False
                     else:
                         assert args[0] == ("--resume" if iteration and engine != "qwen" else "--session-id")
                         server = json.loads(args[args.index("--mcp-config")+1])["mcpServers"]["lx_collab"]
@@ -910,8 +926,10 @@ def verify_new_engines(executable, directory, fixture):
                         else: assert server["env"]["LX_P0_WINDOW_GRANT"] == "${LX_P0_WINDOW_GRANT}"
                     assert server["args"][-4:] == ["workbench-mcp", str(state), "--notify-port", str(urlsplit(base).port)]
                 assert http(base, route + "/stop", method="POST")[0] == 204
-                if iteration == 0:
+                if iteration + 1 < launches:
                     if engine != "traecli": captured.unlink()
+                    if engine == "qoder" and iteration == 1:
+                        (project / "acp-sessions.json").write_text(json.dumps([{"sessionId": window["session"], "cwd": str(project), "title": "saved"}]))
                     assert http(base, route + "/start", method="POST")[0] == 204
 
     # 旧版将三个开关全部锁为关闭。升级只发生一次，用户后来关闭的开关应当保留。
@@ -957,7 +975,7 @@ def verify_legacy_qwen(executable, directory, fixture):
             captured.unlink()
             if step == 2: break
             if step == 1:
-                (project / "qwen-sessions.json").write_text(json.dumps([{
+                (project / "acp-sessions.json").write_text(json.dumps([{
                     "sessionId":agent["session"], "cwd":str(project), "title":"已保存的千问会话"}]), encoding="utf8")
                 listed = http(base, "/api/sessions/qwen?" + urlencode({"project":project,"includeBound":"true"}))[1]
                 assert [(s["id"],s["name"]) for s in listed] == [(agent["session"],"已保存的千问会话")]

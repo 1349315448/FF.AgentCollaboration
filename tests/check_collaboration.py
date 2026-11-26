@@ -54,6 +54,27 @@ def verify(exe, case):
             assert stream.readline().strip() == b"data: state"
             assert stream.readline().strip() == b""
 
+        assert http(url, "/api/page", {})[0] == 403
+        def claim_page():
+            code, owner = http(url, "/api/page", {}, **{"X-FF-Page": "open"})
+            assert code == 200
+            return owner
+        old = claim_page()
+        with urlopen(url + "/api/events?page=" + old, timeout=5) as original:
+            event(original)
+            new = claim_page()
+            for line in original:
+                if line.strip() == b"data: replaced":
+                    break
+            else:
+                raise AssertionError("previous page missed takeover")
+        with urlopen(url + "/api/events?page=" + old, timeout=5) as stale:
+            assert stale.readline().strip() == b"data: replaced"
+        with urlopen(url + "/api/events?page=" + new, timeout=5) as current:
+            event(current)
+        for owner, status in ((old,409),(new,204)):
+            assert http(url, "/api/events/wake", {}, **{"X-FF-Notify":"1","X-FF-View":owner})[0] == status
+
         with urlopen(url + "/api/events", timeout=8) as first, urlopen(url + "/api/events", timeout=8) as second:
             event(first)
             event(second)
@@ -205,8 +226,94 @@ def verify(exe, case):
     print("PASS supersede, cancel, protected cleanup, authorized window skill and legacy global retirement")
 
 
+def verify_receipts(exe, case):
+    root, project = case / "receipt-state", case / "project"
+    with host(exe, root, project) as url, closing(sqlite3.connect(root / "workbench.sqlite")) as db:
+        topic = http(url, "/api/topics", {"name":"Receipts","project":str(project)})[1]["id"]
+        sender, peer, other = [new_id() for _ in range(3)]
+        for ident in (sender, peer, other):
+            db.execute("INSERT INTO windows(id,name,engine,project,grant_hash,online,topic_id) VALUES(?,?,'codex',?,?,1,?)",
+                       (ident, ident[:5], str(project), hashlib.sha256(ident.encode()).hexdigest().upper(), topic))
+        db.commit()
+
+        def call(grant, name, error=False, **args):
+            result = mcp(exe, root, grant, name, **args)
+            assert bool(result.get("isError")) == error, result
+            return None if error else json.loads(result["content"][0]["text"])
+
+        def timeline():
+            rows = http(url, "/api/state?topic=" + topic + "&recent=50")[1]["timeline"]
+            return {r["id"]:(r["state"],r.get("workState")) for r in rows}
+
+        def instructions(grant):
+            invocation=json.dumps({"jsonrpc":"2.0","method":"initialize","id":1})+"\n"
+            proc=subprocess.run([exe,"workbench-mcp",root],input=invocation,text=True,encoding="utf8",capture_output=True,check=True,
+                                env=dict(os.environ,LX_P0_WINDOW_GRANT=grant))
+            return json.loads(proc.stdout)["result"]["instructions"]
+        name=peer[:5]
+        assert "当前窗口身份" not in instructions(peer)
+        config="/api/windows/"+peer+"/config"
+        assert http(url,config,{"name":name,"role":"   核验\x01协议   "},"PUT")[0]==204
+        for detail in (False,True):
+            peers=call(sender,"list_windows",detail=detail)
+            assert next(w for w in peers if w["name"]=="@"+name)["role"]=="核验协议"
+            assert "role" not in next(w for w in peers if w["name"]=="@"+other[:5])
+        assert "当前窗口身份：核验协议。" in instructions(peer)
+        assert http(url,config,{"name":name,"role":"x"*201},"PUT")[0]==400
+        # Keep the same initialized stdio connection alive during a hot identity edit.
+        with subprocess.Popen([exe,"workbench-mcp",root],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True,encoding="utf8",
+                              env=dict(os.environ,LX_P0_WINDOW_GRANT=peer)) as process:
+            def rpc(method,params):
+                process.stdin.write(json.dumps({"id":1,"jsonrpc":"2.0","method":method,"params":params})+"\n")
+                process.stdin.flush()
+                return json.loads(process.stdout.readline())["result"]
+            assert "核验协议" in rpc("initialize",{})["instructions"]
+            assert http(url,config,{"name":name,"role":" "},"PUT")[0]==204
+            contents=rpc("tools/call",{"name":"list_windows","arguments":{}})["content"]
+            assert json.loads(contents[0]["text"]) and "未设置身份" in contents[1]["text"]
+            assert len(rpc("tools/call",{"name":"list_windows","arguments":{}})["content"])==1
+            process.stdin.close()
+        assert "当前窗口身份" not in instructions(peer)
+        first = call(sender, "send_to_agent", target=peer, message="needs reply", autoReturnHint=True)["id"]
+        second = call(sender, "send_to_agent", target=peer, message="one way", supersedePrevious=False)["id"]
+        assert timeline()[first] == ("pending","queued")
+        call(peer, "report_task_status", True, messageId=first, status="working")
+        # ConPTY confirmation and task work are independent signals.
+        db.execute("UPDATE inbox SET state='delivered' WHERE id IN (?,?)",(first,second))
+        db.commit()
+        assert timeline()[first] == ("delivered","queued")
+        call(other, "report_task_status", True, messageId=first, status="working")
+        for _ in range(2):
+            call(peer, "report_task_status", messageId=first[:8].upper(), status="working")
+        call(peer, "report_task_status", True, messageId=first, status="completed")
+        call(peer, "send_to_agent", True, target=other, replyTo=first, message="wrong target")
+        interim=call(peer, "send_to_agent", target=sender, replyTo=first, finalReply=False, message="received")["id"]
+        assert timeline()[first] == ("delivered","working") and timeline()[interim][1] is None
+        assert db.execute("SELECT reply_to,final_reply FROM inbox WHERE id=?",(interim,)).fetchone()==(first,0)
+        assert timeline()[second][1] == "queued"
+        call(peer, "report_task_status", messageId=second, status="completed")
+        final=call(peer, "send_to_agent", target=sender, replyTo=first[:8], message="result")["id"]
+        call(peer, "send_to_agent", True, target=sender, replyTo=first, message="duplicate")
+        call(peer, "report_task_status", True, messageId=second, status="working")
+        clone=call(peer,"send_to_agent",resend=final)["id"]
+        assert timeline()[clone][1] is None and timeline()[first][1]=="replied" and timeline()[second][1]=="completed"
+        db.execute("UPDATE inbox SET work_state=NULL WHERE id=?",(second,))
+        db.commit()
+        assert timeline()[second][1] is None
+        # Reopen an earlier windows schema without touching any user database.
+        db.execute("ALTER TABLE windows DROP COLUMN role")
+        db.execute("ALTER TABLE windows DROP COLUMN new_session_pending")
+        db.commit()
+    with host(exe,root,project) as url:
+        assert timeline()[first] == ("delivered","replied") and timeline()[second] == ("delivered",None)
+        windows=http(url,"/api/state")[1]["windows"]
+        assert all(not w["agent"].get("role") for w in windows)
+    print("PASS per-message receipts, intermediate versus final reply, authorization, replay and old database migration")
+
+
 if __name__ == "__main__":
     temp = Path(tempfile.gettempdir()) / "codex-task"
     temp.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="ff-collab-", dir=temp) as directory:
         verify(Path(sys.argv[1]).resolve(), Path(directory))
+        verify_receipts(Path(sys.argv[1]).resolve(), Path(directory))

@@ -12,7 +12,7 @@ internal static class EngineExecutable
         for (var dir = new FileInfo(path).Directory; dir != null; dir = dir.Parent)
         {
             string module = Path.GetFullPath(Path.Combine(dir.FullName, "node_modules", package));
-            string shim = Path.Combine(dir.FullName, name + ".cmd");
+            string shim = Path.Combine(dir.FullName, (name == "qoder" ? "qodercli" : name) + ".cmd");
             if (File.Exists(shim) && File.Exists(Path.Combine(module, "package.json")) &&
                 (path.Equals(shim, StringComparison.OrdinalIgnoreCase) || path.StartsWith(module + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)))
                 return dir.FullName;
@@ -58,9 +58,18 @@ internal static class EngineExecutable
                 !File.Exists(Path.Combine(Path.GetDirectoryName(path)!, "resources", "app.asar")),
                 $"zcode-windows-{archName}.exe", "zcode.cmd", "zcode.exe");
         }
-        if (name is "traecli" or "codebuddy" or "qwen")
+        if (name is "traecli" or "codebuddy" or "qwen" or "qoder")
         {
-            string? path = WindowsCommand.Dependency(name + ".exe", name + ".cmd");
+            string cli = name == "qoder" ? "qodercli" : name;
+            string? path = WindowsCommand.Dependency(cli + ".exe", cli + ".cmd");
+            if (name == "qoder" && path == null) path = WindowsCommand.Dependency(
+                binary => !File.Exists(Path.Combine(Path.GetDirectoryName(binary)!, "resources", "app.asar")), "qoder.cmd", "qoder.exe");
+            if (path == null && name is "codebuddy" or "qwen" or "qoder")
+            {
+                var prefixes = new[] { Environment.GetEnvironmentVariable("NPM_CONFIG_PREFIX"),
+                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm") };
+                path = prefixes.Where(prefix => Path.IsPathFullyQualified(prefix ?? "")).Select(prefix => Path.Combine(prefix!, cli + ".cmd")).FirstOrDefault(File.Exists);
+            }
             if (name == "traecli" && path != null && Path.GetExtension(path).Equals(".cmd", StringComparison.OrdinalIgnoreCase))
             {
                 string native = Path.Combine(Path.GetDirectoryName(path)!, "traex.exe");

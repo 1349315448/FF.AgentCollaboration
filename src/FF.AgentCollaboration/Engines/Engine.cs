@@ -12,12 +12,14 @@ internal abstract class Engine : IDisposable
         "claude" => new ClaudeEngine(cwd),
         "codebuddy" => new CodeBuddyEngine(cwd),
         "qwen" => new QwenEngine(cwd),
+        "qoder" => new QoderEngine(cwd),
         "traecli" => new CodexEngine(cwd, name),
         "zcode" => new ZCodeEngine(cwd),
         _ => throw new WorkbenchError("请选择受支持的引擎")
     };
 
     internal abstract EngineCapabilities Capabilities { get; }
+    internal virtual ISubmissionReceiptSource? SubmissionReceipts(AgentWindow window) => null;
     internal abstract Task<EngineAccount> Account(CancellationToken ct);
     internal virtual string[] LoginArguments => ["login"];
     internal virtual IReadOnlyDictionary<string, string>? LoginEnvironment => null;

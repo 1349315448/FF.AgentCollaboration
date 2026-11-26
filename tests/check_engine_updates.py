@@ -1,14 +1,70 @@
 """Exercise the stable release feed and update button's API with a disposable CLI."""
 import json
+import base64
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 from unittest.mock import patch
+from urllib.parse import urlencode, urlsplit
 
 from check_workbench import host, http
+
+
+def verify_codebuddy_node(exe, root):
+    project = root / "project"
+    prefix = root / "old-node"
+    project.mkdir(parents=True)
+    entry = prefix / "node_modules/@tencent-ai/codebuddy-code/bin/codebuddy"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("""
+const fs = require('node:fs');
+const [action] = process.argv.slice(2);
+fs.appendFileSync('runtimes.jsonl', JSON.stringify([action, process.versions.node, process.execPath])+'\\n');
+if (action==='--acp') {
+  require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+    const req=JSON.parse(line);
+    console.log(JSON.stringify({jsonrpc:'2.0',id:req.id,result:req.method==='initialize'?{protocolVersion:1}:{userInfo:fs.existsSync('signed-out.fixture')?{}:{userId:'fixture'}}}));
+  });
+} else if(action==='--version') console.log('fixture 1.0');
+else setTimeout(()=>{},60000);
+""", encoding="utf8")
+    shim = prefix / "codebuddy.cmd"
+    shim.write_text('@echo off\n"%~dp0node.exe" "%~dp0node_modules/@tencent-ai/codebuddy-code/bin/codebuddy" %*\n')
+    source = root / "old.cs"
+    source.write_text('using System.Reflection; [assembly: AssemblyFileVersion("18.2.0.0")] class Old { static int Main(){ return 7; } }')
+    compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET/Framework/v4.0.30319/csc.exe"
+    subprocess.run([compiler,"/nologo","/out:"+str(prefix/"node.exe"),source],check=True)
+    env = dict(FF_CODEBUDDY_EXE=str(shim), CODEBUDDY_CONFIG_DIR=str(root/"profile"),
+               CODEBUDDY_API_KEY="", CODEBUDDY_AUTH_TOKEN="", PATH=str(prefix)+os.pathsep+os.environ["PATH"])
+    with patch.dict(os.environ,env), host(exe,root/"state",project) as base:
+        query = "?" + urlencode({"project":str(project)})
+        assert http(base,"/api/engines/codebuddy/account"+query)[1]["status"]=="authenticated"
+        url=urlsplit(base)
+        key=base64.b64encode(os.urandom(16)).decode()
+        with socket.create_connection((url.hostname,url.port),timeout=10) as ws:
+            ws.sendall((f"GET /api/engines/codebuddy/login{query} HTTP/1.1\r\nHost: {url.netloc}\r\nOrigin: {base}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+            assert b"101" in ws.recv(4096).split(b"\r\n")[0]
+            topic=http(base,"/api/topics",{"name":"Node","project":str(project)})[1]
+            status,agent=http(base,"/api/windows",{"name":"Buddy","topic":topic["id"],"engine":"codebuddy","newSession":True})
+            assert status==200,agent
+            for _ in range(100):
+                rows=[json.loads(line) for line in (project/"runtimes.jsonl").read_text().splitlines()]
+                if {"--acp","--no-session-persistence","--session-id"} <= {r[0] for r in rows}: break
+                time.sleep(.05)
+            else: raise AssertionError(rows)
+            assert len({r[2] for r in rows})==1 and all(tuple(map(int,r[1].split("."))) >= (18,20,8) for r in rows),rows
+            route = "/api/windows/" + agent["id"]
+            assert http(base,route+"/stop",method="POST")[0]==204
+            (project/"signed-out.fixture").touch()
+            assert http(base,"/api/engines/codebuddy/account"+query)[1]["status"]=="signed-out"
+            assert http(base,route+"/start",method="POST")[0]==204, "existing CodeBuddy pane must start the native terminal after sign-out"
+            assert http(base,route+"/session",{"newSession":True})[0]==401
+    print("PASS CodeBuddy status, login ConPTY and Agent all select a compatible Node with 18.2 first on PATH")
 
 
 def verify(exe, case):
@@ -84,4 +140,6 @@ if __name__ == "__main__":
     root = Path(tempfile.gettempdir()) / "codex-task"
     root.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=root, prefix="ff-engine-update-") as case:
-        verify(Path(sys.argv[1]).resolve(), Path(case).resolve())
+        exe, folder = Path(sys.argv[1]).resolve(), Path(case).resolve()
+        verify_codebuddy_node(exe, folder / "runtime")
+        verify(exe, folder)

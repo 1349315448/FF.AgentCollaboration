@@ -9,8 +9,14 @@ export function PaneToolbar() {
         <button className="text-button insert-file" disabled={!online} type="button" aria-label="选择文件" title="插入文件（Alt+Shift+F）"><span className="folder-icon" aria-hidden="true"></span><span className="action-label">文件</span></button>
         <button className="text-button shortcuts-toggle" disabled={!online} type="button" aria-label="快捷指令" title="快捷指令">指令 ▾</button>
         <div className="shortcut-menu" popover="auto" aria-label="快捷指令"></div>
-        <button className="text-button pane-approval" disabled={!online} type="button" aria-label="调整审批模式">审批</button>
-        <label className="auto-receive" title="在原生 CLI 的空闲输入行自动接收"><input type="checkbox" role="switch" />自动接收</label>
+        <button className="text-button pane-approval" type="button" aria-label="切换审批" title="选择审批权限并启动或重启当前终端">切换审批</button>
+        <div className="receive-controls">
+          <label className="auto-receive"><input type="checkbox" role="switch" />自动接收</label>
+          <select className="receive-mode" aria-label="收件方式" title="排队等待空闲。立即接收会使用当前 CLI 的原生插话或队列，遇到草稿或审批时等待。">
+            <option value="queued">排队接收</option>
+            <option value="immediate">立即接收</option>
+          </select>
+        </div>
         <button className="text-button pane-sessions" type="button">会话记录</button>
         <button className="text-button set-primary" type="button">设为主对话</button>
         <button className="text-button pane-more" type="button" aria-label="更多窗格操作">更多 ▾</button>

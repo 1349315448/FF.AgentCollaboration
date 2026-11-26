@@ -121,7 +121,11 @@ internal static class TerminalSocket
                         command.TryGetProperty("retryDraft", out var candidate) ? candidate.GetString() : null,
                         command.TryGetProperty("screen", out var screen) ? screen.GetString() : null,
                         command.TryGetProperty("draftId", out var draftId) ? draftId.GetString() : null,
-                        command.TryGetProperty("approvalDraft", out var approvalDraft) ? approvalDraft.GetString() : null);
+                        command.TryGetProperty("approvalDraft", out var approvalDraft) ? approvalDraft.GetString() : null,
+                        command.TryGetProperty("draftTail", out var tail) ? tail.GetString() : null,
+                        command.TryGetProperty("foldedChars", out var folded) && folded.TryGetInt32(out int chars) ? chars : null,
+                        command.TryGetProperty("busyInput", out var busy) && busy.GetBoolean(),
+                        command.TryGetProperty("queuedId", out var queued) ? queued.GetString() : null);
                     break;
             }
         }

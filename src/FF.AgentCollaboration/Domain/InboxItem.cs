@@ -6,6 +6,8 @@ internal sealed record InboxItem(string Id, string Target, string From, string T
     internal bool ProjectDocument { get; init; }
     public string? FromTopic { get; init; }
     public string? Source { get; init; }
+    public string? ReplyTo { get; init; }
+    public bool? FinalReply { get; init; }
     public bool Acknowledged { get; init; }
     internal string? QueueHint { get; init; }
 
@@ -20,6 +22,7 @@ internal sealed record InboxItem(string Id, string Target, string From, string T
             sections.Add("HANDOFF_DOC: " + Document);
         }
         if (Files.Length != 0) sections.Add("ATTACH_FILES: " + string.Join("; ", Files));
+        if (ReplyTo != null) sections.Add($"REPLY_TO: {ReplyTo} | REPLY_KIND: {(FinalReply == false ? "progress" : "result")}");
         if (ReturnHint != null) sections.Add("RETURN_HINT: " + ReturnHint);
         var text = string.Join(" | ", sections).ReplaceLineEndings(" ");
         var clean = text.Select(character => char.IsControl(character) ? ' ' : character);

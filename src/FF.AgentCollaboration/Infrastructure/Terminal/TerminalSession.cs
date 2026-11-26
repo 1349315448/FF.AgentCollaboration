@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -25,7 +26,7 @@ internal sealed class TerminalSession : IDisposable
     private readonly Dictionary<int, int> mentionPickers = new(); // 正数是待确认的请求，0 表示该查看者已收到确认。
     private bool automaticDeliveryInProgress;
     private readonly Dictionary<int, long> ready = new();
-    private readonly Dictionary<int, (long Revision, string Message, long ObservedAt)> visibleDrafts = new();
+    private readonly Dictionary<int, (long Revision, string Message, long ObservedAt, string? Tail, int? FoldedChars, long StableSince)> visibleDrafts = new();
     private readonly FileStream input;
     private readonly FileStream output;
     private readonly SafeProcessHandle process;
@@ -35,11 +36,14 @@ internal sealed class TerminalSession : IDisposable
     private long revision;
     private long nextPromptRevision;
     private long pasteRevision = -1;
+    private long lastFoldedRevision = -1;
     private long clearedDraftRevision = -1;
     private long clearedAtRevision = -1;
     private long keyboardVersion;
+    private long keyboardIntent;
     private readonly long launchedAt = Stopwatch.GetTimestamp();
-    private readonly Dictionary<int, (long Revision, string Screen, string? Draft, bool Idle, string? ApprovalDraft)> screens = new();
+    private readonly Dictionary<int, (long Revision, string Screen, string? Draft, bool Idle, string? ApprovalDraft, bool BusyInput, string? QueuedId)> screens = new();
+    private long lastKeyboardInput;
     private long? awaitingScreenSince;
     private bool bracketedPasteEnabled;
     private bool draftMayContainText;
@@ -54,13 +58,20 @@ internal sealed class TerminalSession : IDisposable
     private static readonly TimeSpan Quiet = TimeSpan.FromMilliseconds(1500);
     private readonly Action changed;
     private readonly bool workingWithoutPrompt;
+    private readonly bool codexEditor;
+    private readonly ISubmissionReceiptSource? submissionReceipts;
+    private readonly ConcurrentDictionary<string, (ISubmissionReceipt Receipt, long Since)> recentReceipts = new();
     private readonly Timer? quietTimer;
     private (bool Online, bool InputReady, string Activity)? lastReported;
+    private bool lastBusyReady;
 
     internal TerminalSession(string engine, string executable, IReadOnlyList<string> arguments, string cwd, string grant, int cols, int rows, Action changed,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null, ISubmissionReceiptSource? submissionReceipts = null)
     {
         this.changed = changed;
+        this.submissionReceipts = submissionReceipts;
+        codexEditor = engine is "codex" or "traecli";
+        unsubmittedNewSession = engine is "claude" or "qoder" && arguments.Contains("--session-id") && !arguments.Contains("--fork-session");
         workingWithoutPrompt = engine is "codex" or "copilot";
         columns = cols;
         lines = rows;
@@ -101,6 +112,8 @@ internal sealed class TerminalSession : IDisposable
     }
 
     internal string Generation { get; } = Guid.NewGuid().ToString("N");
+    private bool unsubmittedNewSession;
+    internal bool CanReopenEmpty { get { lock (outputLock) return unsubmittedNewSession; } }
     // 调用方在终端释放前注销等待。登录 CLI 可能先退出，ConPTY 的输出管道仍然打开。
     internal WaitHandle ExitSignal() => new EventWaitHandle(false, EventResetMode.ManualReset) {
         SafeWaitHandle = new SafeWaitHandle(process.DangerousGetHandle(), ownsHandle:false)
@@ -199,19 +212,30 @@ internal sealed class TerminalSession : IDisposable
     }
 
     internal void ObservePrompt(int viewerId, long observedRevision, bool emptyPastePrompt, bool bracketedPaste,
-        long? clearedDraft, string? retryDraft, string? screen, string? draftId, string? approvalDraft)
+        long? clearedDraft, string? retryDraft, string? screen, string? draftId, string? approvalDraft, string? draftTail,
+        int? foldedChars, bool busyInput, string? queuedId)
     {
         lock (outputLock)
         {
             if (!viewers.ContainsKey(viewerId)) return;
             if (observedRevision == revision)
             {
-                screens[viewerId] = (revision, screen ?? "unknown", draftId, screen == "clear" && emptyPastePrompt, approvalDraft);
+                bool busyEditor = busyInput && bracketedPaste && screen is ("active" or "running") && draftId == null;
+                screens[viewerId] = (revision, screen ?? "unknown", draftId, screen == "clear" && emptyPastePrompt, approvalDraft, busyEditor, queuedId);
+                if (busyEditor && revision >= nextPromptRevision) draftMayContainText = false;
                 awaitingScreenSince = null;
+                if (bracketedPaste && retryDraft != null && !emptyPastePrompt)
+                {
+                    long now = Stopwatch.GetTimestamp();
+                    string? tail = draftTail is { Length: > 0 and <= 48 } ? draftTail : null;
+                    foldedChars = codexEditor ? foldedChars : null;
+                    if (foldedChars.HasValue) lastFoldedRevision = revision;
+                    long stable = visibleDrafts.TryGetValue(viewerId, out var prior) && prior.Message == retryDraft && prior.Tail == tail && prior.FoldedChars == foldedChars
+                        ? prior.StableSince : now;
+                    visibleDrafts[viewerId] = (revision, retryDraft, now, tail, foldedChars, stable);
+                }
+                else visibleDrafts.Remove(viewerId);
             }
-            if (observedRevision == revision && bracketedPaste && retryDraft != null && !emptyPastePrompt)
-                visibleDrafts[viewerId] = (revision, retryDraft, Stopwatch.GetTimestamp());
-            else visibleDrafts.Remove(viewerId);
             if (clearedDraft is long draft && draft > clearedDraftRevision && draft < observedRevision &&
                 observedRevision > clearedAtRevision && observedRevision <= revision)
             {
@@ -252,7 +276,9 @@ internal sealed class TerminalSession : IDisposable
     {
         if (disposed != 0) return;
         var current = ViewState();
-        if (!recheck && current == lastReported) return;
+        bool busyReady = current.Activity == "working" && CanDeliver(true, immediate: true);
+        if (!recheck && current == lastReported && busyReady == lastBusyReady) return;
+        lastBusyReady = busyReady;
         lastReported = current;
         changed();
     }
@@ -317,12 +343,19 @@ internal sealed class TerminalSession : IDisposable
         }
     }
 
-    internal bool CanDeliver(bool automatic)
+    internal bool CanDeliver(bool automatic, bool immediate = false)
     {
         lock (outputLock)
             return Online && (!automatic || (mentionPickers.Count == 0 && bracketedPasteEnabled && pasteRevision == revision && !draftMayContainText &&
-                ready.Values.Contains(revision) && Stopwatch.GetElapsedTime(lastActivity) >= Quiet));
+                ((ready.Values.Contains(revision) && Stopwatch.GetElapsedTime(lastActivity) >= Quiet) ||
+                 (immediate && revision >= nextPromptRevision && Stopwatch.GetElapsedTime(lastKeyboardInput) >= Quiet &&
+                  screens.Values.Any(s => s.Revision == revision && s.BusyInput) &&
+                  !screens.Values.Any(s => s.Revision == revision && (s.Screen is "blocked" or "draft" || s.Draft != null))))));
     }
+
+    // 只有本次回车之后、原生队列明确显示当前编号，才算 CLI 已接手。
+    private bool NativeQueuedSince(string messageId, long beforeSubmit) => revision > beforeSubmit &&
+        screens.Values.Any(s => s.Revision == revision && s.QueuedId == messageId[..8]);
 
     private void MarkInput()
     {
@@ -357,29 +390,34 @@ internal sealed class TerminalSession : IDisposable
 
     internal async Task Input(byte[] bytes, CancellationToken ct)
     {
+        // 先识别人类输入。即使用户按键正在等待写锁，自动修复也必须让出编辑器。
+        byte[]? terminalReply = null;
+        if (bytes.AsSpan().Contains((byte)27))
+        {
+            string original = Encoding.Latin1.GetString(bytes);
+            string cleaned = TerminalReports.Replace(original, "");
+            if (cleaned.Length == 0) terminalReply = bytes;
+            else if (cleaned.Length != original.Length) bytes = Encoding.Latin1.GetBytes(cleaned);
+        }
+        if (terminalReply == null) Interlocked.Increment(ref keyboardIntent);
         await inputLock.WaitAsync(ct);
         try
         {
             if (!Online) throw new WorkbenchError("终端已退出", WorkbenchFailure.Conflict);
-            if (bytes.AsSpan().Contains((byte)27))
+            if (terminalReply != null)
             {
-                // Latin1 保持原始字节一一对应，剔除夹在用户 UTF-8 输入中的查询回复。
-                string original = Encoding.Latin1.GetString(bytes);
-                string cleaned = TerminalReports.Replace(original, "");
-                if (cleaned.Length == 0)
+                if (Stopwatch.GetElapsedTime(launchedAt) < Quiet && !CanDeliver(true))
                 {
-                    if (Stopwatch.GetElapsedTime(launchedAt) < Quiet && !CanDeliver(true))
-                    {
-                        await input.WriteAsync(bytes, ct);
-                        await input.FlushAsync(ct);
-                    }
-                    return;
+                    await input.WriteAsync(terminalReply, ct);
+                    await input.FlushAsync(ct);
                 }
-                if (cleaned.Length != original.Length) bytes = Encoding.Latin1.GetBytes(cleaned);
+                return;
             }
             lock (outputLock)
             {
                 keyboardVersion++;
+                lastKeyboardInput = Stopwatch.GetTimestamp();
+                if (bytes.AsSpan().IndexOfAny((byte)10, (byte)13) >= 0) unsubmittedNewSession = false;
                 if (bytes.Length == 1 && bytes[0] is 3 or 8 or 13 or 21 or 127) draftMayContainText = false;
                 else if (bytes.Length != 0 && (bytes[0] >= 32 || bytes.AsSpan().StartsWith("\u001b[200~"u8)))
                     draftMayContainText = true;
@@ -455,20 +493,61 @@ internal sealed class TerminalSession : IDisposable
         finally { inputLock.Release(); }
     }
 
+    internal async Task CloseForSettingsChange(Action revokeGrant, bool reopeningEmpty, CancellationToken ct)
+    {
+        // 让已提交的收件先完成投递确认，避免改变终端后丢失回执。
+        if (!await deliveryLock.WaitAsync(0, ct))
+            throw new WorkbenchError("正在投递消息，请在送达后再切换设置", WorkbenchFailure.Conflict);
+        try
+        {
+            await inputLock.WaitAsync(ct);
+            try
+            {
+                if (reopeningEmpty && !CanReopenEmpty)
+                    throw new WorkbenchError("会话刚收到新输入，请稍后再切换", WorkbenchFailure.Conflict);
+                revokeGrant();
+                await Task.Run(Dispose);
+            }
+            finally { inputLock.Release(); }
+        }
+        finally { deliveryLock.Release(); }
+    }
+
     private static readonly Regex TerminalReports = new(
         @"\x1b(?:\[(?:\??[0-9]+;[0-9]+R|[?>=][0-9;]*c|\??[0-9]+;[0-9]+\$y|[IO]|0n)|\](?:10|11|12);rgb:[a-fA-F0-9/]+(?:\x1b\\|\x07))");
 
-    internal async Task<bool> Deliver(InboxItem item, bool automatic, Func<bool> claim, CancellationToken ct)
+    internal async Task<bool> Deliver(InboxItem item, bool automatic, Func<bool> claim, CancellationToken ct, bool immediate = false)
     {
         // 提交后允许同一 WebSocket 处理键盘或终端查询回复，继续接收浏览器的草稿清空回执。
         // 下一条外部投递须等本条确认或转为待核对，不能借用另一条消息的清空信号。
         await deliveryLock.WaitAsync(ct);
+        ISubmissionReceipt? receipt = null;
+        bool claimed = false;
         try
         {
-            var written = await PasteAndSubmit(item, automatic, claim, ct);
+            string text = item.AsText();
+            string? tail = null;
+            if (codexEditor || immediate)
+            {
+                var compact = string.Concat(text.Where(c => !char.IsWhiteSpace(c)));
+                tail = compact.Length <= 48 ? compact : compact[^48..];
+            }
+            if (!CanDeliver(automatic, immediate)) return false;
+            receipt = submissionReceipts?.Begin(item.Id, text);
+            int expectedChars = text.EnumerateRunes().Count();
+            bool Claim()
+            {
+                return claimed = claim();
+            }
+            var written = await PasteAndSubmit(item.Id, text, tail, expectedChars, automatic, Claim, ct, immediate);
             if (written == null) return false;
-            await WaitForSubmitConfirmation(item.Id, written.Value, ct);
+            await WaitForSubmitConfirmation(item.Id, tail, expectedChars, written.Value, receipt, ct);
             return true;
+        }
+        catch
+        {
+            if (claimed && receipt != null) recentReceipts[item.Id] = (receipt, Stopwatch.GetTimestamp());
+            throw;
         }
         finally
         {
@@ -485,29 +564,36 @@ internal sealed class TerminalSession : IDisposable
         }
     }
 
-    private async Task<(long BeforePaste, long BeforeSubmit, long KeyboardVersion)?> PasteAndSubmit(InboxItem item, bool automatic,
-        Func<bool> claim, CancellationToken ct)
+    private async Task<(long BeforePaste, long BeforeSubmit, long KeyboardVersion, long KeyboardIntent, bool BusyAtStart, bool Folded)?> PasteAndSubmit(string messageId, string text, string? tail, int expectedChars, bool automatic,
+        Func<bool> claim, CancellationToken ct, bool immediate)
     {
         await inputLock.WaitAsync(ct);
         try
         {
             bool useBracketedPaste;
+            bool busyAtStart;
             long beforePaste;
+            long keyboardAtPaste;
             lock (outputLock)
             {
+                keyboardAtPaste = Volatile.Read(ref keyboardIntent);
                 // 最后一次空闲检查与认领共用预留区，避免已被新指令取代的旧消息回退到 pending。
-                if (!CanDeliver(automatic) || !claim()) return null;
+                if (!CanDeliver(automatic, immediate) || !claim()) return null;
+                busyAtStart = automatic && immediate && !CanDeliver(true);
                 useBracketedPaste = bracketedPasteEnabled;
                 beforePaste = revision;
                 automaticDeliveryInProgress = automatic;
                 MarkInput();
                 draftMayContainText = false;
             }
-            // 标记单独写入，正文仍按完整 UTF-8 字符分片，以保护 Windows 10 ConPTY。
-            string text = item.AsText();
-            if (useBracketedPaste) await WriteChunkedAsync("\u001b[200~"u8.ToArray(), ct);
-            await WriteChunkedAsync(Encoding.UTF8.GetBytes(text), ct);
-            if (useBracketedPaste) await WriteChunkedAsync("\u001b[201~"u8.ToArray(), ct);
+            async Task Paste()
+            {
+                // 标记单独写入，正文仍按完整 UTF-8 字符分片，以保护 Windows 10 ConPTY。
+                if (useBracketedPaste) await WriteChunkedAsync("\u001b[200~"u8.ToArray(), ct);
+                await WriteChunkedAsync(Encoding.UTF8.GetBytes(text), ct);
+                if (useBracketedPaste) await WriteChunkedAsync("\u001b[201~"u8.ToArray(), ct);
+            }
+            await Paste();
             // 只有末尾仍是 @ 补全词才结束补全，且与粘贴结束标记分开发送。
             if (Regex.IsMatch(text, @"(?:^|[\s；：])@[\p{L}\p{M}\p{N}_./\\-]*[\p{L}\p{M}\p{N}_/\\-]\z"))
             {
@@ -516,23 +602,50 @@ internal sealed class TerminalSession : IDisposable
             }
             long afterPaste;
             lock (outputLock) afterPaste = revision;
-            await WaitForPasteRedraw(afterPaste, ct);
+            if (!await WaitForPasteRedraw(beforePaste, afterPaste, messageId, tail, expectedChars, ct, busyAtStart))
+            {
+                if (!automatic || !useBracketedPaste || !await ClearOwnedDraft(messageId, tail!, beforePaste, keyboardAtPaste, ct))
+                    throw new IOException("终端草稿与本次投递不一致，请核对终端");
+                lock (outputLock) beforePaste = revision;
+                await Paste();
+                lock (outputLock) afterPaste = revision;
+                if (!await WaitForPasteRedraw(beforePaste, afterPaste, messageId, tail, expectedChars, ct, busyAtStart, requireComplete:true))
+                    throw new IOException("重写后仍未识别完整草稿，请核对终端");
+            }
             long beforeSubmit;
+            bool folded;
             lock (outputLock)
             {
                 if (!Online) throw new IOException("终端在提交前退出");
+                if (automatic && (Volatile.Read(ref keyboardIntent) != keyboardAtPaste ||
+                    screens.Values.Any(s => s.Revision == revision && s.Screen == "blocked")))
+                    throw new IOException("已观察到人工输入或审批，暂停自动提交");
+                folded = lastFoldedRevision > beforePaste;
+                if ((busyAtStart || folded) && !CompleteDraftStable(messageId, tail, expectedChars, beforePaste))
+                    throw new IOException("原生编辑器已切换，未向新界面发送回车");
                 beforeSubmit = revision;
+                unsubmittedNewSession = false;
             }
             await input.WriteAsync(new byte[] { 13 }, ct);
             await input.FlushAsync(ct);
-            return (beforePaste, beforeSubmit, keyboardVersion);
+            return (beforePaste, beforeSubmit, keyboardVersion, keyboardAtPaste, busyAtStart, folded);
         }
         finally { inputLock.Release(); }
     }
 
-    private async Task WaitForPasteRedraw(long afterPaste, CancellationToken ct)
+    // 每一条证据都来自当前查看者对最新画面的观察。按消息头与尾部核对，排除部分重绘或其他消息。
+    // Codex 长粘贴会折叠为 [Pasted Content N chars]，此时按本次粘贴后的新帧与字符量级核对。
+    private bool CompleteDraftStable(string id, string? tail, int expectedChars, long beforePaste)
+        => tail != null && visibleDrafts.Values.Any(d => d.Revision == revision && d.Revision > beforePaste &&
+            (d.FoldedChars is int chars ? chars == expectedChars : d.Tail == tail) &&
+            (d.Message == id || d.Message == id[..8]) && Stopwatch.GetElapsedTime(d.StableSince).TotalMilliseconds >= 350);
+
+    private async Task<bool> WaitForPasteRedraw(long beforePaste, long afterPaste, string messageId, string? tail, int expectedChars,
+        CancellationToken ct, bool busyAtStart, bool requireComplete = false)
     {
         long started = Stopwatch.GetTimestamp();
+        long progress = started;
+        string? lastTail = null;
         while (true)
         {
             var elapsed = Stopwatch.GetElapsedTime(started);
@@ -540,18 +653,80 @@ internal sealed class TerminalSession : IDisposable
             {
                 if (!Online) throw new IOException("终端在提交前退出");
                 // Codex 在 Windows 上会把粘贴后的短间隔回车当作正文中的换行。
+                if (lastFoldedRevision > beforePaste && screens.Values.Any(s => s.Revision == revision && s.Screen == "blocked"))
+                    throw new IOException("终端已进入审批界面，尚未发送回车，请核对终端");
                 // 没有新帧时留足 1.8 秒；有积压重绘时，刷管道并不等于 CLI 已消费完输入。
-                if (elapsed.TotalMilliseconds >= 800 && Stopwatch.GetElapsedTime(lastActivity).TotalMilliseconds >= 350 &&
-                    (revision > afterPaste || elapsed.TotalMilliseconds >= 1800))
-                    return;
-                if (elapsed.TotalSeconds >= 20)
+                var observed = tail == null ? null : visibleDrafts.Values.FirstOrDefault(d => d.Revision == revision &&
+                    (d.Message == messageId || d.Message == messageId[..8])).Tail;
+                if (observed != null && observed != lastTail)
+                {
+                    progress = Stopwatch.GetTimestamp();
+                    lastTail = observed;
+                }
+                bool quiet = Stopwatch.GetElapsedTime(lastActivity).TotalMilliseconds >= 350 &&
+                    (revision > afterPaste || elapsed.TotalMilliseconds >= 1800);
+                if (elapsed.TotalMilliseconds >= 800 && (CompleteDraftStable(messageId, tail, expectedChars, beforePaste) ||
+                    (!requireComplete && !busyAtStart && lastFoldedRevision <= beforePaste && quiet && (observed == null || observed == tail))))
+                    return true;
+                if (requireComplete && elapsed.TotalSeconds >= 4) return false;
+                if (codexEditor && observed != null && observed != tail && !busyAtStart &&
+                    elapsed.TotalMilliseconds >= 1800 && Stopwatch.GetElapsedTime(progress).TotalMilliseconds >= 1200 &&
+                    OwnedMalformedDraft(messageId, tail!, beforePaste)) return false;
+                if (Stopwatch.GetElapsedTime(progress).TotalSeconds >= 20 || elapsed.TotalSeconds >= 60)
                     throw new IOException("终端仍在重绘粘贴内容，尚未发送回车，请核对终端");
             }
             await Task.Delay(30, ct);
         }
     }
 
-    private async Task WaitForSubmitConfirmation(string messageId, (long BeforePaste, long BeforeSubmit, long KeyboardVersion) sent, CancellationToken ct)
+    // 粘贴尚未发过回车时，只清理当前空闲编辑器内、含本条编号且尾部不匹配的未折叠草稿。
+    private bool OwnedMalformedDraft(string id, string tail, long beforePaste) =>
+        revision > beforePaste && Stopwatch.GetElapsedTime(lastActivity).TotalMilliseconds >= 350 &&
+        screens.Values.Any(s => s.Revision == revision && s.Screen == "draft" && s.Draft == id[..8]) &&
+        !screens.Values.Any(s => s.Revision == revision && s.Screen is "blocked" or "running" or "active") &&
+        visibleDrafts.Values.Any(d => d.Revision == revision && d.Message == id && d.FoldedChars == null &&
+            d.Tail != null && d.Tail != tail && Stopwatch.GetElapsedTime(d.StableSince).TotalMilliseconds >= 1200);
+
+    // 调用方持有 inputLock，直到原生空编辑器出现后才可重写。退出或失去画面证据时保留待核对。
+    private async Task<bool> ClearOwnedDraft(string id, string tail, long beforePaste, long keyboardAtPaste, CancellationToken ct)
+    {
+        long beforeClear;
+        lock (outputLock)
+        {
+            if (!Online || Volatile.Read(ref keyboardIntent) != keyboardAtPaste || !OwnedMalformedDraft(id, tail, beforePaste)) return false;
+            beforeClear = revision;
+        }
+        await input.WriteAsync(new byte[] { 3 }, ct);
+        await input.FlushAsync(ct);
+        long started = Stopwatch.GetTimestamp();
+        while (Stopwatch.GetElapsedTime(started).TotalSeconds < 2)
+        {
+            lock (outputLock)
+            {
+                if (!Online || Volatile.Read(ref keyboardIntent) != keyboardAtPaste) return false;
+                if (revision > beforeClear && screens.Values.Any(s => s.Revision == revision && s.Idle) &&
+                    !screens.Values.Any(s => s.Revision == revision && s.Screen != "clear")) return true;
+            }
+            await Task.Delay(30, ct);
+        }
+        return false;
+    }
+
+    internal IEnumerable<string> ReconcileReceipts()
+    {
+        foreach (var (id, pending) in recentReceipts)
+        {
+            if (Stopwatch.GetElapsedTime(pending.Since).TotalMinutes > 2)
+                recentReceipts.TryRemove(id, out _);
+            else if (pending.Receipt.Check() == SubmissionStatus.Confirmed)
+                yield return id;
+        }
+    }
+
+    internal void RemoveReceipt(string id) => recentReceipts.TryRemove(id, out _);
+
+    private async Task WaitForSubmitConfirmation(string messageId, string? tail, int expectedChars,
+        (long BeforePaste, long BeforeSubmit, long KeyboardVersion, long KeyboardIntent, bool BusyAtStart, bool Folded) sent, ISubmissionReceipt? receipt, CancellationToken ct)
     {
         long started = Stopwatch.GetTimestamp();
         bool retried = false;
@@ -559,38 +734,45 @@ internal sealed class TerminalSession : IDisposable
         {
             var elapsed = Stopwatch.GetElapsedTime(started);
             bool retry;
+            var native = receipt?.Check() ?? SubmissionStatus.Unavailable;
+            if (native == SubmissionStatus.Confirmed) return;
             lock (outputLock)
             {
+                if (NativeQueuedSince(messageId, sent.BeforeSubmit)) return;
                 if (!Online) throw new IOException("终端在提交后退出");
                 // [T09c] 回车后用户可以继续输入。认定送达依赖清空、原生执行提示或已被其他消息替代的草稿。
                 // 单凭输出序号增加、观察端掉线或一次无法识别的画面，无法证明当前正文已离开编辑器。
-                if (elapsed.TotalMilliseconds >= 250 && revision > sent.BeforeSubmit)
+                if (native == SubmissionStatus.Unavailable && elapsed.TotalMilliseconds >= 250 && revision > sent.BeforeSubmit)
                 {
                     if (clearedDraftRevision > sent.BeforePaste && clearedAtRevision > sent.BeforeSubmit) return;
                     var current = screens.Where(p => viewers.ContainsKey(p.Key) && p.Value.Revision == revision).Select(p => p.Value);
-                    if (!current.Any(s => s.Draft == messageId[..8]) && current.Any(s =>
+                    if (!sent.BusyAtStart && !current.Any(s => s.Draft == messageId[..8]) && current.Any(s =>
                         s.Screen is "clear" or "running" ||
                         (s.Screen == "draft" && (s.Draft != null || keyboardVersion != sent.KeyboardVersion)))) return;
                 }
                 // Copilot 提交长文后会暂时把下分隔线移出视口；实测完整空输入框在 4 秒窗口之后才重现。
                 // 仅给在线观察者看到过提交后重绘的情况延长回执时间，期间仍须取得清空证据。
-                int confirmationSeconds = viewers.Count > 0 && revision > sent.BeforeSubmit &&
+                int confirmationSeconds = native == SubmissionStatus.Awaiting ? 12 : viewers.Count > 0 && revision > sent.BeforeSubmit &&
                     keyboardVersion == sent.KeyboardVersion ? 8 : 4;
                 if (elapsed.TotalSeconds >= confirmationSeconds)
                 {
                     draftMayContainText = true;
-                    throw new IOException("已发送回车，未观察到原生输入行清空，请核对终端");
+                    throw new IOException(native == SubmissionStatus.Awaiting ? "已发送回车，原生会话尚未记录本条消息，请核对终端" :
+                        "已发送回车，未观察到原生输入行清空，请核对终端");
                 }
-                retry = !retried && elapsed.TotalMilliseconds >= 1100 && StillEditing();
+                retry = !retried && elapsed.TotalMilliseconds >= 1100 && StillEditing(native);
             }
             if (retry)
             {
                 await inputLock.WaitAsync(ct);
                 try
                 {
+                    native = receipt?.Check(force: true) ?? SubmissionStatus.Unavailable;
+                    if (native == SubmissionStatus.Confirmed) return;
                     lock (outputLock)
                     {
-                        if (!StillEditing()) continue;
+                        if (NativeQueuedSince(messageId, sent.BeforeSubmit)) return;
+                        if (!StillEditing(native)) continue;
                         // 同一写锁内复核最新草稿与键盘版本，然后只补回车，不重写正文或再次认领。
                         retried = true;
                         sent.BeforeSubmit = revision;
@@ -605,12 +787,16 @@ internal sealed class TerminalSession : IDisposable
         }
 
         // 首次回车也可能被直接吞掉或变成换行；无新帧时复用粘贴重绘已确认的草稿，有新帧时允许按完整 ID 或 8 位前缀匹配当前草稿。
-        bool StillEditing() => Online && keyboardVersion == sent.KeyboardVersion && revision > sent.BeforePaste &&
+        // 首次回车可能既被吞掉又没有任何重绘。当前帧仍完整匹配时可复用该帧证据，等待原生会话回执。
+        bool StillEditing(SubmissionStatus native) => Online && Volatile.Read(ref keyboardIntent) == sent.KeyboardIntent && keyboardVersion == sent.KeyboardVersion && revision > sent.BeforePaste &&
             (clearedDraftRevision <= sent.BeforePaste || clearedAtRevision <= sent.BeforeSubmit) &&
-            Stopwatch.GetElapsedTime(lastActivity).TotalMilliseconds >= 250 &&
-            (revision == sent.BeforeSubmit || visibleDrafts.Any(pair => viewers.ContainsKey(pair.Key) &&
+            !screens.Values.Any(s => s.Revision == revision && s.Screen == "blocked") &&
+            (!(sent.Folded || lastFoldedRevision > sent.BeforePaste) || CompleteDraftStable(messageId, tail, expectedChars, sent.BeforePaste)) &&
+            (Stopwatch.GetElapsedTime(lastActivity).TotalMilliseconds >= 250 || CompleteDraftStable(messageId, tail, expectedChars, sent.BeforePaste)) &&
+            (((native == SubmissionStatus.Unavailable || sent.Folded || (codexEditor && CompleteDraftStable(messageId, tail, expectedChars, sent.BeforePaste))) && revision == sent.BeforeSubmit) || visibleDrafts.Any(pair => viewers.ContainsKey(pair.Key) &&
                 pair.Value.Revision == revision &&
                 (pair.Value.Message == messageId || pair.Value.Message == messageId[..8]) &&
+                (!codexEditor || pair.Value.Tail == null || pair.Value.Tail == tail || pair.Value.FoldedChars == expectedChars) &&
                 pair.Value.ObservedAt >= started));
     }
 
@@ -661,9 +847,10 @@ internal sealed class TerminalSession : IDisposable
             if (!Native.UpdateProcThreadAttribute(attributes, 0, 0x0002000D, jobList, IntPtr.Size, 0, 0))
                 throw Native.Error("无法将进程绑定到窗格");
 
+            var start = WindowsCommand.Resolve(executable, arguments);
             var variables = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (System.Collections.DictionaryEntry variable in Environment.GetEnvironmentVariables())
-                variables[(string)variable.Key] = (string)variable.Value!;
+            foreach (var pair in start.Environment)
+                if (pair.Value != null) variables[pair.Key] = pair.Value;
             if (overrides != null)
                 foreach (var pair in overrides) variables[pair.Key] = pair.Value;
             variables["FF_P0_WINDOW_GRANT"] = variables["LX_P0_WINDOW_GRANT"] = grant;
@@ -675,7 +862,6 @@ internal sealed class TerminalSession : IDisposable
                 Info = new Native.StartupInfo { Size = Marshal.SizeOf<Native.StartupInfoEx>(), Flags = 0x00000100 },
                 AttributeList = attributes
             };
-            var start = WindowsCommand.Resolve(executable, arguments);
             executable = start.FileName;
             var command = new StringBuilder(QuoteArgument(executable) + " " + start.Arguments);
             if (!Native.CreateProcess(executable, command, 0, 0, false, 0x00080000 | 0x00000400,

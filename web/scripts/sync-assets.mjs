@@ -4,8 +4,9 @@ import { join } from "node:path";
 
 const project = fileURLToPath(new URL("../../src/FF.AgentCollaboration/", import.meta.url));
 const source = join(project, "wwwroot");
+const output = process.env.FF_WORKBENCH_SYNC_ROOT || join(project, "bin");
 for (const config of ["Debug", "Release"]) {
-  const target = join(project, "bin", config, "net10.0", "wwwroot");
+  const target = join(output, config, "net10.0", "wwwroot");
   await mkdir(target, { recursive: true });
   // Publish the entry page last. Already-open pages can still request their original chunks.
   for (const entry of await readdir(source)) {

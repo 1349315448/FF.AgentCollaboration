@@ -1,4 +1,5 @@
 import { request } from "../services/api";
+import { pageSocketUrl } from "../services/workbenchPage";
 import { engineNames } from "../services/engines";
 import { byId } from "./dom.js";
 
@@ -13,6 +14,7 @@ export function openEngineLogin(engine, project) {
   if (dialog.open) return Promise.resolve(false);
   const viewport = byId("engine-login-terminal"), status = byId("engine-login-status"), verify = byId("verify-engine-login");
   byId("engine-login-title").textContent = engineNames[engine] + " 登录";
+  byId("trae-login-notice").hidden = engine !== "traecli";
   status.textContent = "请在终端完成登录";
   verify.disabled = false;
   dialog.showModal();
@@ -40,14 +42,14 @@ export function openEngineLogin(engine, project) {
       if (controller.signal.aborted) return;
       confirmed = accountReady(account);
       if (confirmed) dialog.close();
-      else status.textContent = account.status === "signed-out" ? "尚未登录，可完成登录后再次检查" : "暂时无法确认登录状态，可重试";
+      else status.textContent = account.message || (account.status === "signed-out" ? "尚未登录，可完成登录后再次检查" : "暂时无法确认登录状态，可重试");
     } catch (error) { if (!controller.signal.aborted) status.textContent = error.message; }
     finally { if (!controller.signal.aborted) verify.disabled = false; }
   }
   verify.onclick = verifyAccount;
   function connect(provider) {
     if (provider) url.searchParams.set("provider", provider);
-    socket = new WebSocket(url);
+    socket = new WebSocket(pageSocketUrl(url));
     socket.binaryType = "arraybuffer";
     socket.onopen = () => { resize(); term.focus(); };
     socket.onmessage = event => { if (event.data instanceof ArrayBuffer) term.write(new Uint8Array(event.data, 8)); };

@@ -7,6 +7,7 @@ internal static class ShortcutCommands
 {
     internal static List<Shortcut> Defaults(string engine)
     {
+        if (engine == "qoder") return [new("/model", "选择模型"), new("/mcp", "查看 MCP 服务"), new("/usage", "查看额度")];
         if (engine is "qwen" or "codebuddy" or "traecli") return [new("/model", "选择模型"), new("/mcp", "查看 MCP 服务")];
         if (engine == "zcode") return [new("/help", "查看命令帮助"), new("/model", "选择模型")];
         if (engine == "claude") return [new("/model", "选择模型"), new("/status", "查看状态"),

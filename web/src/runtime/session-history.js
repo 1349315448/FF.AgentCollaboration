@@ -7,7 +7,8 @@ import { engineNames, windowRoute } from "./pane.js";
 import { panes } from "../services/terminalRegistry";
 import { refresh } from "./workbench.js";
 
-let paneSessionRequest;
+let paneSessionRequest, configRequest, catalogRequest;
+let configModels = [];
 let sessionPane;
 
 let showArchivedSessions = false;
@@ -18,23 +19,95 @@ function cancelSessionDelete() {
   byId("session-delete-confirm").hidden = true;
 }
 
-function openPaneSessions(pane) {
+function openPaneSessions(pane, tab = "history") {
   sessionPane = pane;
   showArchivedSessions = false;
   const dialog = byId("pane-session-dialog");
-  byId("pane-session-title").textContent = "@" + pane.agent.name + " 的会话记录";
+  configRequest?.abort();
+  const instance = configRequest = new AbortController();
+  byId("pane-session-title").textContent = "@" + pane.agent.name + " · Agent 设置";
+  byId("rename-name").value = pane.agent.name;
+  byId("config-role").value = pane.agent.role ?? "";
+  const engines = byId("config-engine");
+  for (const option of engines.options) {option.textContent = engineNames[option.value]; option.disabled = false;}
+  engines.value = pane.agent.engine;
+  request("/engines", {signal:instance.signal}).then(installed=>{
+    if (instance.signal.aborted) return;
+    for (const option of engines.options) {
+      option.textContent = engineNames[option.value] + (installed[option.value] ? " · 已安装" : " · 未安装");
+      option.disabled = !installed[option.value] && option.value !== pane.agent.engine;
+    }
+  }).catch(()=>{});
+  feedback("rename-error");
+  updateConfigEngine();
   const context = byId("pane-session-context");
   context.title = context.textContent = engineNames[pane.agent.engine] + " · " + pane.agent.project;
   dialog.showModal();
   byId("pane-session-new").hidden = true;
-  loadDrawerHistory();
+  showConfigTab(tab);
+}
+
+function showConfigTab(tab) {
+  const history = tab === "history";
+  byId("agent-config-basic").hidden = history;
+  byId("agent-config-history").hidden = !history;
+  for (const button of byId("pane-session-dialog").querySelectorAll("[data-config-tab]"))
+    button.setAttribute("aria-selected", String(button.dataset.configTab === tab));
+  if (history) loadDrawerHistory();
+  else {paneSessionRequest?.abort(); byId("rename-name").focus();}
+}
+
+function configPayload() {
+  const engine = byId("config-engine").value;
+  const fields = {name:byId("rename-name").value, role:byId("config-role").value, engine};
+  if (engine !== sessionPane.agent.engine)
+    for (const field of ["model", "effort", "mode", "approval"]) fields[field] = byId("config-"+field).value || null;
+  return fields;
+}
+
+function configEfforts() {
+  const choice=byId("config-model").value;
+  const model=configModels.find(m=>choice ? m.id===choice : m.isDefault);
+  byId("config-effort").replaceChildren(new Option("跟随模型默认",""),...(model?.efforts??[]).map(e=>new Option(e,e)));
+}
+
+async function updateConfigEngine() {
+  catalogRequest?.abort();
+  const controller = catalogRequest = new AbortController();
+  const engine = byId("config-engine").value;
+  const {agent} = sessionPane;
+  const changed = engine !== agent.engine;
+  byId("config-launch-fields").hidden = !changed;
+  byId("config-save").textContent = changed && agent.online ? "保存并重启终端" : "保存";
+  byId("config-effect").textContent = changed ? (agent.online ? "切换引擎将重启当前终端" : "下次打开时使用所选引擎") : "名称与身份立即保存";
+  byId("config-session-effect").textContent = agent.online ? "新建或切换会话将打开所选对话" : "下次打开时进入所选会话";
+  if (!changed) return;
+  const status=byId("config-catalog-status");
+  configModels=[];
+  for (const field of ["model","mode"]) byId("config-"+field).replaceChildren(new Option("跟随引擎默认",""));
+  byId("config-approval").value="";
+  configEfforts();
+  status.textContent="正在读取引擎选项…";
+  try {
+    const caps=(await engineCapabilities())[engine];
+    if (controller.signal.aborted) return;
+    byId("config-approval").closest("label").hidden=!caps?.startupApproval;
+    for(const mode of caps?.modes??[]) byId("config-mode").add(new Option(mode.label,mode.id));
+    byId("config-mode").closest("label").hidden=!caps?.modes?.length;
+    const models=caps?.models===false ? [] : await request("/models/"+engine+"?"+new URLSearchParams({project:agent.project}),{signal:controller.signal});
+    if(controller.signal.aborted) return;
+    configModels=models;
+    for(const m of models) byId("config-model").add(new Option(m.name,m.id));
+    configEfforts();status.textContent="";
+  } catch(error){if(!controller.signal.aborted) status.textContent=error.message;}
 }
 
 async function loadDrawerHistory() {
   paneSessionRequest?.abort();
   const controller = new AbortController();
   paneSessionRequest = controller;
-  const {engine, project} = sessionPane.agent;
+  const {project} = sessionPane.agent;
+  const engine = byId("config-engine").value;
   const archived = showArchivedSessions;
   const list = byId("pane-history"), status = byId("pane-session-status");
   cancelSessionDelete();
@@ -74,7 +147,7 @@ async function loadDrawerHistory() {
         if (!actionsAllowed.includes(action)) return;
         const button = node("button", style, label);
         button.type = "button";
-        const ownOfflineSession = action === "resume" && !sessionPane.agent.online && sessionPane.agent.session === session.id;
+        const ownOfflineSession = action === "resume" && !sessionPane.agent.online && engine === sessionPane.agent.engine && sessionPane.agent.session === session.id;
         button.disabled = session.mayBeInUse && (!ownOfflineSession || session.nativeInUse);
         button.onclick = () => {
           if (action === "delete") {
@@ -108,16 +181,17 @@ async function runSessionAction(action, session) {
   cancelSessionDelete();
   feedback("pane-session-error");
   setBusy(dialog, true);
-  const controls = dialog.querySelectorAll(".session-tools, .session-scroll, .dialog-footer");
+  const controls = dialog.querySelectorAll(".new-agent-tabs,.session-tools,.session-scroll,.dialog-footer");
   controls.forEach(element => element.inert = true);
   try {
     if (action === "new" || action === "resume") {
-      await request(windowRoute(pane) + "/session", {method:"POST", body:{newSession:action === "new", session:session?.id}});
+      if (!byId("rename-name").value.trim()) { showConfigTab("basic"); byId("rename-name").reportValidity(); return; }
+      await request(windowRoute(pane) + "/config", {method:"PUT", body:{...configPayload(), sessionMode:action, sessionId:session?.id}});
       dialog.close();
       await refresh();
       if (panes.has(pane.agent.id)) focusAgent(pane.agent.id);
     } else {
-      await request(windowRoute(pane) + "/history/" + action, {method:"POST", body:{session:session.id, archived:showArchivedSessions}});
+      await request(windowRoute(pane) + "/history/" + action, {method:"POST", body:{session:session.id, archived:showArchivedSessions, engine:byId("config-engine").value}});
       await loadDrawerHistory();
     }
   } catch (error) {
@@ -132,7 +206,22 @@ async function runSessionAction(action, session) {
 for (const tab of byId("pane-session-dialog").querySelectorAll("[data-history]")) {
   tab.onclick = () => { showArchivedSessions = tab.dataset.history === "archived"; loadDrawerHistory(); };
 }
-byId("pane-session-dialog").addEventListener("close", () => { paneSessionRequest?.abort(); cancelSessionDelete(); });
+for (const tab of byId("pane-session-dialog").querySelectorAll("[data-config-tab]"))
+  tab.onclick = () => showConfigTab(tab.dataset.configTab);
+byId("config-model").onchange = configEfforts;
+byId("config-engine").onchange = updateConfigEngine;
+byId("agent-config-basic").onsubmit = async e => {
+  e.preventDefault();
+  const dialog=byId("pane-session-dialog");
+  if (dialog.dataset.busy === "true") return;
+  setBusy(dialog,true); byId("agent-config-basic").inert=true;
+  try {
+    await request(windowRoute(sessionPane)+"/config",{method:"PUT",body:configPayload()});
+    dialog.close(); await refresh();
+  } catch(error){feedback("rename-error",error.message);}
+  finally {byId("agent-config-basic").inert=false;setBusy(dialog,false);}
+};
+byId("pane-session-dialog").addEventListener("close", () => { configRequest?.abort();catalogRequest?.abort();paneSessionRequest?.abort(); cancelSessionDelete(); });
 byId("pane-session-reload").onclick = loadDrawerHistory;
 byId("pane-session-new").onclick = () => runSessionAction("new");
 byId("cancel-session-delete").onclick = cancelSessionDelete;

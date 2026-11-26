@@ -202,7 +202,11 @@ async function confirmPeer(button) {
   try {
     await request(windowRoute(pane) + "/mention", {method:"POST",
       body:{sourceTerminal:generation, targetId:id, targetTerminal:terminal}});
-    if (picking === state) closePeerPicker();
+    if (picking === state) {
+      closePeerPicker();
+      // 原生 close 事件延迟至后续帧；确认选人后立即恢复终端，接住紧随其后的输入法事件。
+      finishPicker();
+    }
   } catch (error) {
     await refresh();
     if (picking === state) { peerStatus.textContent = error.message; positionPeers(); }

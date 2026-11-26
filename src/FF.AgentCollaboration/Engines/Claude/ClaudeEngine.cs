@@ -47,6 +47,7 @@ internal sealed class ClaudeEngine(string cwd) : Engine
         if (window.Model != null) args.AddRange(["--model", window.Model]);
         if (window.Effort != null) args.AddRange(["--effort", window.Effort]);
         if (window.Mode != null) args.AddRange(["--permission-mode", window.Mode]);
+        if (mcp.ExtraSkillRoot != null) args.AddRange(["--add-dir",mcp.ExtraSkillRoot]);
         var server = new
         {
             type = "stdio",
@@ -54,7 +55,7 @@ internal sealed class ClaudeEngine(string cwd) : Engine
             args = mcp.Arguments,
             env = new { LX_P0_WINDOW_GRANT = "${LX_P0_WINDOW_GRANT}" }
         };
-        args.AddRange(["--mcp-config", JsonSerializer.Serialize(new { mcpServers = new { lx_collab = server } }),
+        args.AddRange(["--mcp-config", JsonSerializer.Serialize(new { mcpServers = mcp.Servers("claude",server) }),
             "--allowedTools", "mcp__lx_collab__*"]);
         return args;
     }

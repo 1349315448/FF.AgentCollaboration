@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Microsoft.Data.Sqlite;
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Infrastructure.Files;
 
@@ -7,6 +8,58 @@ namespace FF.AgentCollaboration.Engines;
 internal sealed class CodexEngine(string cwd, string executable = "codex") : RpcEngine
 {
     internal override EngineCapabilities Capabilities => Profile;
+    internal override ISubmissionReceiptSource? SubmissionReceipts(AgentWindow window)
+    {
+        if (executable != "codex" || !Guid.TryParseExact(window.Session, "D", out _)) return null;
+        string id = window.Session!;
+        string home = Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(
+            Environment.GetEnvironmentVariable("USERPROFILE") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+        string? path = null;
+        return new JsonlSubmissionReceipts(() => path ??= FindRollout(home, id), (record, envelope) =>
+            JsonlSubmissionReceipts.StringIs(record, "type", "response_item") &&
+            record.TryGetProperty("payload", out var payload) && payload.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            JsonlSubmissionReceipts.StringIs(payload, "type", "message") && JsonlSubmissionReceipts.IsUserEnvelope(payload, envelope),
+            record => JsonlSubmissionReceipts.StringIs(record, "type", "session_meta") &&
+                record.TryGetProperty("payload", out var meta) && meta.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                JsonlSubmissionReceipts.StringIs(meta, "id", id));
+    }
+
+    private static string? FindRollout(string home, string id)
+    {
+        if (!Directory.Exists(home)) return null;
+        string sessions = Path.Combine(home, "sessions");
+        foreach (var index in Directory.EnumerateFiles(home, "state_*.sqlite").OrderDescending().Take(3))
+        {
+            try
+            {
+                using var db = new SqliteConnection(new SqliteConnectionStringBuilder {
+                    DataSource = index, Mode = SqliteOpenMode.ReadOnly, Pooling = false, DefaultTimeout = 1 }.ToString());
+                db.Open();
+                using var query = db.CreateCommand();
+                query.CommandText = "SELECT rollout_path FROM threads WHERE id=$id";
+                query.Parameters.AddWithValue("$id", id);
+                if (query.ExecuteScalar() is not string file) continue;
+                // Native Windows stores absolute paths with an extended-length prefix in the index.
+                if (file.StartsWith(@"\\?\", StringComparison.Ordinal)) file = file[4..];
+                if (Path.IsPathFullyQualified(file) && Path.GetFullPath(file).StartsWith(Path.GetFullPath(sessions) +
+                    Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
+                    Path.GetFileName(file).EndsWith("-" + id + ".jsonl", StringComparison.OrdinalIgnoreCase)) return file;
+            }
+            catch (SqliteException) { }
+        }
+        // UUIDv7 encodes creation time. Look only in its local/UTC date buckets if the CLI has no readable index yet.
+        var guid = Guid.Parse(id);
+        if (guid.Version != 7) return null;
+        var instant = DateTimeOffset.FromUnixTimeMilliseconds(Convert.ToInt64(guid.ToString("N")[..12], 16));
+        var local = instant.LocalDateTime;
+        foreach (var day in new[] { local, instant.UtcDateTime }.Select(d => d.ToString("yyyy/MM/dd", System.Globalization.CultureInfo.InvariantCulture)).Distinct())
+        {
+            var bucket = Path.Combine(sessions, day);
+            if (Directory.Exists(bucket) && Directory.EnumerateFiles(bucket, "*-" + id + ".jsonl").FirstOrDefault() is { } path) return path;
+        }
+        return Path.Combine(sessions, local.ToString("yyyy/MM/dd", System.Globalization.CultureInfo.InvariantCulture),
+            "rollout-" + local.ToString("yyyy-MM-ddTHH-mm-ss", System.Globalization.CultureInfo.InvariantCulture) + "-" + id + ".jsonl");
+    }
     internal override async Task<EngineAccount> Account(CancellationToken ct)
     {
         var (code, output) = await EngineAuthentication.Command(executable, cwd, ["login", "status"], ct);
@@ -218,6 +271,7 @@ internal sealed class CodexEngine(string cwd, string executable = "codex") : Rpc
             "-c", server + "args=[" + string.Join(',', mcp.Arguments.Select(Toml)) + "]",
             "-c", server + "env_vars=[\"LX_P0_WINDOW_GRANT\"]",
             "-c", server + "default_tools_approval_mode=\"approve\""]);
+        McpConfig.AppendCodex(args,mcp);
         return args;
     }
 

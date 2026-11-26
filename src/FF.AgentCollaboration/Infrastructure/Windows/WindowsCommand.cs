@@ -39,6 +39,19 @@ internal static class WindowsCommand
     {
         string directory = Path.GetDirectoryName(executable)!;
         var args = arguments.ToList();
+        if (Path.GetFileName(executable).Equals("codebuddy.cmd", StringComparison.OrdinalIgnoreCase))
+        {
+            var entry = Path.Combine(directory, "node_modules", "@tencent-ai", "codebuddy-code", "bin", "codebuddy");
+            if (File.Exists(entry))
+            {
+                var node = NodeRuntime.ForCodeBuddy(directory);
+                var command = new ProcessStartInfo(node) { UseShellExecute = false, CreateNoWindow = true };
+                args.Insert(0, entry);
+                command.Arguments = string.Join(' ', args.Select(TerminalSession.QuoteArgument));
+                command.Environment["PATH"] = Path.GetDirectoryName(node) + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+                return command;
+            }
+        }
         if (Path.GetFileName(executable).Equals("claude.cmd", StringComparison.OrdinalIgnoreCase))
         {
             string package = Path.Combine(directory, "node_modules", "@anthropic-ai", "claude-code");

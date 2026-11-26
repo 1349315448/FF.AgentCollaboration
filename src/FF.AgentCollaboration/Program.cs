@@ -8,7 +8,7 @@ Console.InputEncoding = Console.OutputEncoding = new UTF8Encoding(false);
 if (args.Length == 0 || (args.Length < 2 && args[0] != "workbench") || args[0] is not ("run" or "init" or "recover" or "resume" or "mcp" or "workbench" or "workbench-mcp"))
 {
     Console.Error.WriteLine("Usage: FF.AgentCollaboration run|init|recover|resume <run-directory> [--disconnect-on-callback] [--copilot-model ID]");
-    Console.Error.WriteLine("       FF.AgentCollaboration workbench [data-directory] [--open-browser] [--fixed-data-dir] [--knowledge path] [--handoffs path] [--project path] [--port 5186]");
+    Console.Error.WriteLine("       FF.AgentCollaboration workbench [data-directory] [--open-browser] [--fixed-data-dir] [--knowledge path] [--handoffs path] [--project path] [--port 5186] [--lan-http-port 5187]");
     return 64;
 }
 try

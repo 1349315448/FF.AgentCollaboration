@@ -20,6 +20,7 @@ async function checkSetup() {
     if (!response.ok) throw new Error("无法读取工作台初始化状态");
     const paths = await response.json();
     if (paths.initialized) { enterWorkbench(); return; }
+    byId("setup-node-name").value = paths.nodeName ?? "";
     const fields = setupFields.map(([key, name]) => {
       const field = node("div", "setup-path"), group = node("div");
       const input = node("input"), label = node("label", "", name);
@@ -58,11 +59,12 @@ byId("setup-form").onsubmit = async event => {
   feedback("setup-error");
   try {
     const paths = Object.fromEntries(new FormData(event.currentTarget));
+    paths.nodeName = byId("setup-node-name").value;
     await request("/initialize", {method:"POST", body:paths});
     enterWorkbench();
   } catch (error) {
     // 另一浏览器页可能已经完成初始化。
-    try { if ((await request("/initialize")).initialized) { enterWorkbench(); return; } } catch {}
+    try { const state = await request("/initialize"); if (state.initialized) { enterWorkbench(); return; } } catch {}
     feedback("setup-error", error.message);
   } finally { submit.disabled = false; }
 };

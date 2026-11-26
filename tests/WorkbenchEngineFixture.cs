@@ -9,6 +9,7 @@ class WorkbenchEngineFixture
 {
     internal static int AppServer()
     {
+        Console.OutputEncoding = new UTF8Encoding(false);
         if (!Console.ReadLine().Contains("\"initialize\"")) return 1;
         Console.WriteLine("{\"id\":1,\"result\":{}}");
         if (!Console.ReadLine().Contains("\"initialized\"")) return 1;
@@ -18,6 +19,11 @@ class WorkbenchEngineFixture
             Console.WriteLine("{\"id\":2,\"result\":{\"thread\":{\"id\":\"" + Guid.NewGuid() + "\"}}}");
             if (!Console.ReadLine().Contains("\"thread/name/set\"")) return 1;
             Console.WriteLine("{\"id\":3,\"result\":{}}");
+            return 0;
+        }
+        if (request.Contains("\"thread/list\"") && File.Exists("codex-history.fixture"))
+        {
+            Console.WriteLine("{\"id\":2,\"result\":" + File.ReadAllText("codex-history.fixture") + "}");
             return 0;
         }
         if (!request.Contains("\"account/rateLimits/read\"")) return 1;
@@ -43,6 +49,11 @@ class WorkbenchEngineFixture
         {
             Console.WriteLine("Fixture login terminal");
             if (Console.ReadLine() == "login") File.Delete("signed-out.fixture");
+            return 0;
+        }
+        if (args.Length == 3 && args[0] == "status" && args[1] == "--output" && args[2] == "json")
+        {
+            Console.WriteLine(File.Exists("signed-out.fixture") ? "{\"logged_in\":false}" : "{\"logged_in\":true}");
             return 0;
         }
         string versionFile = Environment.GetEnvironmentVariable("FF_TEST_ENGINE_VERSION_FILE");
@@ -77,11 +88,23 @@ class WorkbenchEngineFixture
             Console.WriteLine(File.Exists("qwen-legacy.fixture") ? "--acp --session-id --resume" : "--mcp-config\n  qwen sessions list");
             return 0;
         }
+        if (args.Length == 1 && args[0] == "--list-models")
+        {
+            Console.WriteLine("MODEL\nauto\nlite");
+            return 0;
+        }
         if (args.Length == 1 && args[0] == "--acp")
         {
             if (!Console.ReadLine().Contains("initialize")) return 1;
             Console.WriteLine("{\"id\":1,\"result\":{\"protocolVersion\":1}}");
             string query = Console.ReadLine();
+            if (query.Contains("_codebuddy.ai/getUserInfo"))
+            {
+                Console.WriteLine(File.Exists("account-unavailable.fixture")
+                    ? "{\"id\":2,\"error\":{\"code\":-32601,\"message\":\"Unavailable\"}}"
+                    : "{\"id\":2,\"result\":{\"userInfo\":{\"userId\":\"fixture\"}}}");
+                return 0;
+            }
             if (query.Contains("workspace/preflight"))
             {
                 Console.WriteLine(File.Exists("qwen-legacy.fixture") ? "{\"id\":2,\"error\":{\"code\":-32601,\"message\":\"Method not found\"}}" :
@@ -89,7 +112,7 @@ class WorkbenchEngineFixture
                 return 0;
             }
             if (!query.Contains("session/list")) return 1;
-            var sessions = File.Exists("qwen-sessions.json") ? File.ReadAllText("qwen-sessions.json") : "[]";
+            var sessions = File.Exists("acp-sessions.json") ? File.ReadAllText("acp-sessions.json") : "[]";
             Console.WriteLine("{\"id\":2,\"result\":{\"sessions\":" + sessions + "}}");
             return 0;
         }

@@ -1,8 +1,12 @@
+import { NodePreferences } from "../federation/Federation";
+import { LanAccessSettings } from "./LanAccessSettings";
 export function SettingsDrawer() {
   return (
     <dialog id="settings-dialog" closedby="any" aria-labelledby="settings-title">
       <header className="dialog-header"><div><h2 id="settings-title">工作台配置</h2><small id="settings-context">数据存储、CLI 引擎与运行环境</small></div><button type="button" className="icon-button" id="close-settings" aria-label="关闭配置">×</button></header>
       <div className="settings-scroll">
+        <NodePreferences />
+        {location.hostname==="127.0.0.1" && <LanAccessSettings/>}
         <section><h3>数据存储与交接目录</h3><div id="settings-paths"></div><p id="settings-database"></p></section>
         <section><h3>快捷键</h3>
           <div className="mention-setting"><label htmlFor="mention-record">提及 Agent</label>

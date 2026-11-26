@@ -85,10 +85,29 @@ internal sealed class QwenEngine(string cwd) : ConfiguredTerminalEngine
     {
         string help = await Output(["--help"], ct);
         bool nativeMcp = help.Contains("--mcp-config", StringComparison.Ordinal);
+        // 旧版的自动档只允许编辑。不能以 YOLO 代替缺失的风险审核功能。
+        var approvalHelp = System.Text.RegularExpressions.Regex.Match(help, @"(?m)^\s*--approval-mode\b[^\r\n]*(?:\r?\n(?!\s*-)[^\r\n]*)*").Value;
+        if (window.Approval == "auto" && !System.Text.RegularExpressions.Regex.IsMatch(approvalHelp, """["']auto["']"""))
+            window = window with { Mode = "auto-edit" };
         // 两代 CLI 在首轮落盘前关闭后都无法 --resume。重开空窗格时仍沿用原 ID。
         bool fresh = newTitle != null || (reopening && !await AcpSessions(ct).AnyAsync(s => s.Id == window.Session, ct));
         var args = SessionArguments(window, fresh, forkSource, nativeMcp ? mcp : null);
-        return new TerminalLaunch(args, nativeMcp ? null : LegacyMcpEnvironment(window.Id, mcp));
+        return new TerminalLaunch(args, nativeMcp ? ScrollEnvironment(mcp.Root) : LegacyMcpEnvironment(window.Id, mcp));
+    }
+
+    // 网页终端用 xterm 的真实回滚缓冲区；用户或管理员显式配置的 Qwen 渲染选项优先。
+    private IReadOnlyDictionary<string, string>? ScrollEnvironment(string root)
+    {
+        const string key = "QWEN_CODE_SYSTEM_DEFAULTS_PATH";
+        var system = Environment.GetEnvironmentVariable("QWEN_CODE_SYSTEM_SETTINGS_PATH") ??
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "qwen-code", "settings.json");
+        if (Environment.GetEnvironmentVariable(key) != null ||
+            File.Exists(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(system, cwd))!, "system-defaults.json"))) return null;
+        var path = Path.Combine(root, "engine-profiles", "qwen-terminal-defaults.json");
+        TopicArchive.CheckPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        TopicArchive.Publish(path, """{"ui":{"useTerminalBuffer":false}}""", overwrite: true);
+        return new Dictionary<string, string> { [key] = path };
     }
 
     private IReadOnlyDictionary<string, string> LegacyMcpEnvironment(string windowId, EngineMcp mcp)
@@ -112,7 +131,7 @@ internal sealed class QwenEngine(string cwd) : ConfiguredTerminalEngine
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var server = new { command = mcp.Command, args = mcp.Arguments,
             env = new { LX_P0_WINDOW_GRANT = "${LX_P0_WINDOW_GRANT}" } };
-        TopicArchive.Publish(path, JsonSerializer.Serialize(new { mcpServers = new { lx_collab = server } }), overwrite: true);
+        TopicArchive.Publish(path, JsonSerializer.Serialize(new { ui = new { useTerminalBuffer = false }, mcpServers = mcp.Servers("qwen",server) }), overwrite: true);
         return environment;
     }
 

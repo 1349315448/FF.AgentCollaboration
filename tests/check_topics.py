@@ -24,13 +24,26 @@ def verify(exe, case):
     vault = case / "zcode-test-credentials.json"
     vault.write_text('{"oauth:active_provider":"zai","oauth:zai:access_token":"test"}')
     with patch.dict(os.environ, LX_CODEX_EXE=str(fixture), LX_COPILOT_EXE=str(fixture), FF_CLAUDE_EXE=str(fixture),
-                    OPENAI_API_KEY="test", CODEBUDDY_API_KEY="test", ZCODE_CREDENTIALS_FILE=str(vault),
-                    FF_QWEN_EXE=str(fixture), FF_CODEBUDDY_EXE=str(fixture), FF_ZCODE_EXE=str(fixture),
-                    FF_TRAECLI_EXE=str(fixture), CLAUDE_CONFIG_DIR=str(case / "claude")):
+                    OPENAI_API_KEY="test", CODEBUDDY_API_KEY="", CODEBUDDY_AUTH_TOKEN="", CODEBUDDY_CONFIG_DIR=str(case / "codebuddy-profile"),
+                    ZCODE_CREDENTIALS_FILE=str(vault),
+                    FF_QWEN_EXE=str(fixture), FF_CODEBUDDY_EXE=str(fixture), FF_ZCODE_EXE=str(fixture), FF_QODER_EXE=str(fixture),
+                    FF_TRAECLI_EXE=str(fixture), CLAUDE_CONFIG_DIR=str(case / "claude"),
+                    FF_TEST_WORKBENCH_EXE=str(exe), FF_TEST_WORKBENCH_STATE=str(state)):
         create_test = "--create" in sys.argv
-        with host(exe, state, case / "one" if create_test else None, knowledge=knowledge, initialize=create_test) as url:
-            script = Path(__file__).with_name("check_create.cjs") if "--create" in sys.argv else Path(__file__).with_suffix(".cjs")
-            subprocess.run(["node", script, url, exe, case], check=True, timeout=200 if "--create" in sys.argv else 300)
+        delivery_test = "--phase13" in sys.argv
+        inspector_test = "--inspector" in sys.argv
+        git_test = "--git" in sys.argv
+        mcp_test = "--mcps" in sys.argv
+        skills_test = "--skills" in sys.argv
+        expanded_test = "--expanded" in sys.argv
+        if expanded_test: os.environ["CODEX_HOME"]=str(case / "receipt-home")
+        scoped = expanded_test or create_test or delivery_test or inspector_test or git_test or mcp_test or skills_test
+        with host(exe, state, case / "one" if scoped else None, knowledge=knowledge, initialize=scoped) as url:
+            script = Path(__file__).with_name("check_managed_skills_ui.cjs" if skills_test else "check_managed_mcps.cjs" if mcp_test else "check_git_panel.cjs" if git_test else
+                "check_inspector.cjs" if inspector_test else "check_create.cjs" if create_test else "check_topics.cjs")
+            # Individual assertions retain their deadlines. The full suite runs eight engines sequentially,
+            # including 16 native restarts and five authenticated round trips between terminals.
+            subprocess.run(["node", script, url, exe, case, *(["--expanded"] if expanded_test else ["--phase13"] if delivery_test else [])], check=True, timeout=200 if scoped else 720)
 
 
 if __name__ == "__main__":

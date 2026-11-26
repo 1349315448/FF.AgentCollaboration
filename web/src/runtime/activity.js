@@ -1,11 +1,8 @@
-import { request } from "../services/api";
-import { byId, feedback } from "./dom.js";
+import { byId } from "./dom.js";
 import { narrow } from "./layout.js";
-import { projectKey } from "../services/navigation";
-import { showPreview } from "./preview.js";
 import { panes } from "../services/terminalRegistry";
 import { selectedTopicId, snapshot } from "../store/workbenchStore";
-import { activeProjectKey, projectTab } from "./topics.js";
+import { projectTab } from "./topics.js";
 
 const breatheAnimations = new Set(["agent-breathe", "idle-breathe", "waiting-breathe"]);
 // 话题列表重绘或切换布局时，新出现的灯也从当前页面的同一呼吸相位开始。
@@ -16,12 +13,6 @@ document.addEventListener("animationstart", event => {
 });
 function attachLogControls() {
   const panel = byId("collab-log"), list = byId("topic-timeline");
-  list.onclick = async event => {
-    const id = event.target.closest(".timeline-entry")?.dataset.message;
-    if (!id) return;
-    try { showPreview(await request("/messages/" + id)); }
-    catch (error) { feedback("connection-error", error.message); }
-  };
   const toggle = byId("log-toggle"), divider = byId("log-divider");
   function collapse(value) {
     list.hidden = divider.hidden = value;
@@ -59,29 +50,33 @@ function attachLogControls() {
   };
 }
 
+function visibleIn(element, container) {
+  if (!element?.getClientRects().length || !container?.getClientRects().length) return false;
+  const rect=element.getBoundingClientRect(), box=container.getBoundingClientRect();
+  return rect.width>0 && rect.left>=box.left-1 && rect.right<=box.right+1 && rect.top>=box.top-1 && rect.bottom<=box.bottom+1;
+}
+
 function messageAnchor(id, preferTag = false) {
-  const pane = panes.get(id);
-  if (!pane) return null;
-  if (preferTag || pane.agent.topicId !== selectedTopicId) {
-    const owner = snapshot.topics.find(t => t.id === pane.agent.topicId);
-    if (owner && projectKey(owner.project) !== activeProjectKey) {
-      const project = projectTab(owner.project);
-      return project?.getClientRects().length ? project : byId("project-collapse");
-    }
-    const topic = document.querySelector('.topic-choice[data-topic="' + pane.agent.topicId + '"]');
-    if (!topic?.getClientRects().length) return byId("mobile-topic");
-    const strip = byId("topic-list").getBoundingClientRect();
-    const tab = topic.getBoundingClientRect();
-    if (tab.right <= strip.left || tab.left >= strip.right) return byId("mobile-topic");
-    const member = topic.querySelector('.topic-agent-tag[data-agent="' + CSS.escape(id) + '"]');
-    if (member) {
-      const bounds = member.getBoundingClientRect(), group = member.closest(".topic-agents").getBoundingClientRect();
-      if (bounds.width && bounds.left >= Math.max(strip.left, group.left) - 1 &&
-          bounds.right <= Math.min(strip.right, group.right) + 1) return member;
-    }
-    return topic.querySelector(".topic-label") || topic;
-  }
-  return pane.element.querySelector(".agent-name") || pane.element.querySelector(".agent-light") || pane.element;
+  if (id==="peer-mailbox") return byId("peer-mailbox-icon");
+  if (!id) return null;
+  const pane=panes.get(id);
+  const remote=snapshot.federation?.remotes.find(r=>r.id===id);
+  if (!pane && !remote) return null;
+  const topicId=pane?.agent.topicId ?? remote.topicId;
+  if (pane && !preferTag && topicId===selectedTopicId && pane.element.dataset.collapsed!=="true" && pane.element.getClientRects().length)
+    return pane.element.querySelector(".agent-name") || pane.element;
+  const attr=remote?'[data-remote-id="'+CSS.escape(id)+'"]':'[data-agent="'+CSS.escape(id)+'"]';
+  const list=byId("topic-list"), rail=byId("project-tabs");
+  const chip=list?.querySelector(attr);
+  if (visibleIn(chip,list)) return chip;
+  const member=rail.querySelector(attr);
+  if (visibleIn(member,rail)) return member;
+  const topic=rail.querySelector('.topic-choice[data-topic="'+CSS.escape(topicId)+'"]');
+  if (visibleIn(topic,rail)) return topic;
+  const owner=snapshot.topics.find(t=>t.id===topicId);
+  const project=owner && projectTab(owner.project);
+  if (visibleIn(project,rail)) return project;
+  return topicId===selectedTopicId ? document.querySelector(".current-topic") : byId("project-collapse");
 }
 
 function handoffSvg(className, viewBox, drawing) {
@@ -94,7 +89,7 @@ function handoffSvg(className, viewBox, drawing) {
 }
 
 async function sweepRecipient(anchor) {
-  const frame = anchor?.closest(".pane, .topic-choice, .project-button, .topic-picker, #project-collapse");
+  const frame = anchor?.closest(".pane, .topic-agent-tag, .tree-agent, .topic-choice, .project-button, .current-topic, #project-collapse, .remote-capsule, .tree-remote, #peer-mailbox-icon");
   if (!frame?.getClientRects().length) return;
   // 没有 viewBox 的 SVG 使用宿主的实际像素，窗格缩放时圆角和线宽保持一致。
   const sweep = handoffSvg("receipt-sweep", null,
@@ -113,11 +108,12 @@ async function sweepRecipient(anchor) {
   }
 }
 
-async function flyMessage(entry) {
+async function flyMessage(entry, preferTag = false) {
   if (document.visibilityState !== "visible") return;
-  const from = messageAnchor(entry.source);
-  const fromTab = !!from?.closest(".topic-choice");
-  let to = messageAnchor(entry.target, fromTab);
+  const from = messageAnchor(entry.source, preferTag);
+  const fromTab = !!from?.closest(".topic-agents, #project-tabs");
+  const backgroundRoute = preferTag || fromTab && panes.get(entry.source)?.agent.topicId !== selectedTopicId;
+  let to = messageAnchor(entry.target, backgroundRoute);
   if (!to?.getClientRects().length) return;
   if (!from?.getClientRects().length || from === to) return sweepRecipient(to);
   const source = from.getBoundingClientRect();
@@ -138,20 +134,19 @@ async function flyMessage(entry) {
   const glow = [{textShadow:"0 0 8px var(--accent)"},{textShadow:"none"}];
   const pulse = [{backgroundColor:"var(--wash)", boxShadow:"inset 0 0 0 1px var(--accent)"},
     {backgroundColor:"transparent", boxShadow:"inset 0 0 0 1px transparent"}];
-  let tx, ty, direction, arcLength, approach, tracking, sweep;
+  let tx, ty, direction, arcLength, approach, trackingTimer, sweep;
   function alignMailbox() {
-    const anchor = messageAnchor(entry.target, fromTab);
+    const anchor = messageAnchor(entry.target, backgroundRoute);
     if (!anchor?.getClientRects().length) return;
     to = anchor;
     const bounds = to.getBoundingClientRect();
     const cx = bounds.left + bounds.width / 2, cy = bounds.top + bounds.height / 2;
     if (cx === tx && cy === ty) return;
     tx = cx; ty = cy;
-    // 把真实投递口摆到收件锚点；最后一段水平直线让回正的信封滑入槽中。
+    // 把真实投递口（28x28 viewBox 中 x=4..16, y=12..16，中心 10,14）摆到收件锚点，避免写入后强读回流。
     mailbox.style.left = (tx - 10) + "px";
     mailbox.style.top = (ty - 14) + "px";
-    const boundsSlot = slot.getBoundingClientRect();
-    const sx = boundsSlot.left + boundsSlot.width / 2, sy = boundsSlot.top + boundsSlot.height / 2;
+    const sx = tx, sy = ty;
     const distance = Math.hypot(sx - x, sy - y);
     const lift = Math.max(fromTab ? 82 : 56, Math.min(140, distance * .28));
     direction = sx >= x ? 1 : -1;
@@ -163,21 +158,22 @@ async function flyMessage(entry) {
       (sx - direction * approach) + " " + sy + " L " + sx + " " + sy;
     envelope.style.offsetPath = "path('" + curve + "')";
   }
-  function trackTarget() {
-    alignMailbox();
-    tracking = requestAnimationFrame(trackTarget);
-  }
+  const onViewportChange = () => alignMailbox();
   try {
     document.body.append(mailbox, envelope, hand);
-    trackTarget();
+    alignMailbox();
     if (arcLength == null) return;
+    window.addEventListener("resize", onViewportChange, { passive: true });
+    window.addEventListener("ff:layout-changed", onViewportChange);
+    // 兜底低频校位（120ms），避免每帧 60Hz 同步布局回流，同时兼容非布局事件引起的位移。
+    trackingTimer = setInterval(alignMailbox, 120);
     const sign = direction;
     if (sign < 0) hand.firstElementChild.setAttribute("transform", "translate(28 0) scale(-1 1)");
     hand.style.left = (x - (sign > 0 ? 30 : -2)) + "px";
     hand.style.top = (y - 4) + "px";
     hand.style.transformOrigin = sign > 0 ? "23px 6px" : "5px 6px";
     from.animate(glow, 280);
-    from.closest(".topic-choice, .project-button")?.animate(pulse, 320);
+    from.closest(".topic-agent-tag, .tree-agent, .topic-choice, .project-button")?.animate(pulse, 320);
     const flick = "rotate(" + (18 * sign) + "deg) scale(1.06)";
     const grip = "rotate(0deg)", windup = "rotate(" + (-20 * sign) + "deg) scale(.96)";
     await hand.animate([
@@ -201,10 +197,13 @@ async function flyMessage(entry) {
       {offsetDistance:"100%",transform:level + " scale(.42)",opacity:0}
     ], {duration,fill:"forwards"}).finished;
 
-    cancelAnimationFrame(tracking);
+    alignMailbox();
+    clearInterval(trackingTimer);
+    window.removeEventListener("resize", onViewportChange);
+    window.removeEventListener("ff:layout-changed", onViewportChange);
     sweep = sweepRecipient(to);
     to.animate(glow, 320);
-    to.closest(".pane-header, .topic-choice, .project-button")?.animate(pulse, 320);
+    to.closest(".pane-header, .topic-agent-tag, .tree-agent, .topic-choice, .project-button")?.animate(pulse, 320);
     flag.animate([{transform:"rotate(-75deg)"},{transform:"rotate(0deg)"}], {duration:160,easing:"ease-out",fill:"forwards"});
     await mailbox.animate([{transform:"scale(1)",opacity:1},{offset:.16,transform:"scale(1.14,.90)"},
       {offset:.36,transform:"scale(.96,1.04)"},{offset:.76,transform:"scale(1)",opacity:1},
@@ -212,22 +211,24 @@ async function flyMessage(entry) {
   } catch (error) {
     if (error.name !== "AbortError") throw error;
   } finally {
-    cancelAnimationFrame(tracking);
+    clearInterval(trackingTimer);
+    window.removeEventListener("resize", onViewportChange);
+    window.removeEventListener("ff:layout-changed", onViewportChange);
     hand.remove(); envelope.remove(); mailbox.remove();
   }
   await sweep;
 }
 
 function receiptEffect(entry, delivered) {
-  const target = messageAnchor(entry.target, !!messageAnchor(entry.source)?.closest(".topic-choice"));
+  const target = messageAnchor(entry.target, true);
   if (!target?.getClientRects().length || document.visibilityState !== "visible") return;
   if (delivered) {
     const surface = target.closest(".pane") || target;
     surface.animate([{boxShadow:"inset 0 0 0 2px var(--accent)"},{boxShadow:"inset 0 0 0 2px transparent"}], 340);
     return;
   }
-  flyMessage(entry);
-  const badge = target.querySelector(".tag-inbox:not([hidden])") || target;
+  flyMessage(entry, true);
+  const badge = target.querySelector(".agent-mail-count, .tag-inbox:not([hidden])") || target;
   const frames = badge === target
     ? [{backgroundColor:"var(--wash)"},{backgroundColor:"transparent"}]
     : [{transform:"scale(1)"},{transform:"scale(1.18)"},{transform:"scale(1)"}];
@@ -237,6 +238,13 @@ function receiptEffect(entry, delivered) {
 // 只比较相邻快照。整页重载、切换话题及标为已读均不重播历史交接。
 function animateMessages(previous, current) {
   if (!previous) return;
+  if(previous.federation && current.federation) {
+    const cursor=previous.federation.mail?.[0]?.seq||0;
+    for(const event of current.federation.mail||[]) {
+      if(event.seq<=cursor) break;
+      if(["incoming","outgoing","reply-in","reply-out"].includes(event.kind)) receiptEffect(event,false);
+    }
+  }
   const sameTopic = current.timelineTopic && previous.timelineTopic === current.timelineTopic;
   function messages(view) {
     const entries = new Map();
@@ -261,6 +269,7 @@ function animateMessages(previous, current) {
     if (!after.has(item.id) && !item.acknowledged && (newPrefix || before.has(item.id))) after.set(item.id, item);
   }
   for (const entry of after.values()) {
+    if(entry.source==="peer-mailbox" || current.federation?.remotes?.some(r=>r.id===entry.source)) continue;
     const old = before.get(entry.id);
     if (!old) receiptEffect(entry, false);
     if (entry.state === "delivered" && old?.state !== "delivered") receiptEffect(entry, true);

@@ -29,7 +29,7 @@ internal abstract class ConfiguredTerminalEngine : Engine
         // Qwen inherits both grants but treats interpolation in --mcp-config as literal text.
         object server = window.Engine == "qwen" ? new { command = mcp.Command, args = mcp.Arguments } :
             new { command = mcp.Command, args = mcp.Arguments, env = new { LX_P0_WINDOW_GRANT = "${LX_P0_WINDOW_GRANT}" } };
-        args.AddRange(["--mcp-config", JsonSerializer.Serialize(new { mcpServers = new { lx_collab = server } })]);
+        args.AddRange(["--mcp-config", JsonSerializer.Serialize(new { mcpServers = mcp.Servers(window.Engine,server) })]);
         return args;
     }
 }

@@ -1,48 +1,112 @@
-import { useLayoutEffect, useRef } from "react";
-import { useWorkbench, type ProjectTotals } from "../../store/workbenchStore";
-import { projectKey, navigation } from "../../services/navigation";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useWorkbench, type Topic, type ProjectTotals } from "../../store/workbenchStore";
+import { navigation, projectKey } from "../../services/navigation";
 import { fitProjectPath } from "../../services/projectPath";
+import { TopicAgentList } from "./AgentNavigationItem";
+import { NavigationName } from "./NavigationName";
+import { WorkspaceIcon } from "./WorkspaceIcon";
 
-function ProjectCard({path, active, total}: {path: string; active: boolean; total: ProjectTotals}) {
-  const label = useRef<HTMLElement>(null);
-  const card = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const el = label.current!;
-    const fit = () => fitProjectPath(el);
-    fit();
-    const resize = new ResizeObserver(fit);
-    resize.observe(el);
-    return () => resize.disconnect();
-  }, [path]);
-  useLayoutEffect(() => { if (active) card.current?.scrollIntoView({block:"nearest",inline:"nearest"}); }, [active]);
-  const summary = "会话 " + total.topics + " · Agent " + total.agents;
-  const description = path + " · " + summary + " · 工作 " + total.working + " · 空闲 " + total.idle + " · 离线 " + total.offline + " · " + total.unread + " 条待处理";
-  return <div ref={card} className="project-button" id={active ? "current-project" : undefined} title={path}
-    data-key={projectKey(path)} data-activity={total.activity} data-selected={active}
-    onClick={() => navigation.selectProject(path)}>
-    <div className="project-card-title">
-      <button className="project-select" data-activity={total.activity} type="button" aria-pressed={active} aria-label={description}>
-        <span className="nav-dot" aria-hidden="true" />
-        <strong ref={label} data-path={path} title={path} id={active ? "project-name" : undefined} />
-        <span className="tag-inbox" hidden={!total.unread}>{total.unread}</span>
-      </button>
-      <button type="button" className="text-button remove-project-btn" id={active ? "remove-project" : undefined}
-        title={"从列表移除 " + path} aria-label={active ? "移除当前项目" : "移除项目"}
-        onClick={e => { e.stopPropagation(); navigation.removeProject(path); }}>移除</button>
-    </div>
-    <span className="project-summary">{summary}</span>
-    <span className="project-states">
-      <span>工作 <b>{total.working}</b></span><span>空闲 <b>{total.idle}</b></span><span>离线 <b>{total.offline}</b></span>
-    </span>
-  </div>;
+// A selected path opens on page load. Remounting its parent preserves later user choices.
+const touchedBranches = new Set<string>();
+
+function useBranch(key:string, selected:boolean) {
+  const storageKey = "lx.agent.workbench.tree."+key;
+  const [expanded, set] = useState(()=>{
+    if (selected && !touchedBranches.has(key)) return true;
+    try { return localStorage.getItem(storageKey)==="true"; }
+    catch { return selected; }
+  });
+  const wasSelected=useRef(selected);
+  function change(value:boolean) {
+    touchedBranches.add(key);
+    set(value);
+    try { localStorage.setItem(storageKey,String(value)); } catch { /* 当前页面仍可正常展开。 */ }
+  }
+  useEffect(()=>{
+    if (selected && !wasSelected.current) change(true);
+    wasSelected.current=selected;
+  },[selected]);
+  return {expanded, toggle:()=>change(!expanded)};
 }
+
+function TopicBranch({topic}:{topic:Topic}) {
+  const {snapshot,rosters,selectedTopicId}=useWorkbench();
+  const selected=topic.id===selectedTopicId;
+  const {expanded,toggle}=useBranch("topic."+topic.id,selected);
+  const {members, unread}=rosters.get(topic.id)!;
+  const remotes=snapshot?.federation?.remotes.filter(r=>r.topicId===topic.id) ?? [];
+  const online=members.filter(m=>m.agent.online).length + remotes.filter(r=>r.connected && r.online).length;
+  const row=useRef<HTMLDivElement>(null);
+  useEffect(()=>{if (selected) row.current?.scrollIntoView({block:"nearest",inline:"nearest"});},[selected]);
+  return <li>
+    <div ref={row} className="tree-row topic-choice" data-topic={topic.id} data-selected={selected} data-activity={topic.activity}
+      onClick={event=>{if (!(event.target as Element).closest("button")) void navigation.switchTopic(topic.id);}}>
+      <button type="button" className="tree-arrow" aria-label={(expanded?"收起":"展开")+topic.name+"的 Agent"} aria-expanded={expanded} onClick={toggle}>
+        <WorkspaceIcon name={expanded?"down":"right"}/></button>
+      <NavigationName className="topic-label" current={selected} title={topic.name} onSelect={()=>navigation.switchTopic(topic.id)}
+        onRename={()=>navigation.editTopic(topic.id)}>{topic.name}</NavigationName>
+      {unread>0 && <span className="tag-inbox" title={unread+" 条待处理"}>{unread}</span>}
+      <small className="tree-total">{online}/{members.length+remotes.length}</small>
+      <span className="tree-actions">
+        <button type="button" onClick={()=>navigation.archiveTopic(topic.id)}>{topic.status==="finished"?"重开":"归档"}</button>
+      </span>
+    </div>
+    {expanded && <ul className="tree-members"><TopicAgentList members={members} remotes={remotes} tree/></ul>}
+  </li>;
+}
+
+function ProjectBranch({path,total,topics}:{path:string;total:ProjectTotals;topics:Topic[]}) {
+  const {snapshot,topic}=useWorkbench();
+  const key=projectKey(path), current=!!snapshot?.project && projectKey(snapshot.project)===key;
+  const project=useBranch("project."+key,current);
+  const archived=topics.filter(t=>t.status==="finished");
+  const archive=useBranch("archive."+key,current && topic?.status==="finished");
+  const name=useRef<HTMLElement>(null);
+  useLayoutEffect(()=>{
+    const el=name.current!;
+    const fit=()=>fitProjectPath(el);
+    fit();const observer=new ResizeObserver(fit);observer.observe(el);
+    return ()=>observer.disconnect();
+  },[path]);
+  const topicIds=new Set(topics.map(t=>t.id));
+  const remotes=new Map(snapshot?.federation?.remotes.filter(r=>topicIds.has(r.topicId)).map(r=>[r.id,r]));
+  const active=total.agents-total.offline + [...remotes.values()].filter(r=>r.connected && r.online).length;
+  const description=path+" · "+total.topics+" 话题 · 工作 "+total.working+" · 空闲 "+total.idle+" · 离线 "+total.offline;
+  return <li data-project={path}>
+    <div className="tree-row project-button" data-key={key} id={current?"current-project":undefined}
+      data-activity={(total.agents || remotes.size) && !active ? "offline" : total.activity} title={description} onClick={event=>{if (!(event.target as Element).closest("button")) project.toggle();}}>
+      <button type="button" className="project-select" aria-expanded={project.expanded} aria-label={description} onClick={project.toggle}>
+        <WorkspaceIcon name={project.expanded?"down":"right"}/><span className="nav-dot"/>
+        <strong ref={name} id={current?"project-name":undefined} data-path={path} title={path}/>
+      </button>
+      <small className="tree-total">{active}/{total.agents+remotes.size}</small>
+      <span className="tree-actions">
+        <button type="button" title="新建话题" aria-label={"在 "+path+" 新建话题"} onClick={()=>navigation.addTopic(path)}>＋</button>
+        <button type="button" id={current?"remove-project":undefined} aria-label={current?"移除当前项目":"移除项目"} title={"移除 "+path} onClick={()=>navigation.removeProject(path)}><WorkspaceIcon name="close"/></button>
+      </span>
+    </div>
+    {project.expanded && <ul>{topics.filter(t=>t.status!=="finished").map(t=><TopicBranch key={t.id} topic={t}/>)}
+      {archived.length>0 && <li><button type="button" className="tree-archive" aria-expanded={archive.expanded} onClick={archive.toggle}>
+        <WorkspaceIcon name={archive.expanded?"down":"right"}/>已归档 ({archived.length})</button>
+        {archive.expanded && <ul>{archived.map(t=><TopicBranch key={t.id} topic={t}/>)}</ul>}</li>}
+    </ul>}
+  </li>;
+}
+
 export function ProjectRail() {
-  const { snapshot, totals } = useWorkbench();
-  return <aside id="project-rail" aria-label="项目">
-    <div className="project-tools"><strong>项目</strong><button className="icon-button" id="add-project" type="button" title="打开项目文件夹" aria-label="打开项目文件夹" disabled={!snapshot}>＋</button></div>
-    <nav id="project-tabs" aria-label="已打开的项目">{snapshot?.projects.map(path => {
-      const key = projectKey(path);
-      return <ProjectCard key={key} path={path} active={!!snapshot.project && key === projectKey(snapshot.project)} total={totals.get(key)!} />;
-    })}</nav>
+  const {snapshot,totals}=useWorkbench();
+  const all=[...totals.values()].reduce((sum,t)=>({working:sum.working+t.working,idle:sum.idle+t.idle,offline:sum.offline+t.offline}),{working:0,idle:0,offline:0});
+  return <aside className="project-sidebar" aria-label="项目">
+    <header className="brand">
+      <button type="button" className="icon-button" id="project-collapse" aria-controls="project-rail" aria-expanded="true" aria-label="收起项目栏"><img src="/platform-mark.svg" width="24" height="24" alt=""/></button>
+      <span className="brand-name">Agent Collaboration<br/>Platform <span className="connection" id="connection" role="status" title="连接中" aria-label="连接中">连接中</span></span>
+      <button type="button" className="icon-button" id="open-settings" title="工作台配置与环境检测" aria-label="工作台配置与环境检测">⚙</button>
+    </header>
+    <div id="project-rail">
+      <div className="project-tools"><strong>项目</strong><button type="button" className="text-button" id="add-project" aria-label="打开项目文件夹" disabled={!snapshot}>＋ 项目</button></div>
+      <nav id="project-tabs" aria-label="项目、话题与 Agent"><ul>{snapshot?.projects.map(path=><ProjectBranch key={projectKey(path)} path={path} total={totals.get(projectKey(path))!}
+        topics={snapshot.topics.filter(t=>projectKey(t.project)===projectKey(path))}/>)}</ul></nav>
+      <footer className="project-states" title="本地 Agent 状态汇总"><span data-activity="working">工作 <b>{all.working}</b></span><span data-activity="idle">空闲 <b>{all.idle}</b></span><span data-activity="offline">离线 <b>{all.offline}</b></span></footer>
+    </div>
   </aside>;
 }

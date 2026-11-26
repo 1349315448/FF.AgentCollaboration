@@ -29,10 +29,186 @@ async function until(predicate, label, timeout = 14000) {
   do { if (await predicate()) return; await sleep(100); } while (Date.now() < end);
   throw Error("Timed out: " + label);
 }
+async function checkFoldedDelivery(page,target) {
+  const file=path.join(root,"one","mode.txt"), receiveUrl=base+"/api/windows/"+target+"/auto-receive";
+  fs.writeFileSync(file,"folded-retry");
+  assert((await page.request.put(receiveUrl,{data:{mode:"immediate"}})).ok());
+  await page.evaluate(id=>panes.get(id).term.focus(),target);
+  await page.keyboard.press("Control+b");
+  try { await page.waitForFunction(id=>observePrompt(panes.get(id)).busyInput,target); }
+  catch (error) {
+    console.error("Codex busy editor",await page.evaluate(id=>{
+      const p=panes.get(id), b=p.term.buffer.active;
+      return {prompt:observePrompt(p),cols:p.term.cols,x:b.cursorX,y:b.cursorY,rows:Array.from({length:8},(_,i)=>
+        [b.getLine(b.baseY+i)?.translateToString(true),b.getLine(b.baseY+i)?.isWrapped])};
+    },target));throw error;
+  }
+  const before=logLines("one","enters.txt").length;
+  const body="折叠投递 " + "a".repeat(1030) + "🌿".repeat(41);
+  const msg=mcp("send_to_agent",{target,message:body,supersedePrevious:false}).id;
+  try {
+    await until(()=>sql("SELECT state FROM inbox WHERE id=?",msg)[0][0]==="delivered","folded Codex busy paste and single retry",25000);
+    assert.equal(logLines("one","enters.txt").length-before,2);
+    assert.equal(logLines("one","accepted.txt").filter(line=>line.includes(msg.slice(0,8)) && line.includes(body)).length,1);
+  } catch(error) {
+    const capture=path.join(root,"one","folded-editor.txt");
+    if (fs.existsSync(capture)) {
+      const raw=fs.readFileSync(capture,"utf8");
+      console.error("folded source",raw.slice(0,55),[...raw].length,"emoji",raw.split("🌿").length-1,
+        "tail code points",[...raw.slice(-10)].map(c=>c.codePointAt(0)));
+    }
+    console.error("folded delivery",sql("SELECT state FROM inbox WHERE id=?",msg),logLines("one","enters.txt").slice(before),
+      await page.evaluate(id=>{const p=panes.get(id);return {prompt:observePrompt(p),inbox:p.view.inbox.map(m=>[m.id.slice(0,8),m.state]),screen:p.term.buffer.active.getLine(p.term.buffer.active.baseY+p.term.buffer.active.cursorY)?.translateToString(true)};},target));
+    throw error;
+  } finally {
+    fs.writeFileSync(file,"submit");
+    assert((await page.request.put(receiveUrl,{data:{mode:"queued"}})).ok());
+  }
+  console.log("PASS Codex folded busy paste, Unicode count, swallowed Enter and exactly one submission");
+}
+
 async function run() {
   const browser = await chromium.launch({executablePath:process.env.CHROME_PATH || undefined});
   try {
     const page = await browser.newPage({viewport:{width:1460,height:940}});
+    if(process.argv.includes("--expanded")){
+      const project=path.join(root,"one");
+      const post=async(route,data)=>{const r=await page.request.post(base+"/api"+route,{data});assert(r.ok(),await r.text());return r.json();};
+      const topic=await post("/topics",{name:"无重绘提交",project});
+      const target=await post("/windows",{topic:topic.id,name:"Codex",engine:"codex",newSession:true});
+      const source=await post("/windows",{topic:topic.id,name:"来源",engine:"claude",newSession:true,project:path.join(root,"two")});
+      const home=path.join(root,"receipt-home"),sessions=path.join(home,"sessions");
+      fs.mkdirSync(sessions,{recursive:true});
+      const rollout=path.join(sessions,"rollout-test-"+target.session+".jsonl");
+      fs.writeFileSync(rollout,JSON.stringify({type:"session_meta",payload:{id:target.session}})+"\n");
+      execFileSync("python",["-c","import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);d.execute('create table threads(id text,rollout_path text)');d.execute('insert into threads values(?,?)',sys.argv[2:]);d.commit()",path.join(home,"state_5.sqlite"),target.session,rollout]);
+      sql("UPDATE windows SET grant_hash=? WHERE id=?",crypto.createHash("sha256").update(token).digest("hex").toUpperCase(),source.id);
+      await page.goto(base);await page.waitForFunction(id=>window.panes?.get?.(id)?.view.inputReady,target.id);
+      // 模拟浏览器在相同 VT 帧只上报一次完整草稿。首次 CR 被吞且没有新的帧。
+      await page.evaluate(()=>{const original=WebSocket.prototype.send;const seen=new Set();WebSocket.prototype.send=function(data){
+        if(typeof data==="string"){const c=JSON.parse(data);if(c.type==="prompt"&&c.retryDraft&&c.draftTail){
+          const key=c.revision+"/"+c.retryDraft+"/"+c.draftTail;if(seen.has(key))return;seen.add(key);
+        }}return original.call(this,data);};});
+      fs.writeFileSync(path.join(project,"mode.txt"),"silent");
+      const body="无重绘完整草稿验证 "+"A".repeat(24), msg=mcp("send_to_agent",{target:target.id,message:body}).id;
+      await until(()=>logLines("one","accepted.txt").some(l=>l.includes(msg.slice(0,8))),"only a confirmed unchanged draft gets one extra Enter",15000);
+      const accepted=logLines("one","accepted.txt").filter(l=>l.includes(msg.slice(0,8)));
+      assert.equal(accepted.length,1);assert.equal(logLines("one","enters.txt").length,2);
+      assert.equal(sql("SELECT state FROM inbox WHERE id=?",msg)[0][0],"writing");
+      fs.appendFileSync(rollout,JSON.stringify({type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:accepted[0]}]}})+"\n");
+      await until(()=>sql("SELECT state FROM inbox WHERE id=?",msg)[0][0]==="delivered","native session confirms exact body");
+      console.log("PASS Codex native receipt awaiting, complete expanded draft, zero new frames, two Enters, one accepted message");return;
+    }
+    if (process.argv.includes("--phase13")) {
+      const create = async (route,data) => {
+        const r=await page.request.post(base+"/api"+route,{data}); assert(r.ok(),await r.text()); return r.json();
+      };
+      const topic=await create("/topics",{name:"投递复核",project:path.join(root,"one")});
+      const target=await create("/windows",{topic:topic.id,name:"Codex",engine:"codex",newSession:true});
+      const source=await create("/windows",{topic:topic.id,name:"来源",engine:"claude",newSession:true,project:path.join(root,"two")});
+      sql("UPDATE windows SET grant_hash=? WHERE id=?",crypto.createHash("sha256").update(token).digest("hex").toUpperCase(),source.id);
+      await page.goto(base);
+      await page.waitForFunction(id=>window.panes?.get?.(id)?.view.inputReady,target.id);
+      fs.writeFileSync(path.join(root,"one","mode.txt"),"repair-paste");
+      const repairText="截断核验 REPAIR END 63829";
+      const repaired=mcp("send_to_agent",{target:target.id,message:repairText}).id;
+      try {
+        await until(()=>sql("SELECT state FROM inbox WHERE id=?",repaired)[0][0]==="delivered","owned draft repaired",25000);
+      } catch(error) {
+        console.error("repair outcome",sql("SELECT state FROM inbox WHERE id=?",repaired),logLines("one","enters.txt"),logLines("one","clears.txt"),
+          await page.evaluate(id=>observePrompt(panes.get(id)),target.id));
+        throw error;
+      }
+      assert.equal(logLines("one","clears.txt").filter(line=>line.includes(repaired.slice(0,8))).length,1);
+      assert.equal(logLines("one","enters.txt").filter(mode=>mode==="repair-paste").length,1);
+      assert.equal(logLines("one","accepted.txt").filter(line=>line.includes(repairText)).length,1);
+      console.log("PASS truncated Codex paste cleared once, repasted, and accepted the intact payload once");
+      await checkFoldedDelivery(page,target.id);
+      fs.writeFileSync(path.join(root,"one","mode.txt"),"folded-changed");
+      await page.request.put(base+"/api/windows/"+target.id+"/auto-receive",{data:{mode:"immediate"}});
+      await page.evaluate(id=>panes.get(id).term.focus(),target.id);
+      await page.keyboard.press("Control+b");
+      const changed=mcp("send_to_agent",{target:target.id,message:"保护草稿 "+"a".repeat(1200)}).id;
+      await until(()=>sql("SELECT state FROM inbox WHERE id=?",changed)[0][0]==="delivery_uncertain","changed folded count",22000);
+      assert.equal(logLines("one","enters.txt").filter(mode=>mode==="folded-changed").length,1);
+      console.log("PASS a changed folded character count prevents a second Enter");
+      await page.keyboard.press("Control+u");
+      await page.waitForFunction(id=>panes.get(id).view.inputReady,target.id);
+      fs.writeFileSync(path.join(root,"one","mode.txt"),"folded-approval");
+      const approval=mcp("send_to_agent",{target:target.id,message:"审批保护 "+"a".repeat(1200)}).id;
+      await until(()=>sql("SELECT state FROM inbox WHERE id=?",approval)[0][0]==="delivery_uncertain","approval replaced folded draft",26000);
+      assert.equal(logLines("one","enters.txt").filter(mode=>mode==="folded-approval").length,0);
+      console.log("PASS an approval replacing an observed folded editor receives zero Enter keys");
+      const offline=await create("/windows",{topic:topic.id,name:"离线",engine:"claude",newSession:true,project:path.join(root,"third")});
+      await page.waitForFunction(id=>panes.get(id)?.view.inputReady,offline.id);
+      const targetUrl=base+"/api/windows/"+offline.id;
+      const signout=path.join(root,"third","signed-out.fixture");
+      fs.writeFileSync(signout,"");
+      assert((await page.request.post(targetUrl+"/stop")).ok());
+      const failed=mcp("send_to_agent",{target:offline.id,message:"唤醒失败时保留任务",supersedePrevious:false}).id;
+      await page.waitForFunction(id=>panes.get(id)?.view.wakeError?.includes("登录"),offline.id);
+      assert.equal(sql("SELECT state,wake_requested FROM inbox WHERE id=?",failed)[0].join(","),"pending,0");
+      assert.equal(logLines("third","terminal-pids.txt").length,1);
+      fs.unlinkSync(signout);
+      const retry=mcp("send_to_agent",{resend:failed,supersedePrevious:false}).id;
+      await until(()=>[failed,retry].every(id=>sql("SELECT state FROM inbox WHERE id=?",id)[0][0]==="delivered"),"resend wakes once",25000);
+      assert.equal(logLines("third","terminal-pids.txt").length,2);
+      console.log("PASS signed-out wake failure retains the queue; an authorized resend starts one process and delivers both messages");
+      await page.locator('.topic-choice[data-topic="'+topic.id+'"]').click();
+      const pin=page.locator('[data-window="'+source.id+'"] .set-primary');
+      if (!await pin.isVisible()) await page.locator('[data-window="'+source.id+'"] .pane-more').click();
+      await pin.click();
+      await page.setViewportSize({width:1280,height:900});
+      await page.locator("#toggle-inspector").click();
+      const divider=page.locator("#inspector-divider"), bounds=await divider.boundingBox();
+      const stage=await page.locator("#workspace-stage").boundingBox();
+      await page.mouse.move(bounds.x+3,bounds.y+32);
+      await page.mouse.down();
+      await page.evaluate(()=>{
+        window.dragResizes=0;
+        const send=WebSocket.prototype.send;
+        WebSocket.prototype.send=function(data){
+          if(typeof data==="string" && JSON.parse(data).type==="resize") window.dragResizes++;
+          return send.call(this,data);
+        };
+      });
+      await page.mouse.move(stage.x+636,bounds.y+32,{steps:8});
+      await page.evaluate(()=>refresh());
+      assert.equal(await page.evaluate(()=>window.dragResizes),0);
+      await page.mouse.up();
+      await page.waitForFunction(()=>byId("pane-divider").hidden && byId("agent-stage").clientWidth<650);
+      await divider.press("ArrowRight");
+      await page.waitForFunction(()=>!byId("pane-divider").hidden && byId("agent-stage").clientWidth>=650);
+      console.log("PASS inspector drag defers all PTY resizes and restores the tiled split across the 650px threshold");
+      const late=await create("/windows",{topic:topic.id,name:"迟到回执",engine:"codex",newSession:true,project:path.join(root,"third")});
+      const lateUrl=base+"/api/windows/"+late.id;
+      assert((await page.request.post(lateUrl+"/stop")).ok());
+      const session=crypto.randomUUID(), profile=path.join(root,"cli-user",".codex");
+      const nativePath=path.join(profile,"sessions","rollout-fixture-"+session+".jsonl");
+      fs.mkdirSync(path.dirname(nativePath),{recursive:true});
+      fs.writeFileSync(nativePath,JSON.stringify({type:"session_meta",payload:{id:session}})+"\n");
+      execFileSync("python",["-c","import sqlite3,sys; db=sqlite3.connect(sys.argv[1]); db.execute('create table threads(id, rollout_path)'); db.execute('insert into threads values (?,?)',sys.argv[2:]); db.commit()",
+        path.join(profile,"state_fixture.sqlite"),session,nativePath]);
+      sql("UPDATE windows SET session=? WHERE id=?",session,late.id);
+      assert((await page.request.post(lateUrl+"/start")).ok());
+      await page.waitForFunction(id=>panes.get(id)?.view.inputReady,late.id);
+      fs.writeFileSync(path.join(root,"third","mode.txt"),"hold");
+      const lateText="终端回执稍晚才落盘";
+      const lateId=mcp("send_to_agent",{target:late.id,message:lateText,supersedePrevious:false}).id;
+      const isState=state=>sql("SELECT state FROM inbox WHERE id=?",lateId)[0][0]===state;
+      await until(()=>isState("delivery_uncertain"),"await exact native receipt",26000);
+      const enters=logLines("third","enters.txt").length;
+      const received="MSG_ID: "+lateId.slice(0,8)+" | FROM_AGENT: 来源 | MSG: "+lateText;
+      const record=(role,text)=>JSON.stringify({type:"response_item",payload:{type:"message",role,content:[{type:"input_text",text}]}})+"\n";
+      fs.appendFileSync(nativePath,record("assistant",received));
+      await sleep(5500);
+      assert(isState("delivery_uncertain"));
+      fs.appendFileSync(nativePath,record("user",received));
+      await until(()=>isState("delivered"),"reconciled late receipt",8500);
+      assert.equal(logLines("third","enters.txt").length,enters);
+      console.log("PASS a late exact user receipt updates the inbox without submitting again; assistant echo is ignored");
+      return;
+    }
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     page.setDefaultTimeout(10000);
@@ -60,8 +236,10 @@ async function run() {
         return send.call(this,data);
       };
     });
+    const eventStream = page.waitForResponse(r => new URL(r.url()).pathname === "/api/events");
     await page.goto(base);
-    assert.equal(await page.locator(".brand [title='FF Collaboration Platform']").textContent(), "FF.CP");
+    assert.match(await page.locator(".brand-name").textContent(), /Agent Collaboration\s*Platform/);
+    assert(await page.locator(".brand-name #connection").count() === 1);
     await page.locator("#setup-dialog[open]").waitFor();
     assert(!fs.existsSync(db));
     assert.equal((await page.request.get(base + "/api/state")).status(), 409);
@@ -70,7 +248,9 @@ async function run() {
     await page.locator("#folder-dialog[open]").waitFor();
     await page.keyboard.press("Escape");
     assert(await page.locator("#setup-dialog").isVisible());
-    const eventStream = page.waitForResponse(r => new URL(r.url()).pathname === "/api/events");
+    assert.equal(await page.locator("#setup-node-name").inputValue(),require("node:os").hostname());
+    await page.locator("#setup-node-name").fill("Chromium");
+    assert.equal(await page.locator("#setup-form").evaluate(form => form.nodeName), "FORM");
     await page.locator("#setup-submit").click();
     assert.match((await eventStream).headers()["content-type"], /text\/event-stream/);
     await page.waitForFunction(() => !!snapshot);
@@ -96,7 +276,7 @@ async function run() {
       await page.locator("#folder-dialog").waitFor({state:"hidden"});
     }
     assert.deepEqual(await page.evaluate(()=>snapshot.projects), []);
-    assert(await page.locator("#topic-new").isDisabled());
+    assert.equal(await page.locator(".project-button").count(),0);
     await page.getByRole("button",{name:"打开项目文件夹",exact:true}).and(page.locator("#empty-create")).click();
     await pickFolder(path.join(root,"one"));
     const post = async (url, body) => {
@@ -105,22 +285,29 @@ async function run() {
       return res.status() === 204 ? null : res.json();
     };
     const pane = id => page.locator('[data-window="' + id + '"]');
-    const tab = name => page.locator("#project-tabs button").getByTitle(path.join(root, name), {exact:true});
-    async function openProject(name) {
-      if (!await page.locator("#project-rail").isVisible()) await page.locator("#project-collapse").click();
-      await tab(name).click();
-      await page.waitForFunction(path => snapshot.project === path, path.join(root, name));
+    async function clickTool(id, selector) {
+      const tool = pane(id).locator(selector);
+      if (!await tool.isVisible()) await pane(id).locator(".pane-more").click();
+      await tool.click();
     }
+    const tab = name => page.locator(".project-select").filter({has:page.getByTitle(path.join(root,name),{exact:true})});
     async function choose(id) {
-      await page.waitForFunction(id => snapshot?.topics.some(topic => topic.id === id), id);
-      const name = await page.evaluate(id => folderName(snapshot.topics.find(t => t.id === id).project), id);
-      await openProject(name);
-      const button = page.locator('.topic-choice[data-topic="' + id + '"]');
-      if (await button.isVisible()) await button.click();
-      else await page.locator('#mobile-topic').selectOption(id);
+      await page.waitForFunction(id=>snapshot?.topics.some(t=>t.id===id),id);
+      if (!await page.locator("#project-rail").isVisible()) await page.locator("#project-collapse").click();
+      const topic=await page.evaluate(id=>snapshot.topics.find(t=>t.id===id),id);
+      const disclosure=tab(path.basename(topic.project));
+      if(await disclosure.getAttribute("aria-expanded")==="false") await disclosure.click();
+      const row=page.locator('.topic-choice[data-topic="'+id+'"]');
+      if (topic.status==="finished" && !await row.count()) await disclosure.locator("xpath=../..").locator(".tree-archive").click();
+      await row.locator(".topic-label").click();
+      await page.waitForFunction(id=>selectedTopicId===id,id);
+    }
+    async function openProject(name) {
+      const id=await page.evaluate(p=>localStorage.getItem("lx.agent.workbench.selectedTopic."+projectKey(p)) ?? snapshot.topics.find(t=>t.project===p)?.id,path.join(root,name));
+      await choose(id);
     }
     const ready = async id => {
-      try { await page.waitForFunction(id => panes.get(id)?.view.inputReady, id); }
+      try { await page.waitForFunction(id => window.panes?.get?.(id)?.view.inputReady, id); }
       catch (error) {
         console.error(await page.evaluate(id => {
           const p=panes.get(id); if (!p) return "Missing pane";
@@ -136,7 +323,7 @@ async function run() {
     const key = async (id, name) => { await page.evaluate(id => panes.get(id).term.focus(), id); await page.keyboard.press(name); };
     const mode = value => fs.writeFileSync(path.join(root, "one", "mode.txt"), value);
 
-    assert.equal(await page.title(),"FF.Agent");
+    assert.equal(await page.title(),"Agent Collaboration Platform");
     await page.emulateMedia({reducedMotion:"reduce"});
     await page.locator("#open-settings").click();
     await page.waitForFunction(() => window.reducedMotionDrawers.includes("settings-dialog"));
@@ -186,7 +373,7 @@ async function run() {
     await page.keyboard.press("Escape");
     const b = (await post("/topics", {name:"设计", project:path.join(root, "two")})).id;
     const another = (await post("/topics", {name:"同项目备忘", project:path.join(root, "one")})).id;
-    assert.equal(await page.locator(".topbar #new-agent").count(), 0);
+    assert.equal(await page.locator(".topbar #new-agent").count(), 1);
     assert(await page.locator(".topbar #topic-list").isVisible());
     assert(await page.locator("#project-rail #project-tabs").isVisible());
     let installed = false, attempts = 0, catalogs = 0;
@@ -243,42 +430,50 @@ async function run() {
       assert(Math.abs((nameBox.y + buttonBox.y + buttonBox.height) / 2 - surface.y - surface.height / 2) < 2);
       assert(Math.abs(buttonBox.x + buttonBox.width / 2 - surface.x - surface.width / 2) < 2);
     }
+    const tag = id => page.locator('.topic-agent-tag[data-agent="'+id+'"]');
+    const fold = async id => {
+      const button=pane(id).locator(".toggle-collapse");
+      if (await button.isVisible()) await button.click();
+      else {
+        await tag(id).locator(".member-name").click();
+        await pane(id).locator('.terminal-surface').waitFor();
+      }
+    };
     const paneBounds = id => pane(id).boundingBox();
     const byPosition = await Promise.all(offlineIds.map(async id => ({id, box:await paneBounds(id)})));
     byPosition.sort((a,b) => a.box.x - b.box.x);
     const [first, middle, last] = byPosition.map(item => item.id);
     assert(byPosition.every(item => item.box.y === byPosition[0].box.y));
-    await pane(middle).locator(".toggle-collapse").click();
+    await fold(middle);
     await settleLayout();
     const gridBox = await page.locator("#panes").boundingBox();
     const [firstBox, foldedBox, lastBox] = await Promise.all([first,middle,last].map(paneBounds));
-    assert(await pane(middle).evaluate(el => el.parentElement === document.querySelector("#topic-heading .topic-actions + #collapsed-panes")));
-    assert(foldedBox.height >= 40 && foldedBox.height <= 44 && foldedBox.width >= 176 && foldedBox.width <= 220);
-    assert(await pane(middle).evaluate(el => {
-      const box = selector => el.querySelector(selector).getBoundingClientRect();
-      return box(".agent-light").right <= box(".tile-name").left && box(".tile-name").right <= box(".status-label").left &&
-        box(".status-label").right <= box(".toggle-collapse").left && box(".tile-engine").top >= box(".tile-name").bottom &&
-        box(".pane-quota").top >= box(".toggle-collapse").bottom && box(".tile-engine").right <= box(".pane-quota").left;
-    }));
-    assert(await page.evaluate(() => window.effects.filter(e => e.duration === 240 && e.frames[0].transform?.includes("scale(")).length >= 3));
+    assert.equal(foldedBox,null);
+    assert(await pane(middle).evaluate(el=>el.parentElement.id==="terminal-parking"));
+    assert.equal(await tag(middle).getAttribute("data-expanded"),"false");
+    assert.equal(Math.round((await tag(middle).boundingBox()).height),22);
+    assert(await page.evaluate(() =>
+      window.effects.some(e => e.classes.includes("pane-flight") && e.frames[0].transform?.includes("scale(")) &&
+      window.effects.some(e => e.classes === "pane" && e.frames[0].transform?.startsWith("translate(") && !e.frames[0].transform.includes("scale("))
+    ));
     assert.equal(firstBox.y, lastBox.y);
     assert(Math.abs(firstBox.height - gridBox.height) < 1);
     assert(Math.abs(firstBox.width - lastBox.width) < 1 && Math.abs(lastBox.x + lastBox.width - gridBox.x - gridBox.width) < 1);
-    await pane(first).locator(".toggle-collapse").click();
+    await fold(first);
     await settleLayout();
     assert(Math.abs((await paneBounds(last)).width - (await page.locator("#panes").boundingBox()).width) < 1);
     await page.emulateMedia({reducedMotion:"reduce"});
-    const flightCount = await page.evaluate(() => window.effects.filter(e => e.duration === 240).length);
-    for (const id of [first, middle]) await pane(id).locator(".toggle-collapse").click();
+    const flightCount = await page.evaluate(() => window.effects.filter(e => e.classes.includes("pane-flight")).length);
+    for (const id of [first, middle]) await fold(id);
     await settleLayout();
-    assert(await page.evaluate(() => window.effects.filter(e => e.duration === 240).length) > flightCount);
+    assert(await page.evaluate(() => window.effects.filter(e => e.classes.includes("pane-flight")).length) > flightCount);
     assert(await page.locator("#collapsed-panes").isHidden());
     await page.emulateMedia({reducedMotion:"no-preference"});
     const pin = pane(first).locator(".set-primary");
     if (!await pin.isVisible()) await pane(first).locator(".pane-more").click();
     await pin.click();
     const pinnedBox = await paneBounds(first);
-    await pane(middle).locator(".toggle-collapse").click();
+    await fold(middle);
     await settleLayout();
     const workspace = await page.locator("#workspace-layout").boundingBox();
     const pinned = await paneBounds(first), rightTile = await paneBounds(last);
@@ -288,7 +483,7 @@ async function run() {
     assert.equal(workspace.height, pinned.height);
     assert.equal(pinned.y, rightTile.y);
     assert.equal(pinned.height, rightTile.height);
-    await pane(middle).locator(".toggle-collapse").click();
+    await fold(middle);
     await settleLayout();
     assert(await page.evaluate(() => {
       const flights = window.effects.filter(e => e.classes.includes("pane-flight"));
@@ -302,10 +497,13 @@ async function run() {
     await choose(a);
     const localPeer = (await post("/windows", {name:"回执测试", topic:a, engine:"codex", newSession:true})).id;
     await pane(localPeer).waitFor();
+    await ready(localPeer);
     await page.emulateMedia({reducedMotion:"reduce"});
     for (const [source,target] of [[localPeer,first],[first,localPeer]]) {
       await page.evaluate(({source,target}) => {
         window.effects = [];
+        const from = messageAnchor(source,true).getBoundingClientRect();
+        window.flightOrigin = [from.left+from.width/2,from.top+from.height/2];
         const before = {...snapshot, timelineTopic:selectedTopicId, timeline:[]};
         animateMessages(before, {...before, timeline:[{id:"already-delivered", source, target, state:"delivered"}]});
       }, {source,target});
@@ -318,20 +516,19 @@ async function run() {
       assert.deepEqual(appearance.slice(0,4), ["18px","13px","rgb(2, 132, 199)","rgb(186, 230, 253)"]);
       assert.match(appearance[4], /drop-shadow\(.*rgb\(56, 189, 248\).*6px/);
       await page.waitForFunction(() => window.effects.some(e=>e.classes==="mailbox-flag") &&
-        window.effects.some(e=>e.classes.includes("topic-choice") && e.duration===320));
+        window.effects.some(e=>e.duration===320 && /topic-agent-tag|tree-agent|topic-choice/.test(e.classes)));
       const matched = await page.evaluate(({source,target,first}) => {
-        const from = messageAnchor(source).getBoundingClientRect();
-        const to = document.querySelector('.topic-agent-tag[data-agent="'+target+'"]').getBoundingClientRect();
+        const to = messageAnchor(target,true).getBoundingClientRect();
         const coords = window.effects.find(e=>e.classes==="message-flight").path.match(/-?\d+(?:\.\d+)?/g).map(Number);
-        return !!messageAnchor(first).closest(".topic-choice") &&
-          Math.abs(coords[0]-from.x-from.width/2)<2 && Math.abs(coords.at(-2)-to.x-to.width/2)<2 &&
-          (source !== first || coords[3] > Math.max(coords[1],coords.at(-1)));
+        const landed = document.querySelector(".message-flight")?.style.offsetPath.match(/-?\d+(?:\.\d+)?/g)?.map(Number) || coords;
+        return {tag:!!messageAnchor(first,true).closest("#project-tabs"), startDelta:coords[0]-window.flightOrigin[0],
+          endDelta:landed.at(-2)-to.x-to.width/2, downward:source !== first || coords[3] > Math.max(coords[1],coords.at(-1))};
       }, {source,target,first});
-      assert(matched);
+      assert(matched.tag && matched.downward && Math.abs(matched.startDelta)<2 && Math.abs(matched.endDelta)<2, JSON.stringify(matched));
       const border = page.locator(".receipt-sweep");
       assert.equal(await border.count(), 1);
       assert(await border.evaluate((svg, {target, first}) => {
-        const frame = document.querySelector('.topic-agent-tag[data-agent="'+target+'"]').closest(".topic-choice");
+        const frame = messageAnchor(target,true);
         if (svg.parentElement !== frame) return false;
         const overlay = svg.getBoundingClientRect(), box = frame.getBoundingClientRect();
         const right = svg.querySelector(".receipt-right"), down = svg.querySelector(".receipt-down");
@@ -373,7 +570,7 @@ async function run() {
       assert.equal(samples.length,1);
       const [startX,startY,,,,,slotX,slotY] = samples[0].path.match(/-?\d+(?:\.\d+)?/g).map(Number);
       const distance = Math.hypot(slotX-startX,slotY-startY);
-      const arcLength = Math.hypot(distance,Math.max(source === first ? 82 : 56,Math.min(140,distance*.28))*1.15);
+      const arcLength = Math.hypot(distance,Math.max(82,Math.min(140,distance*.28))*1.15);
       const turns = Math.min(5,Math.max(1,Math.round(arcLength/300)));
       assert.equal(parseFloat(samples[0].frames.at(-1).transform.slice(7)),(slotX>=startX?1:-1)*turns*360);
       assert.equal(samples[0].duration,Math.min(1850,Math.max(1050,Math.round(720+arcLength*.62))));
@@ -389,7 +586,7 @@ async function run() {
     await page.waitForFunction(()=>window.effects.some(e=>e.classes==="message-flight"));
     assert(await page.evaluate(({a,first,middle,instant})=>{
       const coords = window.effects.find(e=>e.classes==="message-flight").path.match(/-?\d+(?:\.\d+)?/g).map(Number);
-      const tag = id => document.querySelector('.topic-agent-tag[data-agent="'+id+'"]').getBoundingClientRect();
+      const tag = id => document.querySelector('#project-tabs .tree-agent[data-agent="'+id+'"]').getBoundingClientRect();
       const from = tag(first), to = tag(middle);
       return selectedTopicId === a && !snapshot.timeline.some(e=>e.id===instant) &&
         Math.abs(coords[0]-from.x-from.width/2)<2 && Math.abs(coords.at(-2)-to.x-to.width/2)<2 &&
@@ -438,38 +635,21 @@ async function run() {
     await page.locator("#rename-name").press("Enter");
     await pane(left).locator(".tile-name").filter({hasText:"@同名"}).waitFor();
     assert(await page.evaluate(id => panes.get(id).socket === window.beforeRename && window.beforeRename.readyState === WebSocket.OPEN, left));
-    const actions = page.locator("#topic-heading .topic-actions");
-    const tabUpdates = await page.evaluate(({a, another, left}) => {
-      const find = id => document.querySelector('.topic-choice[data-topic="'+id+'"]');
-      const topic = selectedTopic(), view = snapshot.windows.find(w => w.agent.id === left);
-      const tab = find(a), neighbor = find(another), lamp = tab.querySelector('[data-agent="'+left+'"] .nav-dot');
-      const width = tab.offsetWidth, height = tab.offsetHeight, x = neighbor.getBoundingClientRect().left;
-      const saved = [topic.activity, view.activity, view.inbox];
-      tab.focus({preventScroll:true});
+    const unreadCounts=await page.evaluate(id=>{
+      const view=snapshot.windows.find(w=>w.agent.id===id),before=view.inbox;
+      const chip=document.querySelector('#topic-list [data-agent="'+id+'"]');
+      const row=document.querySelector('.topic-choice[data-selected=true]');
       try {
-        return [0, 9, 10, 100].map(n => {
-          topic.activity = view.activity = n % 2 ? "working" : "idle";
-          view.inbox = Array.from({length:n}, () => ({state:"pending"}));
+        return [0,9,10,100].map(count=>{
+          view.inbox=Array.from({length:count},(_,i)=>({state:i===0?"delivery_uncertain":"pending"}));
           renderTopics();
-          const box = selector => tab.querySelector(selector).getBoundingClientRect();
-          const title = box(".topic-label"), running = box(".topic-running");
-          const details = [box(".topic-count"), box(".topic-agents"), box(".tag-inbox")];
-          const twoRows = title.top < running.bottom && running.top < title.bottom &&
-            details.every(rect => rect.top >= Math.max(title.bottom, running.bottom)) &&
-            Math.max(...details.map(r => r.top)) < Math.min(...details.map(r => r.bottom));
-          return [tab === find(a) && neighbor === find(another) && lamp.isConnected && document.activeElement === tab,
-            tab.offsetWidth === width && tab.offsetHeight === height && neighbor.getBoundingClientRect().left === x,
-            twoRows, tab.querySelector(".tag-inbox").textContent];
+          const mail=chip.querySelector(".agent-mail-count");
+          return [row.offsetHeight,chip.isConnected,mail?.textContent || "",mail?.dataset.uncertain || ""];
         });
-      } finally { [topic.activity, view.activity, view.inbox] = saved; renderTopics(); }
-    }, {a, another, left});
-    assert.deepEqual(tabUpdates, ["", "9", "10", "99+"].map(n => [true, true, true, n]));
-    const topicWidth = id => page.locator('.topic-choice[data-topic="' + id + '"]').evaluate(tab => tab.offsetWidth);
-    assert(await topicWidth(a) > await topicWidth(another), "带两个 Agent 的标签应该随成员名单加宽");
-    assert.equal(await actions.locator(":scope > :last-child").getAttribute("id"), "new-agent");
-    assert(await actions.evaluate(el => Math.abs(el.getBoundingClientRect().left -
-      el.parentElement.getBoundingClientRect().left - parseFloat(getComputedStyle(el.parentElement).paddingLeft)) < 2));
-    assert(await page.locator("#topic-heading .member-line").isHidden());
+      } finally {view.inbox=before;renderTopics();}
+    },left);
+    assert.deepEqual(unreadCounts,[0,9,10,100].map(n=>[32,true,n?String(n):"",n?"true":""]));
+    assert.equal(await page.locator("#topic-list > :last-child").getAttribute("id"),"new-agent");
     const balance = id => pane(id).locator(".pane-header .pane-quota");
     const quotaText = id => pane(id).locator(".quota-value");
     // Force a read after injecting the fixture because the create dialog shares the same cache.
@@ -503,15 +683,17 @@ async function run() {
     const idleColor = await light.evaluate(el => getComputedStyle(el).backgroundColor);
     assert.equal(idleColor, "rgb(54, 229, 121)");
     const member = page.locator('#topic-list .topic-agent-tag[data-agent="' + left + '"]');
-    await member.click();
+    if (!await pane(left).isVisible()) {
+      await member.locator(".member-name").click();
+      await pane(left).waitFor();
+    }
     await ready(left);
     await key(left, "x");
     await page.waitForFunction(id => observePrompt(panes.get(id)).draft && panes.get(id).view.activity === "idle", left);
     await page.evaluate(id => panes.get(id).term.write("\r\n◦ Working (esc to interrupt)" +
       "\r\n工具进度".repeat(10) + "\r\n› ", () => reportPrompt(panes.get(id))), left);
     await page.waitForFunction(id => panes.get(id).view.activity === "working", left);
-    assert.equal(await page.locator("#topic-activity").textContent(), "进行中");
-    assert(await page.locator("#topic-activity").isVisible());
+    assert.equal(await page.locator(".current-topic").getAttribute("data-activity"),"working");
     await page.waitForFunction(id => document.querySelector('#topic-list .topic-agent-tag[data-agent="'+id+'"]')?.dataset.activity === "working", left);
     assert.equal(await member.locator(".member-name").innerText(), "@同名");
     assert.equal(await member.locator(".nav-dot").count(), 1);
@@ -560,7 +742,7 @@ async function run() {
       await page.evaluate(id => new Promise(resolve => {
         const p = panes.get(id);
         p.term.write("\x1b[H\x1b[2J  └ Tip: Press ctrl+t to open the full transcript." +
-          "\r\nWorked for 15s • 09:52\r\n\r\n› Ask Codex to do anything\r\x1b[2C",
+          "\r\nWorked for 15s • 09:52\r\n\r\n› \x1b[2mAsk Codex to do anything\x1b[22m\r\x1b[2C",
           () => { reportPrompt(p); resolve(); });
       }), left);
       assert.equal(await page.evaluate(id => readNativePrompt(panes.get(id)).screen, left), "clear");
@@ -581,7 +763,7 @@ async function run() {
     const idleLabelBox = await statusLabel.boundingBox();
     assert.equal(idleLabelBox.x, workingLabelBox.x);
     assert.equal(idleLabelBox.width, workingLabelBox.width);
-    assert(await page.locator("#topic-activity").isHidden());
+    assert.notEqual(await page.locator(".current-topic").getAttribute("data-activity"),"working");
     assert.deepEqual(await light.evaluate(el => [getComputedStyle(el).backgroundColor, getComputedStyle(el).animationName]), [idleColor, "none"]);
     assert.equal(await page.locator("#view-modes, .pane-project").count(), 0);
     const header = pane(left).locator(".pane-header");
@@ -597,37 +779,58 @@ async function run() {
     await toggle.click();
     await settleLayout();
     assert.equal(await toggle.getAttribute("aria-expanded"), "false");
-    assert.equal(await toggle.innerText(), "⤢ 展开");
+    assert.equal(await tag(left).getAttribute("data-expanded"),"false");
     assert(await pane(left).locator(".terminal-surface").isHidden());
-    assert(await header.isVisible() && await pane(left).locator(".terminal-toolbar").isHidden());
-    assert(await pane(left).locator(".quota-reset").isHidden());
-    remaining = 45.9;
-    await pane(left).locator(".pane-quota").click();
-    await until(() => quotaRefreshes === 6, "card quota refresh");
-    await pane(left).locator(".quota-value").filter({hasText:"45.9%"}).waitFor();
-    assert(await pane(left).locator(".quota-reset").isHidden());
-    assert((await pane(left).boundingBox()).height < 90);
+    assert(await header.isHidden() && await pane(left).locator(".terminal-toolbar").isHidden());
+    assert(await tag(left).locator(".tag-power").isVisible());
     await choose(another);
     await choose(a);
     assert.equal(await pane(left).getAttribute("data-collapsed"), "true");
-    await member.click();
-    assert.equal(await toggle.getAttribute("aria-expanded"), "true");
+    await member.locator(".member-name").click();
+    await pane(left).locator('.toggle-collapse[aria-expanded="true"]').waitFor();
     assert(await page.evaluate(id => {
       const p = panes.get(id);
       return p.term === beforeCollapse.term && p.socket === beforeCollapse.socket &&
         p.socket.readyState === WebSocket.OPEN && document.activeElement === p.term.textarea;
     }, left));
-    await pane(left).locator(".set-primary").click();
+    await clickTool(left, ".set-primary");
     assert(await header.locator(".primary-mark").isVisible());
     await page.waitForFunction(id => layout.primaryWindowId === id, left);
     assert(await toggle.isHidden());
-    await pane(helper).locator(".toggle-collapse").click();
+    await fold(helper);
     await settleLayout();
     assert(await page.locator("#pane-divider").isHidden() && await page.locator("#collaboration").isHidden());
     const area = await page.locator("#workspace-layout").boundingBox(), main = await paneBounds(left);
     assert(await pane(left).evaluate(el => el.parentElement.id === "primary-panes"));
     assert(Math.abs(main.x - area.x) < 1 && Math.abs(main.height - area.height) < 1 && Math.abs(main.width - area.width) < 1);
-    await pane(helper).locator(".toggle-collapse").click();
+    const modeSwitch = page.locator("#workspace-mode-switch");
+    await page.evaluate(ids => { window.modeHandles=ids.map(id => [id,panes.get(id).term,panes.get(id).socket]); }, [left,helper]);
+    await page.locator("#toggle-inspector").click();
+    await page.getByRole("tab",{name:"文件",exact:true}).click();
+    await page.locator("#inspector-divider").focus();
+    await page.keyboard.press("ArrowLeft");
+    const inspectorRatio = await page.evaluate(()=>layout.agentInspectorRatio);
+    assert(inspectorRatio > .30);
+    await modeSwitch.getByRole("button",{name:"代码模式"}).click();
+    assert(await pane(left).evaluate(el=>el.parentElement.id==="primary-panes"));
+    await fold(helper);
+    await settleLayout();
+    assert(await pane(left).evaluate(el=>el.parentElement.id==="terminal-parking"));
+    assert(await pane(helper).evaluate(el=>el.parentElement.id==="primary-panes"));
+    await page.evaluate(([source,target])=>{void flyMessage({source,target});},[helper,left]);
+    await page.locator('.topic-agent-tag .receipt-sweep').waitFor({state:"attached"});
+    await page.locator("#inspector-panel-action").click();
+    assert(await page.locator("#agent-stage").isHidden() && await page.locator("#inspector-shell").isVisible());
+    await page.locator("#inspector-panel-action").click();
+    await page.keyboard.press("Control+Shift+E");
+    assert(await pane(left).evaluate(el=>el.parentElement.id==="primary-panes"));
+    assert(await pane(helper).evaluate(el=>el.parentElement.id==="terminal-parking"));
+    assert.equal(await page.evaluate(()=>layout.agentInspectorRatio),inspectorRatio);
+    assert(await page.evaluate(()=>window.modeHandles.every(([id,term,socket])=>
+      panes.get(id).term===term && panes.get(id).socket===socket && socket.readyState===WebSocket.OPEN)));
+    await page.locator("#toggle-inspector").click();
+    console.log("PASS workspace mode switch, code capsule, receipt sweep, independent sizes and live sockets");
+    await fold(helper);
     await settleLayout();
     assert(await pane(helper).evaluate(el => el.parentElement.id === "panes"));
     assert(await page.locator("#pane-divider").isVisible());
@@ -646,13 +849,13 @@ async function run() {
       return route.fulfill({status:204});
     });
     await page.emulateMedia({reducedMotion:"reduce"});
-    await pane(left).locator(".pane-sessions").click();
+    await clickTool(left, ".pane-sessions");
     const drawer = page.locator("#pane-session-dialog[open]");
     await page.waitForFunction(() => window.reducedMotionDrawers.includes("pane-session-dialog"));
     await page.emulateMedia({reducedMotion:"no-preference"});
     await page.mouse.click(12, 90);
     await drawer.waitFor({state:"hidden"});
-    await pane(left).locator(".pane-sessions").click();
+    await clickTool(left, ".pane-sessions");
     const historyRow = drawer.locator("li").filter({hasText:"独立测试记录"});
     await historyRow.waitFor();
     await drawer.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
@@ -678,7 +881,7 @@ async function run() {
     await historyRow.waitFor({state:"detached"});
     assert.equal(deleteCalls, 1);
     const switches = [];
-    const switchUrl = "**/api/windows/" + left + "/session";
+    const switchUrl = "**/api/windows/" + left + "/config";
     await page.route(switchUrl, route => {
       switches.push(route.request().postDataJSON());
       return route.fulfill({status:204});
@@ -686,10 +889,10 @@ async function run() {
     await drawer.getByRole("button",{name:"新建会话"}).click();
     await drawer.waitFor({state:"hidden"});
     historyState = "recent";
-    await pane(left).locator(".pane-sessions").click();
+    await clickTool(left, ".pane-sessions");
     await historyRow.getByRole("button",{name:"切换"}).click();
     await drawer.waitFor({state:"hidden"});
-    assert.deepEqual(switches, [{newSession:true},{newSession:false, session:"entry"}]);
+    assert.deepEqual(switches.map(s=>[s.sessionMode,s.sessionId]), [["new",undefined],["resume","entry"]]);
     await page.unroute(switchUrl);
     await page.unroute("**/api/sessions/codex?*includeBound=true");
     await page.unroute("**/api/windows/" + left + "/history/*");
@@ -699,26 +902,17 @@ async function run() {
     assert(await pane(left).locator(".pane-more").isVisible());
     assert(await pane(left).locator(".terminal-actions > .pane-sessions").isVisible());
     await page.evaluate(id => { window.original = {term:panes.get(id).term,socket:panes.get(id).socket}; },left);
-    const topicAPreview = page.locator('.topic-choice[data-topic="' + a + '"] .topic-agents');
-    assert(await topicAPreview.isVisible());
-    assert.equal(await page.locator('.topic-choice[data-topic="' + a + '"] > .nav-dot').count(), 0);
+    const topicARow=page.locator('.topic-choice[data-topic="'+a+'"]');
+    if (await topicARow.locator(".tree-arrow").getAttribute("aria-expanded")==="false") await topicARow.locator(".tree-arrow").click();
+    const topicAPreview=topicARow.locator("xpath=following-sibling::ul[1]");
     await choose(another);
-    assert(await topicAPreview.isVisible());
-    assert.equal(await topicAPreview.textContent(), "@同名@测试");
-    assert(await topicAPreview.evaluate(group => {
-      const tab = group.parentElement, first = group.firstElementChild.getBoundingClientRect();
-      const total = tab.querySelector(".topic-count"), badge = tab.querySelector(".tag-inbox").getBoundingClientRect();
-      return first.left === tab.querySelector(".topic-label").getBoundingClientRect().left &&
-        group.lastElementChild.getBoundingClientRect().right <= badge.left &&
-        total.getBoundingClientRect().left >= badge.right && total.textContent === "2 位";
-    }));
-    assert.equal(await topicAPreview.locator('.topic-agent-tag[data-agent="' + left + '"]').getAttribute("data-activity"), "idle");
-    await choose(a);
-    assert(await topicAPreview.isVisible());
-    await topicAPreview.locator('.topic-agent-tag[data-agent="' + helper + '"]').click();
+    assert.deepEqual(await topicAPreview.locator(".member-name").allTextContents(),["@同名","@测试"]);
+    assert.equal(await topicAPreview.locator('.tree-agent[data-agent="'+left+'"]').getAttribute("data-activity"),"idle");
+    await topicAPreview.locator('.tree-agent[data-agent="'+helper+'"] .member-name').click();
     await page.waitForFunction(({a, helper}) => selectedTopicId === a && layout.activeWindowId === helper &&
       document.activeElement === panes.get(helper).term.textarea, {a,helper});
-    assert.equal(await page.locator('.topic-choice[data-topic="' + b + '"]').count(), 0);
+    assert.equal(await page.locator('.topic-choice[data-topic="' + b + '"]').getAttribute("data-selected"), "false");
+    assert.equal(await tag(right).count(), 0);
     assert.equal(await tab("third").count(), 1); // Agent cwd alone contributes a tab, not a duplicate topic.
     const emptyProject = path.join(root,"empty-project");
     fs.mkdirSync(emptyProject);
@@ -728,7 +922,7 @@ async function run() {
     await page.locator("#choose-folder").click();
     await page.waitForFunction(path => snapshot.project === path, emptyProject);
     assert.equal(await page.locator("#topic-list .topic-choice").count(), 0);
-    assert.equal(await page.title(),"FF.Agent");
+    assert.equal(await page.title(),"Agent Collaboration Platform");
     await page.locator("#open-settings").click();
     await page.locator("#path-handoffs").waitFor();
     await page.locator("#settings-engines .health-row").filter({hasText:"Claude Code"}).waitFor();
@@ -836,13 +1030,13 @@ async function run() {
     await page.waitForFunction(()=>window.effects.some(e=>e.classes==="message-flight" && e.path.includes(" Q ")));
     assert(await page.evaluate(({helper,b})=>{
       const flight=window.effects.find(e=>e.classes==="message-flight"), coords=flight.path.match(/-?\d+(?:\.\d+)?/g).map(Number);
-      const from=messageAnchor(helper).getBoundingClientRect(), to=projectTab(snapshot.topics.find(t=>t.id===b).project).getBoundingClientRect();
+      const from=messageAnchor(helper,true).getBoundingClientRect(), to=messageAnchor(snapshot.windows.find(w=>w.agent.topicId===b).agent.id,true).getBoundingClientRect();
       return Math.abs(flight.center[0]-from.x-from.width/2)<2 && Math.abs(flight.center[1]-from.y-from.height/2)<2 &&
         Math.abs(coords.at(-2)-to.x-to.width/2)<2 && Math.abs(coords.at(-1)-to.y-to.height/2)<2;
     },{helper,b}));
-    const recipientTab = tab("two").locator("xpath=ancestor::button");
+    const recipientTab = page.locator('.topic-choice[data-topic="'+b+'"]');
+    if (await tab("two").getAttribute("aria-expanded")==="false") await tab("two").click();
     await recipientTab.locator(".tag-inbox").filter({hasText:"1"}).waitFor();
-    assert.equal(await recipientTab.getAttribute("data-activity"), "waiting");
     await choose(b);
     await pane(right).locator(".inbox-caption").filter({hasText:"跨话题 · 开发"}).waitFor();
     const inboxHeight = () => pane(right).locator(".inbox").evaluate(el => el.getBoundingClientRect().height);
@@ -864,11 +1058,11 @@ async function run() {
     assert.equal(logLines("two","enters.txt").length, entered);
     const withdrawn = send("@设计/同名","从日志撤回");
     await page.locator('.timeline-entry[data-message="'+withdrawn+'"]').click();
-    await page.locator("#dismiss-preview").click();
+    await page.locator(".mail-detail").getByRole("button",{name:"撤回"}).click();
     await page.locator('.timeline-entry[data-message="'+withdrawn+'"] .log-state').filter({hasText:"已忽略"}).waitFor();
     await page.locator('.timeline-entry[data-message="'+withdrawn+'"]').click();
-    await page.locator("#preview-dialog[open]").waitFor();
-    assert(await page.locator("#dismiss-preview").isHidden());
+    await page.locator(".mail-detail").waitFor();
+    assert(await page.locator(".mail-detail").getByRole("button",{name:"撤回"}).isHidden());
     await page.keyboard.press("Escape");
     const writing = send("@设计/同名","正在写入");
     sql("UPDATE inbox SET state='writing' WHERE id=?",writing);
@@ -885,12 +1079,14 @@ async function run() {
     assert.equal((await page.request.post(base+"/api/windows/"+right+"/input", {data:{messageId:ignoredPending}})).status(),409);
     await page.waitForFunction(()=>window.effects.some(e=>e.frames[0]?.boxShadow));
     await page.locator('.timeline-entry[data-message="'+cross+'"]').click();
-    await page.locator("#preview-content").filter({hasText:"检查跨话题收件"}).waitFor();
+    await page.locator(".mail-detail").filter({hasText:"检查跨话题收件"}).waitFor();
     await page.keyboard.press("Escape");
-    await page.locator("#topic-state").click();
-    await page.getByRole("button",{name:"重新打开",exact:true}).waitFor();
-    assert(await page.locator("#new-agent").isDisabled());
-    await page.locator("#topic-state").click();
+    await recipientTab.hover();
+    await recipientTab.getByRole("button",{name:"归档",exact:true}).click();
+    await page.waitForFunction(id=>snapshot.topics.find(t=>t.id===id)?.status==="finished",b);
+    assert(await page.locator("#new-agent").isHidden());
+    await recipientTab.hover();
+    await recipientTab.getByRole("button",{name:"重开",exact:true}).click();
     await choose(a);
     await page.emulateMedia({reducedMotion:"reduce"});
     await page.waitForFunction(() => !document.querySelector(".message-flight"));
@@ -899,7 +1095,7 @@ async function run() {
     await page.waitForFunction(id=>snapshot.windows.some(w=>w.inbox.some(m=>m.id===id)),reduced);
     // 收件角标先出现，目标项目卡会在信封落地时才高亮。
     await page.waitForFunction(() => window.effects.some(e => e.classes === "message-flight") &&
-      window.effects.some(e => e.classes.includes("project-button") && e.frames[0]?.backgroundColor));
+      window.effects.some(e => /project-button|tree-agent|topic-choice|topic-agent-tag/.test(e.classes) && e.frames[0]?.backgroundColor));
     await page.emulateMedia({reducedMotion:"no-preference"});
     assert(await page.evaluate(()=>window.sizes.length>0 && window.sizes.every(([replay,width,visibility,hidden])=>
       !replay && width>=240 && visibility==="visible" && !hidden)));
@@ -925,8 +1121,8 @@ async function run() {
     assert(resizeGuard);
     await page.locator("#project-collapse").click();
     assert.equal(await page.locator("#topic-shell").getAttribute("data-collapsed"),"true");
-    await pane(helper).locator(".toggle-collapse").click();
-    await page.setViewportSize({width:760,height:920});
+    await fold(helper);
+    await page.setViewportSize({width:750,height:920});
     await openProject("two");
     await page.locator("#project-rail").waitFor({state:"hidden"});
     await page.locator("#mobile-topic").selectOption(b);
@@ -938,14 +1134,15 @@ async function run() {
       localStorage.setItem(key, JSON.stringify(old));
     }, {a,left});
     await page.reload();
-    await page.waitForFunction(id=>selectedTopicId===id && !!layout,b);
+    await page.waitForFunction(id=>window.selectedTopicId===id && !!layout,b);
     await openProject("one");
     await page.locator("#mobile-topic").selectOption(a);
     await page.setViewportSize({width:1460,height:940});
     assert.equal(await page.evaluate(()=>layout.primaryWindowId),left);
-    assert(await pane(left).evaluate(el => el.parentElement.id === "primary-panes" && !layout.collapsedIds.includes(layout.primaryWindowId)));
+    assert(await pane(left).evaluate(el => el.parentElement.id === "terminal-parking" && layout.collapsedIds.includes(layout.primaryWindowId)));
+    await fold(left);
     assert.equal(await pane(helper).getAttribute("data-collapsed"), "true");
-    await pane(helper).locator(".toggle-collapse").click();
+    await fold(helper);
     console.log("PASS topic creation, scoped layouts, preserved terminals, @ picker, qualified receipt, narrow view and reopen");
 
     await ready(left);
@@ -1016,6 +1213,38 @@ async function run() {
     });
     assert.match(draft[0], /第一段.*第二段/);
     assert.deepEqual(draft.slice(1),[false,false,false]);
+    const repaint = await page.evaluate(() => {
+      const lines = ["› MSG_ID: 2803883a | MSG: 上一轮", "  历史消息的第二行", "",
+        "› MSG_ID: ff3da04e | MSG: 当前交接", "  当前交接的结尾", "  GPT-6 high · 项目"];
+      return [1, 4].map(cursorY => readNativePrompt({agent:{engine:"codex"},
+        term:{rows:lines.length, modes:{bracketedPasteMode:true}, buffer:{active:{baseY:0, cursorY, cursorX:8,
+          getLine:y => ({translateToString:() => lines[y]})}}}}).editableText);
+    });
+    assert.equal(repaint[0], null);
+    assert.match(repaint[1], /MSG_ID: ff3da04e/);
+    const steering = await page.evaluate(async id => {
+      const Terminal = panes.get(id).term.constructor;
+      async function read(input, status = [], atStart = true, cols = 110, working = "◦ Working (3s • esc to interrupt)") {
+        const term = new Terminal({allowProposedApi:true,cols,rows:12});
+        const lines = [working, ...status, "› " + input, "",
+          "  gpt-5.1-codex default · project", atStart ? "  ? for shortcuts" : "  tab to queue message"];
+        const caret = atStart ? 3 : 35;
+        await new Promise(done=>term.write("\x1b[?2004h"+lines.join("\r\n")+"\x1b["+ (status.length+1+Math.ceil(working.length/cols)) +";"+caret+"H",done));
+        try { return readNativePrompt({agent:{engine:"codex"},term}); } finally { term.dispose(); }
+      }
+      const hint = "\x1b[2mAsk Codex to do anything\x1b[22m";
+      return [await read(hint), await read("Ask Codex to do anything"),
+        await read("MSG_ID: 1234abcd | MSG: message",[],false), await read(hint,["Approval request"]),
+        await read(hint,["• Queued follow-up inputs","  ↳ MSG_ID: 1234abcd | MSG: message"]),
+        ...await Promise.all([46,57,66,120].map(cols=>read(hint,[],true,cols,
+          "Reading code (12m 39s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close")))];
+    },left);
+    assert.equal(steering[0].busyInput,true);
+    assert.equal(steering[1].busyInput,false);
+    assert.equal(steering[2].busyEditable,true);
+    assert.equal(steering[3].busyInput,false);
+    assert.equal(steering[4].queuedId,"1234abcd");
+    assert(steering.slice(5).every(frame=>frame.busyInput));
     const narrowFrames = await page.evaluate(() => {
       const clock = Date.now;
       let time = 10000, lines;
@@ -1044,7 +1273,7 @@ async function run() {
     assert.deepEqual(narrowFrames.slice(4).map(f => f[0]), ["clear","blocked","clear","draft","clear"]);
     const afterCompletion = await page.evaluate(() => {
       const frame = (history, current) => {
-        const lines = [history, "─ Worked for 6m 45s ───", current, "› Ask Codex to do anything"];
+        const lines = [history, "─ Worked for 6m 45s ───", current, "› "];
         return readNativePrompt({agent:{engine:"codex"}, term:{rows:lines.length, modes:{bracketedPasteMode:true},
           buffer:{active:{baseY:0, cursorX:2, cursorY:3, getLine:i=>({translateToString:()=>lines[i]})}}}}).screen;
       };
@@ -1118,7 +1347,7 @@ async function run() {
     });
     assert.deepEqual(asciiPrompts,[true,true,false,false,false,false,false,false]);
 
-    for (const [behavior, expected] of [["submit",1],["silent",2],["delayed",1],["foreign",1],["afterkey",1],["newtext",1],["running",1],["approval",1],["hold",2],["typing",1]]) {
+    for (const [behavior, expected] of [["submit",1],["silent",2],["delayed",1],["foreign",1],["afterkey",1],["newtext",1],["running",1],["approval",1],["hold",2],["typing",1],["ticker-retry",2]]) {
       const before=logLines("one","enters.txt").length;
       mode(behavior==="typing" ? "hold" : behavior);
       await ready(left);
@@ -1130,11 +1359,12 @@ async function run() {
         await page.waitForFunction(id=>panes.get(id).view.activity==="waiting",left);
         assert.equal(await page.evaluate(()=>selectedTopic().activity),"waiting");
       }
-      const submitted = ["submit","silent","delayed","foreign","afterkey","newtext","running"].includes(behavior);
+      const submitted = ["submit","silent","delayed","foreign","afterkey","newtext","running","ticker-retry"].includes(behavior);
       await until(()=>state(id)===(submitted?"delivered":"delivery_uncertain"),behavior+" result");
       assert.equal(logLines("one","enters.txt").length-before,expected,behavior);
       if (!submitted || ["foreign","newtext","running"].includes(behavior)) await key(left,"Control+u");
     }
+    await checkFoldedDelivery(page,left);
     const stale="已发送回车，未观察到原生输入行清空，请核对终端";
     await key(left,"x");
     await page.waitForFunction(id=>!!panes.get(id).draftRevision,left);
@@ -1184,11 +1414,12 @@ async function run() {
     const newest = send("@设计/同名","接口文档已更新，请核对字段");
     await page.waitForFunction(id => {
       const el = byId("topic-timeline");
-      return el.firstElementChild?.dataset.message === id && el.scrollTop <= 1;
+      return el.querySelector(".timeline-entry")?.dataset.message === id && el.scrollTop <= 1;
     }, newest);
     await row.click();
-    await page.locator("#preview-content").filter({hasText:"接口文档已更新"}).waitFor();
-    await page.keyboard.press("Escape");
+    await page.locator(".mail-detail").filter({hasText:"接口文档已更新"}).waitFor();
+    await page.locator("#inspector-panel-action").click();
+    await page.locator("#inspector-shell").waitFor({state:"hidden"});
     await page.locator("#log-divider").focus();
     await page.keyboard.press("ArrowUp");
     assert.equal(await log.evaluate(el => el.clientHeight / el.firstElementChild.offsetHeight), 6);
@@ -1202,9 +1433,9 @@ async function run() {
     assert(await page.evaluate(() => document.documentElement.scrollWidth === innerWidth));
     await page.setViewportSize({width:1000,height:760});
     sql("WITH n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<8) INSERT INTO windows(id,name,engine,project,topic_id) SELECT lower(hex(randomblob(16))),'前端协作窗口编号'||i,'codex',?,? FROM n", path.join(root,"one"), a);
-    await page.waitForFunction(() => document.querySelectorAll('#topic-list [aria-pressed="true"] .topic-agent-tag').length >= 10);
-    const overflowId = await page.locator('#topic-list [aria-pressed="true"] .topic-agent-tag').last().getAttribute("data-agent");
-    await page.locator('#topic-list [aria-pressed="true"] .topic-agent-tag[data-agent="' + overflowId + '"]').click();
+    await page.waitForFunction(() => document.querySelectorAll('#topic-list .topic-agent-tag').length >= 10);
+    const overflowId = await page.locator('#topic-list .topic-agent-tag').last().getAttribute("data-agent");
+    await page.locator('#topic-list .topic-agent-tag[data-agent="' + overflowId + '"] .member-name').click();
     await page.waitForFunction(id => layout.activeWindowId === id, overflowId);
     await page.setViewportSize({width:390,height:780});
     assert(await page.evaluate(() => document.documentElement.scrollWidth === innerWidth));
@@ -1233,7 +1464,7 @@ async function run() {
     await page.waitForFunction(([id,previous]) => panes.get(id).view.agent.autoReceive !== previous, [overflowId,previousReceive]);
     assert(await menu.isHidden());
     await pane(overflowId).locator(".pane-header .rename-agent").click();
-    await page.locator("#rename-dialog[open]").waitFor();
+    await page.locator("#pane-session-dialog[open] #rename-name").waitFor();
     await page.keyboard.press("Escape");
     await pane(overflowId).evaluate(el => { el.style.removeProperty("width"); });
     await page.mouse.move(0,0); // 检查默认轨道，排除指针恰好悬停的高亮状态。
@@ -1255,40 +1486,24 @@ async function run() {
       return sessions.left > auto.right + 20 && Math.abs(el.getBoundingClientRect().right - last.right) < 12;
     }));
     await page.setViewportSize({width:1000,height:760});
+    const shortTopic = (await post("/topics", {name:"短", project:path.join(root,"one")})).id;
     let lastId;
     for (let i = 0; i < 12; i++)
       lastId = (await post("/topics", {name:"导航回归 " + i + " 长话题名称", project:path.join(root,"one")})).id;
-    const strip = page.locator("#topic-list");
-    await strip.locator('[data-topic="'+lastId+'"]').waitFor({state:"attached"});
-    assert(await topicWidth(lastId) > await topicWidth(another), "成员数相同时，长标题应比短标题宽");
-    assert(await strip.evaluate(el => {
-      const first = el.firstElementChild.getBoundingClientRect(), header = el.closest("header").getBoundingClientRect();
-      return el.scrollWidth > el.clientWidth && first.top >= header.top && first.bottom <= header.bottom &&
-        Array.from(el.children).every(tab => tab.getBoundingClientRect().top === first.top && tab.offsetWidth <= el.clientWidth);
-    }));
+    await page.waitForFunction(id=>snapshot.topics.some(t=>t.id===id),lastId);
+    await choose(shortTopic);
+    assert.equal(await page.locator(".current-topic-title").textContent(),"短");
+    await page.setViewportSize({width:690,height:760});
     await page.locator("#mobile-topic").selectOption(lastId);
-    await page.waitForFunction(id => {
-      const el = document.querySelector('#topic-list [aria-pressed="true"]');
-      if (el?.dataset.topic !== id) return false;
-      const tab = el.getBoundingClientRect(), list = el.parentElement.getBoundingClientRect();
-      return tab.left >= list.left - 1 && tab.right <= list.right + 1;
-    }, lastId);
-    console.log("PASS desktop five-row log, send while scrolled back, latest preview, resize, collapse and mobile Agent overflow");
+    await page.waitForFunction(id=>selectedTopicId===id,lastId);
     await page.setViewportSize({width:1180,height:760});
     if (!await page.locator("#project-rail").isVisible()) await page.locator("#project-collapse").click();
-    const card = page.locator("#current-project");
-    assert(await card.evaluate(el => {
-      const group = snapshot.topics.filter(t => projectKey(t.project) === el.dataset.key);
-      const members = snapshot.windows.filter(w => group.some(t => t.id === w.agent.topicId));
-      const states = [...el.querySelectorAll(".project-states > span")];
-      const widths = states.map(cell => cell.getBoundingClientRect().width);
-      return el.querySelector(".project-summary").textContent === "会话 " + group.length + " · Agent " + members.length &&
-        states.every((cell,i) => Number(cell.querySelector("b").textContent) === members.filter(w =>
-          i===0 ? ["working","waiting"].includes(w.activity) : w.activity === (i===1?"idle":"offline")).length) &&
-        Math.max(...widths)-Math.min(...widths)<1 && new Set(states.map(c=>getComputedStyle(c,"::before").backgroundColor)).size===3 &&
-        states.every(c=>getComputedStyle(c,"::before").animationName==="none") &&
-        el.querySelector(".project-summary").offsetTop > el.querySelector(".project-card-title").offsetTop &&
-        el.querySelector(".project-states").offsetTop > el.querySelector(".project-summary").offsetTop;
+    const card=page.locator("#current-project");
+    assert(await page.locator(".project-states").evaluate(el=>{
+      const cells=[...el.querySelectorAll("span")], all=snapshot.windows.filter(w=>snapshot.projects.includes(snapshot.topics.find(t=>t.id===w.agent.topicId)?.project));
+      return cells.length===3 && cells.every((cell,i)=>Number(cell.querySelector("b").textContent)===all.filter(w=>i===0?["working","waiting"].includes(w.activity):w.activity===(i===1?"idle":"offline")).length) &&
+        cells.every(c=>c.offsetTop===cells[0].offsetTop && getComputedStyle(c,"::before").animationName==="none") &&
+        new Set(cells.map(c=>getComputedStyle(c,"::before").backgroundColor)).size===3;
     }));
     const claudeTopic = await post("/topics",{name:"Claude 实测",project:path.join(root,"third")});
     const claude = await post("/windows",{name:"Claude审阅",engine:"claude",topic:claudeTopic.id,newSession:true});
@@ -1322,9 +1537,10 @@ async function run() {
     await page.waitForFunction(()=>snapshot.timeline.length===0);
     console.log("PASS timeline withdrawal and all four cleanup ranges with full-clean confirmation");
     await page.evaluate(id=>{window.liveProjectSocket=panes.get(id).socket;},claude.id);
+    await card.hover();
     page.once("dialog", dialog=>dialog.dismiss());
     await page.getByRole("button",{name:"移除当前项目"}).click();
-    assert.equal(await page.locator("#current-project").getAttribute("title"),path.join(root,"third"));
+    assert.equal(await card.locator("strong").getAttribute("title"),path.join(root,"third"));
     page.once("dialog", dialog=>dialog.accept());
     await page.getByRole("button",{name:"移除当前项目"}).click();
     await page.waitForFunction(path=>!snapshot.projects.includes(path),path.join(root,"third"));
@@ -1384,31 +1600,47 @@ async function run() {
     assert.equal(await power.evaluate(button => getComputedStyle(button).color), "rgb(54, 229, 121)");
     assert(await page.evaluate(({id,meta}) => Object.entries(meta).every(([k,v]) => panes.get(id).agent[k] === v), {id:claude.id,meta}));
     await terminal.locator(".toggle-collapse").click();
-    await power.click();
+    const tagPower=tag(claude.id).locator(".tag-power");
+    await tagPower.click(); await page.waitForFunction(id=>!panes.get(id).agent.online,claude.id);
+    assert(await tagPower.isVisible() && await launcher.isHidden());
+    await tagPower.click();await page.waitForFunction(id=>panes.get(id).agent.online && !panes.get(id).presentation.powerAction,claude.id);
+    assert.equal(await terminal.getAttribute("data-collapsed"),"true"); await fold(claude.id);
+    const wakeUrl = base + "/api/windows/" + claude.id + "/auto-receive";
+    assert((await page.request.put(wakeUrl,{data:{enabled:false}})).ok());
+    await post("/windows/" + claude.id + "/stop",{});
     await page.waitForFunction(id=>!panes.get(id).agent.online,claude.id);
-    assert(await power.isVisible() && await power.getAttribute("aria-pressed")==="false" && await launcher.isHidden());
-    let startCard;
-    const holdCard = new Promise(resolve=>{startCard=resolve;});
-    await page.route(startRoute, async route=>{await holdCard; await route.continue();}, {times:1});
-    await power.click();
-    assert(await power.isDisabled() && await power.getAttribute("aria-busy")==="true");
-    startCard();
-    await page.waitForFunction(id=>panes.get(id).agent.online && !panes.get(id).presentation.powerAction,claude.id);
-    assert.equal(await terminal.getAttribute("data-collapsed"),"true");
-    assert.equal(await power.getAttribute("aria-pressed"),"true");
-    await terminal.locator(".toggle-collapse").click();
+    const heldOffline=send(claude.id,"关机，保留收件");
+    await page.waitForFunction(({id,msg})=>panes.get(id).view.inbox.some(i=>i.id===msg),{id:claude.id,msg:heldOffline});
+    assert.equal(sql("SELECT wake_requested FROM inbox WHERE id=?",heldOffline)[0][0],0);
+    assert.equal(state(heldOffline),"pending");
+    assert((await page.request.put(wakeUrl,{data:{enabled:true}})).ok());
+    const firstWake=send(claude.id,"唤醒同一会话 1"), nextWake=send(claude.id,"唤醒同一会话 2");
+    await page.waitForFunction(id=>panes.get(id).agent.online && panes.get(id).socket?.readyState===WebSocket.OPEN,claude.id);
+    const wakeGeneration = await page.evaluate(id=>panes.get(id).generation,claude.id);
+    await until(()=>[heldOffline,firstWake,nextWake].every(msg=>state(msg)==="delivered"),"offline native wake and FIFO",30000);
+    assert(await page.evaluate(({id,gen,meta})=>panes.get(id).generation===gen &&
+      Object.entries(meta).every(([k,v])=>panes.get(id).agent[k]===v),{id:claude.id,gen:wakeGeneration,meta}));
+    console.log("PASS offline delivery auto-wakes the same Agent and session once, opt-out stays offline");
     await toolbarAction(".close-pane");
     await page.waitForFunction(id => !panes.has(id) && !snapshot.windows.some(w => w.agent.id === id), claude.id);
-    const inactive = page.locator(".project-button").filter({has:page.getByRole("button",{name:"移除项目",exact:true})}).first();
-    const inactivePath = await inactive.getAttribute("title");
+    const inactive = page.locator(".project-button").filter({has:page.locator('[aria-label="移除项目"]')}).first();
+    await inactive.hover();
+    const inactivePath = await inactive.locator("strong").getAttribute("title");
     page.once("dialog", dialog => dialog.accept());
-    await inactive.locator(".project-card-title .remove-project-btn").click();
+    await inactive.getByRole("button",{name:"移除项目",exact:true}).click();
     await page.waitForFunction(path => !snapshot.projects.includes(path), inactivePath);
-    assert.equal(await card.getAttribute("title"),path.join(root,"third"));
+    assert.equal(await card.locator("strong").getAttribute("title"),path.join(root,"third"));
     console.log("PASS stop/reopen retains agent metadata, remove disposes runtime, inactive project removal keeps selection");
     assert.deepEqual(errors,[]);
     console.log("PASS pending-to-idle without new VT, multiline retry once, first-submit success, approval, typing, retry cap and stale error clearing");
-    for (const engine of ["qwen","codebuddy","zcode","claude","traecli","copilot","codex"]) {
+    const peerProject = path.join(root, "reply-peer");
+    fs.mkdirSync(peerProject);
+    const peerTopic = await post("/topics", {name:"回传验证", project:peerProject});
+    const replyPeer = await post("/windows", {name:"接收", topic:peerTopic.id, project:peerProject, engine:"codex", newSession:true});
+    await choose(peerTopic.id);
+    await ready(replyPeer.id);
+    const receiveState = async id => (await (await page.request.get(base+"/api/messages/"+id)).json()).state;
+    for (const engine of ["qwen","codebuddy","zcode","claude","traecli","copilot","codex","qoder"]) {
       const project = path.join(root,engine);
       fs.mkdirSync(project);
       fs.writeFileSync(path.join(project,"native-prompt.fixture"),engine);
@@ -1416,25 +1648,77 @@ async function run() {
       const agent = await post("/windows",{name:engine,topic:topic.id,project,engine,newSession:true});
       await choose(topic.id);
       await ready(agent.id);
+      await key(agent.id,"x");
+      await page.waitForFunction(id=>{
+        const p=panes.get(id);
+        return observePrompt(p).draft && !p.view.inputReady && p.view.activity==="idle";
+      },agent.id);
+      await key(agent.id,"Control+u");
+      await ready(agent.id);
+      if (engine === "codebuddy") {
+        await pane(agent.id).locator(".pane-power").click();
+        const launcher = pane(agent.id).locator(".start-pane");
+        await launcher.waitFor();
+        fs.writeFileSync(path.join(project,"account-unavailable.fixture"),"");
+        const account = await page.request.get(base+"/api/engines/codebuddy/account?"+new URLSearchParams({project}));
+        assert.equal((await account.json()).status,"unknown");
+        const loginSockets = [];
+        const trackLogin = ws => { if (ws.url().includes("/engines/codebuddy/login")) loginSockets.push(ws.url()); };
+        page.on("websocket", trackLogin);
+        const started = page.waitForResponse(r=>r.url()===base+"/api/windows/"+agent.id+"/start");
+        await launcher.click();
+        assert.equal((await started).status(),204,"power resumes a bound session even when the account probe is unavailable");
+        await ready(agent.id);
+        assert.equal(await page.evaluate(id=>panes.get(id).agent.session,agent.id),agent.session);
+        assert(logLines(engine,"terminal-launch.txt").includes("--resume"));
+        assert(await page.locator("#engine-login-dialog").isHidden());
+        assert.deepEqual(loginSockets,[]);
+        page.off("websocket",trackLogin);
+        fs.unlinkSync(path.join(project,"account-unavailable.fixture"));
+        console.log("PASS CodeBuddy power resumes the same native session inside its own pane when the account probe fails");
+      }
+      if (["qwen","codebuddy","qoder"].includes(engine)) {
+        const box = await pane(agent.id).locator(".xterm-screen").boundingBox();
+        const rowHeight = box.height / await page.evaluate(id=>panes.get(id).term.rows,agent.id);
+        await page.mouse.click(box.x+12,box.y+rowHeight/2);
+        assert(await pane(agent.id).locator(".terminal-surface").evaluate(el=>el===document.activeElement),engine+" click output to read");
+        await page.keyboard.press("PageUp");
+        await page.mouse.click(box.x+12,box.y+2.5*rowHeight);
+        assert(await pane(agent.id).locator(".xterm-helper-textarea").evaluate(el=>el===document.activeElement),engine+" click input to type");
+        await page.keyboard.press("F6");
+        assert(await pane(agent.id).locator(".terminal-surface").evaluate(el=>el===document.activeElement));
+        await page.keyboard.press("Enter");
+        await pane(agent.id).locator(".tile-engine").click();
+        assert(!await pane(agent.id).locator(".xterm-helper-textarea").evaluate(el=>el===document.activeElement),engine+" click away releases focus");
+      }
       const generation = await page.evaluate(id=>panes.get(id).generation,agent.id);
       const approvalUrl = base+"/api/windows/"+agent.id+"/approval";
       assert.equal((await page.request.post(approvalUrl,{data:{terminal:"stale"}})).status(),409);
-      const applied = page.waitForResponse(r=>r.url()===approvalUrl && r.request().method()==="POST");
-      const approvalButton = pane(agent.id).getByRole("button",{name:"调整审批模式"});
+      const approvalButton = pane(agent.id).getByRole("button",{name:"切换审批"});
       if (!await approvalButton.isVisible()) await pane(agent.id).locator(".pane-more").click();
       await approvalButton.click();
+      await page.locator("#approval-choice").selectOption("auto");
+      const applied = page.waitForResponse(r=>r.url()===approvalUrl && r.request().method()==="PUT");
+      await page.locator("#apply-approval").click();
       assert.equal((await applied).status(),204,engine);
-      if (["claude","codebuddy","qwen"].includes(engine)) {
-        await until(()=>logLines(engine,"approval-key.txt").includes(engine==="qwen"?"Tab":"Shift+Tab"),engine+" native mode shortcut");
-      } else if (engine==="zcode") {
-        await page.waitForFunction(id=>readNativePrompt(panes.get(id)).draftText?.trim()==="/mode",agent.id);
-        assert.equal(logLines(engine,"enters.txt").length,0);
-        await key(agent.id,"Control+u");
-      } else {
-        await until(()=>logLines(engine,"accepted.txt").includes("/permissions"),engine+" native approval picker");
-      }
-      assert.equal(await page.evaluate(id=>panes.get(id).generation,agent.id),generation);
-      if (!["qwen","codebuddy","zcode"].includes(engine)) continue;
+      await page.waitForFunction(([id,old])=>panes.get(id).generation!==old && panes.get(id).agent.approval==="auto",[agent.id,generation]);
+      assert.equal(await page.evaluate(id=>panes.get(id).agent.session,agent.id),agent.session);
+      const expected = {qwen:"auto-edit",codebuddy:"auto",qoder:"auto",zcode:"yolo",claude:"auto",copilot:"--allow-all-tools",
+        codex:'approval_policy="never"',traecli:'approval_policy="never"'};
+      await until(()=>logLines(engine,"terminal-launch.txt").includes(expected[engine]),engine+" approval launch args");
+      assert.equal((await page.request.put(approvalUrl,{data:{terminal:generation,approval:"ask"}})).status(),409);
+      const current = await page.evaluate(id=>panes.get(id).generation,agent.id);
+      assert.equal((await page.request.put(approvalUrl,{data:{terminal:current,approval:"invalid"}})).status(),400);
+      assert.equal((await page.request.put(approvalUrl,{data:{terminal:current,approval:"ask"}})).status(),204);
+      await page.waitForFunction(id=>panes.get(id).agent.approval==="ask",agent.id);
+      const askArgs = {qwen:"default",codebuddy:"default",qoder:"default",claude:"default",zcode:"build",
+        codex:'approval_policy="on-request"',traecli:'approval_policy="on-request"'};
+      await until(()=>{
+        const args = logLines(engine,"terminal-launch.txt");
+        return engine === "copilot" ? args.includes("--resume="+agent.session) && !args.includes("--allow-all-tools") :
+          args.includes(askArgs[engine]);
+      },engine+" ask launch args");
+      if (!["qwen","codebuddy","zcode","qoder","traecli"].includes(engine)) continue;
       await ready(agent.id);
       assert(await pane(agent.id).locator(".auto-receive input").isChecked());
       await key(agent.id,"Control+b");
@@ -1447,12 +1731,55 @@ async function run() {
       await sleep(1700);
       assert.equal(state(message),"pending");
       assert.equal((await page.request.post(approvalUrl,{data:{terminal:generation}})).status(),409);
+      const reply = {jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"send_to_agent",
+        arguments:{target:replyPeer.id,message:engine+" received "+message.slice(0,8),supersedePrevious:false}}};
+      fs.writeFileSync(path.join(project,"mcp-reply.fixture"), new URL(base).port+"\n"+JSON.stringify(reply));
       await key(agent.id,"Control+u");
-      await until(()=>state(message)==="delivered",engine+" automatic receipt");
+      try { await until(async ()=>(await receiveState(message))==="delivered",engine+" automatic receipt"); }
+      catch (error) {
+        console.error(engine, state(message), await page.evaluate(id => {
+          const p=panes.get(id), b=p.term.buffer.active;
+          return {prompt:observePrompt(p), cursor:[b.cursorX,b.cursorY], rows:Array.from({length:p.term.rows},
+            (_,i)=>b.getLine(b.baseY+i)?.translateToString(true)).filter(Boolean).slice(-8)};
+        },agent.id), logLines(engine,"enters.txt"), logLines(engine,"accepted.txt"));
+        throw error;
+      }
       assert.equal(logLines(engine,"accepted.txt").filter(line=>line.includes(message.slice(0,8))).length,1);
+      const responsePath = path.join(project,"mcp-reply.json");
+      await until(()=>fs.existsSync(responsePath),engine+" native MCP response");
+      const response = JSON.parse(fs.readFileSync(responsePath,"utf8")).result;
+      assert(!response.isError, response.content[0].text);
+      const replyId = JSON.parse(response.content[0].text).id;
+      await until(async ()=>(await receiveState(replyId))==="delivered",engine+" MCP reply");
+      assert.deepEqual(sql("SELECT source,target FROM inbox WHERE id=?",replyId),[[agent.id,replyPeer.id]]);
+      assert.equal(logLines("reply-peer","accepted.txt").filter(line=>line.includes(replyId.slice(0,8))).length,1);
+      if (engine === "traecli") {
+        const receiveMode = pane(agent.id).getByRole("combobox",{name:"收件方式"});
+        assert.equal(await receiveMode.inputValue(),"queued");
+        await receiveMode.selectOption("immediate");
+        await page.waitForFunction(id=>panes.get(id).view.agent.receiveMode==="immediate",agent.id);
+        const optionUrl = base+"/api/windows/"+agent.id+"/auto-receive";
+        assert.equal((await page.request.put(optionUrl,{data:{mode:"invalid"}})).status(),400);
+        assert.equal(sql("SELECT receive_mode FROM windows WHERE id=?",agent.id)[0][0],"immediate");
+        assert.equal(sql("SELECT receive_mode FROM windows WHERE id=?",replyPeer.id)[0][0],"queued");
+        await key(agent.id,"Control+b");
+        await key(agent.id,"x");
+        const immediate = send(agent.id,"忙时接收，勿覆盖人工草稿");
+        await sleep(1750);
+        assert.equal(state(immediate),"pending");
+        await key(agent.id,"Control+u");
+        await key(agent.id,"Control+b");
+        await page.waitForFunction(id=>panes.get(id).view.activity==="working", agent.id);
+        await until(async ()=>(await receiveState(immediate))==="delivered","submit to native CLI while work continues");
+        assert.equal(logLines(engine,"accepted.txt").filter(line=>line.includes(immediate.slice(0,8))).length,1);
+        assert.equal(await page.evaluate(id=>panes.get(id).view.activity,agent.id),"working");
+        await key(agent.id,"Control+u");
+        console.log("PASS per-window queued/immediate selection, native busy input and protection of human drafts");
+      }
     }
-    console.log("PASS Qwen, CodeBuddy and ZCode queued through work and draft, then submitted once on idle");
-    console.log("PASS native approval controls in all seven current terminals, draft and stale-session protection");
+    console.log("PASS five CLI editors held through work and draft, submitted once on idle, and returned a window-authenticated MCP reply to a peer");
+    console.log("PASS an unsent user draft remains idle and protected across all eight engines");
+    console.log("PASS same-session restarts in both approval modes for eight engines; stale terminals rejected");
   } finally { await browser.close(); }
 }
 run().catch(error=>{console.error(error);process.exitCode=1;});

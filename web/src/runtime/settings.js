@@ -2,7 +2,7 @@ import { request } from "../services/api";
 import { byId, node } from "./dom.js";
 import { openFolders } from "./folders.js";
 import { applyMentionShortcut, mentionChord } from "./mentions.js";
-import { engineNames, installGuides, updateGuides } from "../services/engines";
+import { engineNames, installEngine, installGuides, updateGuides } from "../services/engines";
 import { mentionShortcut, snapshot } from "../store/workbenchStore";
 import { refresh, refreshing } from "./workbench.js";
 
@@ -65,7 +65,8 @@ function engineRow(engine, installed) {
       for (const action of actions.children) action.disabled = true;
       button.textContent = updating ? "更新中…" : "安装中…";
       try {
-        await request(url + "/" + kind, {method:"POST"});
+        if (updating) await request(url + "/update", {method:"POST"});
+        else await installEngine(engine);
         settingsNote(title + (updating ? " 已更新" : " 已安装"));
       } finally { await detect(false); }
     });

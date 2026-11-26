@@ -1,5 +1,6 @@
 import { animateMessages, attachLogControls } from "./activity.js";
 import { request } from "../services/api";
+import { pageRetired } from "../services/workbenchPage";
 import { byId, feedback, setBusy } from "./dom.js";
 import { attachLayoutControls, renderLayout } from "./layout.js";
 import { applyMentionShortcut, picking, renderPeers } from "./mentions.js";
@@ -7,15 +8,23 @@ import { makePane, updatePane } from "./pane.js";
 import { loadQuota } from "./quota.js";
 import { panes, removeMissingWindows } from "../services/terminalRegistry";
 import { isDialogOpen, selectedTopicId, setSnapshot, snapshot } from "../store/workbenchStore";
-import { observePrompt, syncTerminal } from "./terminal.js";
+import { cachedPrompt, syncTerminal } from "./terminal.js";
 import { attachTopicControls, renderTopics } from "./topics.js";
 
 let refreshing;
 let retrySnapshot;
+window.addEventListener("ff:page-retired", () => {
+  clearTimeout(retrySnapshot);
+  removeMissingWindows(new Set());
+  if (byId("engine-login-dialog")?.open) byId("engine-login-dialog").close();
+}, {once:true});
 function refresh() {
+  if (pageRetired) return Promise.resolve();
   if (!refreshing) {
+    const requestedTopic = selectedTopicId;
     const query = selectedTopicId ? "?topic=" + encodeURIComponent(selectedTopicId) + "&recent=30" : "";
     refreshing = request("/state" + query).then(data => {
+      if (pageRetired || selectedTopicId !== requestedTopic) return;
       const previous = snapshot;
       const formOpen = isDialogOpen("new-dialog");
       const samePanes = data.windows.length === panes.size && data.windows.every(w => {
@@ -40,6 +49,7 @@ function refresh() {
       feedback("connection-error");
       clearTimeout(retrySnapshot);
     }).catch(error => {
+      if (pageRetired || selectedTopicId !== requestedTopic) return;
       byId("connection").textContent = "连接中断";
       byId("connection").title = "连接中断";
       byId("connection").setAttribute("aria-label", "连接中断");
@@ -47,7 +57,7 @@ function refresh() {
       feedback("connection-error", error.message);
       clearTimeout(retrySnapshot);
       retrySnapshot = setTimeout(refresh, 3000);
-    }).finally(() => { refreshing = undefined; });
+    }).finally(() => { refreshing = undefined; if(selectedTopicId!==requestedTopic) void refresh(); });
   }
   return refreshing;
 }
@@ -56,7 +66,7 @@ function normalizeActivities(data) {
   for (const view of data.windows) {
     const pane = panes.get(view.agent.id);
     if (!pane || pane.replaying || !view.agent.online || pane.socket?.readyState !== WebSocket.OPEN) continue;
-    const screen = observePrompt(pane).screen;
+    const screen = cachedPrompt(pane).screen;
     if (screen === "blocked") view.activity = "waiting";
     else if (screen === "running" || screen === "active") view.activity = "working";
     else if (screen === "clear" || screen === "draft" || screen === "idle") view.activity = "idle";
@@ -76,7 +86,8 @@ function normalizeActivities(data) {
 function render() {
   const { windows } = snapshot;
   renderTopics();
-  const ids = new Set(windows.map(view => view.agent.id));
+  // A new engine needs its own terminal parser, key handler and native connection.
+  const ids = new Set(windows.filter(({agent}) => !panes.has(agent.id) || panes.get(agent.id).agent.engine === agent.engine).map(view => view.agent.id));
   removeMissingWindows(ids);
   for (const view of windows) {
     if (!panes.has(view.agent.id)) {
@@ -88,28 +99,14 @@ function render() {
   renderLayout();
 }
 
-byId("rename-form").onsubmit = async event => {
-  event.preventDefault();
-  const dialog = byId("rename-dialog");
-  if (dialog.dataset.busy === "true") return;
-  setBusy(dialog, true);
-  try {
-    await request("/windows/" + dialog.dataset.targetId + "/name", {method:"PUT", body:{name:byId("rename-name").value}});
-    dialog.close();
-    await refreshing;
-    await refresh();
-  } catch (error) { feedback("rename-error", error.message); }
-  finally { setBusy(dialog, false); }
-};
 
 document.querySelectorAll("[data-close]").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
 document.querySelectorAll("dialog").forEach(dialog => dialog.addEventListener("cancel", event => {
   if (dialog.dataset.busy === "true") event.preventDefault();
 }));
 function listenForChanges() {
-  const events = new EventSource("/api/events");
   let scheduled = false;
-  events.onmessage = () => {
+  window.addEventListener("ff:state-changed", () => {
     if (scheduled) return;
     scheduled = true;
     setTimeout(async () => {
@@ -118,12 +115,7 @@ function listenForChanges() {
       scheduled = false;
       refresh();
     }, 70);
-  };
-  events.onerror = () => {
-    events.close();
-    refresh();
-    setTimeout(listenForChanges, 3000);
-  };
+  });
 }
 
 function startWorkbench() {

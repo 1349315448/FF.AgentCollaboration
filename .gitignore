@@ -4,7 +4,7 @@ obj/
 .vs/
 *.user
 *.suo
-**/Properties/PublishProfiles/FolderProfile.pubxml
+**/Properties/PublishProfiles/FolderProfile*.pubxml
 __pycache__/
 node_modules/
 .env

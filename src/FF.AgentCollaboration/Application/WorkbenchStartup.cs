@@ -16,14 +16,20 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
     private string DefaultArchive => knowledge == null ? location.Defaults.Archive_root! : Path.Combine(knowledge, "development-tasks");
     private string DefaultHandoffs => handoffs ?? location.Defaults.Handoffs!;
 
-    internal object Status() => new
+    internal object Status()
     {
-        initialized = Ready.IsCompletedSuccessfully,
-        data_dir = Root,
-        archive_root = DefaultArchive,
-        handoffs = DefaultHandoffs,
-        fixed_data_dir = location.IsFixed
-    };
+        using var store = Ready.IsCompletedSuccessfully ? new WorkbenchStore(Root) : null;
+        return new
+        {
+            initialized = Ready.IsCompletedSuccessfully,
+            needsNodeName = false,
+            nodeName = store?.FederationNode().NodeName ?? FederationPolicy.DefaultName(),
+            data_dir = Root,
+            archive_root = DefaultArchive,
+            handoffs = DefaultHandoffs,
+            fixed_data_dir = location.IsFixed
+        };
+    }
 
     private static FileStream Acquire(string path)
     {
@@ -43,14 +49,16 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
         string docs = handoffs != null || portable ? DefaultHandoffs : Path.Combine(Root, "handoffs");
         store.Initialize(project, docs, archive, standalone: knowledge == null,
             keepArchive: knowledge == null, keepHandoffs: handoffs == null && source == null);
+        if (string.IsNullOrWhiteSpace(store.FederationNode().NodeName)) store.SetFederationNode(FederationPolicy.DefaultName(), null);
         MarkReady();
     }
 
-    internal void Initialize(WorkbenchPaths paths)
+    internal void Initialize(InitializeWorkbench paths)
     {
         lock (gate)
         {
             if (Ready.IsCompleted) throw new WorkbenchError("工作台已初始化", WorkbenchFailure.Conflict);
+            string nodeName = string.IsNullOrWhiteSpace(paths.NodeName) ? FederationPolicy.DefaultName() : FederationPolicy.Name(paths.NodeName);
             string data = StorageDirectories.PrepareDirectory(paths.Data_dir);
             if (location.IsFixed && !ProjectFolders.Same(data, Root)) throw new WorkbenchError("此实例使用固定数据目录", WorkbenchFailure.Conflict);
             string archive = StorageDirectories.PrepareDirectory(paths.Archive_root);
@@ -64,6 +72,7 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
                 using (var state = new WorkbenchStore(data, create: true, databaseFile: staged))
                 {
                     state.Initialize(project, docs, archive, standalone: knowledge == null);
+                    state.SetFederationNode(nodeName, null);
                     state.SetPaths(archive, docs);
                 }
                 location.Activate(data, staged);
@@ -81,6 +90,7 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
     private void MarkReady()
     {
         CollaborationSkill.Inspect(retireLegacy: true);
+        new ManagedSkills(Root).Recover();
         ready.SetResult();
     }
 

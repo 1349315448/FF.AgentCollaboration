@@ -13,7 +13,7 @@ internal static class ClaudeHistory
     private static string Home => Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
 
-    private static IEnumerable<string> Files(string project)
+    private static IEnumerable<string> Files(string project, string pattern = "*.jsonl")
     {
         string parent = Path.Combine(Home, "projects");
         if (!Directory.Exists(parent)) yield break;
@@ -41,7 +41,7 @@ internal static class ClaudeHistory
         foreach (string dir in candidates.Where(Directory.Exists))
         {
             TopicArchive.CheckPath(dir);
-            foreach (string file in Directory.EnumerateFiles(dir, "*.jsonl")) yield return file;
+            foreach (string file in Directory.EnumerateFiles(dir, pattern)) yield return file;
         }
     }
 
@@ -88,6 +88,28 @@ internal static class ClaudeHistory
             catch (FileNotFoundException) { }
         }
         return sessions;
+    }
+
+    internal static bool HasConversation(string project, string session, CancellationToken ct)
+    {
+        if (!Guid.TryParseExact(session, "D", out _)) return false;
+        foreach (string file in Files(project, session + ".jsonl"))
+        {
+            TopicArchive.CheckPath(file);
+            using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream);
+            while (reader.ReadLine() is { } line)
+            {
+                ct.ThrowIfCancellationRequested();
+                try
+                {
+                    using var record = JsonDocument.Parse(line);
+                    if (record.RootElement.TryGetProperty("type", out var type) && type.GetString() is "user" or "assistant") return true;
+                }
+                catch (JsonException) { /* 最后一行可能仍在写入。 */ }
+            }
+        }
+        return false;
     }
 
     internal static HashSet<string> ActiveSessions(string? home = null)

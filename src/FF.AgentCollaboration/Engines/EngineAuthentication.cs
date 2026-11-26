@@ -8,6 +8,8 @@ namespace FF.AgentCollaboration.Engines;
 
 internal sealed record EngineAccount(string Status)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? Message { get; init; }
     internal bool Ready => Status is "authenticated" or "configured";
 }
 
@@ -23,6 +25,10 @@ internal static class EngineAuthentication
             using var adapter = Engine.Create(engine, project);
             return await adapter.Account(timeout.Token);
         }
+        catch (WorkbenchError error) when (error.Failure == WorkbenchFailure.Unavailable)
+        {
+            return new("unavailable") { Message = error.Message };
+        }
         catch (Exception error) when (!ct.IsCancellationRequested && error is not OutOfMemoryException)
         {
             return new("unknown");
@@ -32,6 +38,7 @@ internal static class EngineAuthentication
     internal static async Task Require(string engine, string project, CancellationToken ct)
     {
         var account = await Check(engine, project, ct);
+        if (account.Status == "unavailable") throw new WorkbenchError(account.Message!, WorkbenchFailure.Unavailable);
         if (!account.Ready) throw new WorkbenchError(account.Status == "signed-out" ? "请先登录，再选择新建或恢复会话" :
             "暂时无法确认登录状态，请重新检测", WorkbenchFailure.LoginRequired);
     }

@@ -1,31 +1,43 @@
 import { request } from "../services/api";
+import { chooseApproval, labelApproval } from "./approval.js";
+import { framedInputBounds } from "./framedPrompt.js";
 import { byId, feedback } from "./dom.js";
 import { openFiles } from "./files.js";
-import { fitPaneToolbar, focusAgent, renderLayout, saveLayout, togglePrimary } from "./layout.js";
+import { fitPaneToolbar, focusAgent, isLayoutAnimating, renderLayout, saveLayout, togglePrimary } from "./layout.js";
 import { finishPicker, labelMentionButton, mentionChord, mentionPicker, openPeers, picking } from "./mentions.js";
 import { activityLabels } from "../services/navigation";
 import { showPreview } from "./preview.js";
 import { loadQuota } from "./quota.js";
 import { presentPane, mountTerminal, panes } from "../services/terminalRegistry";
 import { openPaneSessions } from "./session-history.js";
-import { openEngineLogin } from "./engine-login.js";
 import { loadShortcuts } from "./shortcuts.js";
-import { layout, mentionShortcut } from "../store/workbenchStore";
+import { layout, mentionShortcut, selectedTopicId } from "../store/workbenchStore";
 import { fitPane, replayReports, sendBytes, syncTerminal } from "./terminal.js";
 import { refresh, refreshing } from "./workbench.js";
 
 import { engineNames } from "../services/engines";
 const bytes = new TextEncoder();
+document.addEventListener("pointerdown", event => {
+  const input = document.activeElement;
+  if (input?.matches(".pane:is([data-engine=qwen],[data-engine=codebuddy],[data-engine=qoder]) .xterm-helper-textarea") &&
+      !input.closest(".terminal-viewport").contains(event.target)) input.blur();
+}, {capture:true});
 function makePane(agent) {
   const { root, element, term, fit, viewport, slot } = mountTerminal(byId("panes"));
   element.dataset.window = agent.id;
   element.dataset.engine = agent.engine;
   const surface = element.querySelector(".terminal-surface");
+  surface.addEventListener("focusin", () => {
+    if (layout?.workspaceMode === "agent" && selectedTopicId === agent.topicId && layout.activeWindowId !== agent.id) {
+      layout.activeWindowId = agent.id;
+      saveLayout();
+    }
+  });
   surface.id = "terminal-" + agent.id;
   const collapse = element.querySelector(".toggle-collapse");
   collapse.setAttribute("aria-controls", surface.id);
   collapse.onclick = () => {
-    if (layout.collapsedIds.includes(agent.id)) return focusAgent(agent.id);
+    if (layout.workspaceMode === "code" || layout.collapsedIds.includes(agent.id)) return focusAgent(agent.id);
     layout.collapsedIds.push(agent.id);
     saveLayout();
     renderLayout(pane);
@@ -34,13 +46,75 @@ function makePane(agent) {
   const actions = element.querySelector(".terminal-actions"), more = actions.querySelector(".pane-more");
   const moreMenu = actions.querySelector(".pane-more-menu");
   more.popoverTargetElement = moreMenu;
-  const toolbarItems = Array.from(actions.children).filter(item => item !== more && item.matches("button, label"));
+  const toolbarItems = Array.from(actions.children).filter(item => item !== more && item.matches("button, label, .receive-controls"));
   const pane = { root, slot, agent, element, term, fit, surface, actions, more, moreMenu, toolbarItems,
     primaryButton:actions.querySelector(".set-primary"), generation:undefined, revision:0 };
+  const reading = surface.querySelector(".reading-toggle");
+  const scrollableEngine = ["qwen","codebuddy","qoder"].includes(agent.engine);
+  function setReading(active) {
+    reading.setAttribute("aria-pressed", String(active));
+    reading.textContent = active ? "返回输入" : "阅读";
+  }
+  function readHistory() { setReading(true); surface.focus({preventScroll:true}); }
+  if (scrollableEngine) {
+    viewport.addEventListener("click", event => {
+      if (!pane.view?.agent.online || term.hasSelection() || term.modes.mouseTrackingMode !== "none") return;
+      const screen = event.target.closest(".xterm-screen");
+      if (!screen) return;
+      const rect = screen.getBoundingClientRect(), buffer = term.buffer.active;
+      const y = Math.floor((event.clientY - rect.top) * term.rows / rect.height) + buffer.viewportY - buffer.baseY;
+      const lines = Array.from({length:term.rows}, (_,i)=>buffer.getLine(buffer.baseY+i)?.translateToString(true) || "");
+      const {row,bottom,framed} = framedInputBounds(agent.engine, lines);
+      // 原生选择菜单和文本拖选仍归 CLI。只把明确的历史输出与输入框分开。
+      if (y < 0 || (framed && bottom > row && y < row - 1)) readHistory();
+    });
+  }
+  function pageHistory(page) {
+    if (term.buffer.active.type === "normal") term.scrollPages(page);
+    else if (pane.agent.engine === "qwen") sendBytes(pane, bytes.encode(page < 0 ? "\x1b[5~" : "\x1b[6~"));
+  }
+  surface.querySelector(".terminal-paging").onclick = event => {
+    const button = event.target.closest("button");
+    if (!button || !pane.view?.agent.online) return;
+    if (button === reading && reading.getAttribute("aria-pressed") === "true") { setReading(false); term.focus(); return; }
+    readHistory();
+    if (button.dataset.page) pageHistory(Number(button.dataset.page));
+  };
+  surface.addEventListener("focusout", event => {
+    if (!event.relatedTarget?.closest?.(".terminal-paging")) setReading(false);
+  });
+  surface.addEventListener("keydown", event => {
+    if (event.target !== surface || !scrollableEngine || event.isComposing) return;
+    if (event.key === "F6" || event.key === "Enter") { setReading(false); term.focus(); }
+    else if (event.key === "PageUp" || event.key === "PageDown") pageHistory(event.key === "PageUp" ? -1 : 1);
+    else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+      const up = event.key === "ArrowUp";
+      if (term.buffer.active.type === "normal") term.scrollLines(up ? -1 : 1);
+      else if (agent.engine === "qwen") sendBytes(pane, bytes.encode(up ? "\x1b[1;2A" : "\x1b[1;2B"));
+    } else return;
+    event.preventDefault();
+    event.stopPropagation();
+  });
   moreMenu.addEventListener("click", event => {
     if (event.target.closest("button:not(.shortcuts-toggle), input") && moreMenu.matches(":popover-open")) moreMenu.hidePopover();
   });
-  pane.observer = new ResizeObserver(() => { fitPaneToolbar(pane); fitPane(pane); });
+  pane.observer = new ResizeObserver(() => {
+    if (isLayoutAnimating()) {
+      pane.pendingFit = true;
+      return;
+    }
+    if (pane.fitRaf) return;
+    pane.fitRaf = requestAnimationFrame(() => {
+      pane.fitRaf = 0;
+      if (!panes.has(agent.id)) return;
+      if (isLayoutAnimating()) {
+        pane.pendingFit = true;
+        return;
+      }
+      fitPaneToolbar(pane);
+      fitPane(pane);
+    });
+  });
   pane.observer.observe(viewport);
   pane.observer.observe(actions);
   term.onData(text => {
@@ -53,6 +127,11 @@ function makePane(agent) {
   });
   term.attachCustomKeyEventHandler(event => {
     if (event.type !== "keydown" || event.isComposing || event.keyCode === 229 || !pane.view?.agent.online) return true;
+    if (scrollableEngine && event.key === "F6" && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
+      readHistory();
+      event.preventDefault();
+      return false;
+    }
     if (event.key === "Escape" && picking?.pane === pane && !mentionPicker.open) {
       if (term._core) term._core._keyDownSeen = false;
       finishPicker();
@@ -80,19 +159,10 @@ function makePane(agent) {
   });
   element.querySelector(".set-primary").addEventListener("click", () => togglePrimary(pane));
   element.querySelector(".pane-sessions").addEventListener("click", () => openPaneSessions(pane));
-  element.querySelector(".rename-agent").onclick = () => {
-    const dialog = byId("rename-dialog"), input = byId("rename-name");
-    dialog.dataset.targetId = agent.id;
-    input.value = pane.agent.name;
-    feedback("rename-error");
-    dialog.showModal();
-    input.select();
-  };
+  element.querySelector(".rename-agent").onclick = () => openPaneSessions(pane, "basic");
   element.querySelector(".pane-quota").addEventListener("click", () => loadQuota(agent.engine, true));
   const approval = element.querySelector(".pane-approval");
-  approval.title = ["claude", "codebuddy"].includes(agent.engine) ? "切换到下一个原生审批模式（Shift+Tab）" : "打开当前 CLI 的审批模式选择器";
-  approval.onclick = () => paneAction(pane, () =>
-    request(windowRoute(pane) + "/approval", {method:"POST", body:{terminal:pane.generation}}));
+  approval.onclick = () => chooseApproval(pane).catch(error => feedback(element.querySelector(".pane-error"), error.message));
   element.querySelector(".preview-inbox").addEventListener("click", () => showPreview(pane.message));
   const ignore = element.querySelector(".ack-inbox");
   ignore.onclick = async () => {
@@ -125,12 +195,7 @@ function makePane(agent) {
     presentPane(pane, {...pane.presentation, powerAction:start ? "start" : "stop"});
     try {
       await paneAction(pane, async () => {
-        try { await request(windowRoute(pane) + (start ? "/start" : "/stop"), {method:"POST"}); }
-        catch (error) {
-          if (!start || error.status !== 401) throw error;
-          if (await openEngineLogin(pane.agent.engine, pane.agent.project)) openPaneSessions(pane);
-          return;
-        }
+        await request(windowRoute(pane) + (start ? "/start" : "/stop"), {method:"POST"});
         await refreshing;
       });
     } finally {
@@ -149,6 +214,8 @@ function makePane(agent) {
     request(windowRoute(pane), { method: "DELETE" })));
   element.querySelector(".auto-receive input").addEventListener("change", event => paneAction(pane, () =>
     request(windowRoute(pane) + "/auto-receive", { method: "PUT", body: { enabled: event.target.checked } })));
+  element.querySelector(".receive-mode").addEventListener("change", event => paneAction(pane, () =>
+    request(windowRoute(pane) + "/auto-receive", { method:"PUT", body:{mode:event.target.value} })));
   return pane;
 }
 
@@ -174,6 +241,8 @@ function canIgnore(message) {
 
 function updatePane(pane, view) {
   syncTerminal(pane, view);
+  pane.element.querySelector(".mcp-restart").hidden = !view.mcpRestartRequired;
+  labelApproval(pane);
   if (pane.receiptErrorId && !view.inbox.some(item => item.id === pane.receiptErrorId)) {
     feedback(pane.element.querySelector(".pane-error"));
     pane.receiptErrorId = null;
@@ -183,15 +252,19 @@ function updatePane(pane, view) {
   pane.element.setAttribute("aria-label", "@" + agent.name + " 终端");
   const autoReceive = pane.element.querySelector(".auto-receive input");
   autoReceive.checked = agent.autoReceive;
+  const receiveMode = pane.element.querySelector(".receive-mode");
+  receiveMode.value = agent.receiveMode ?? "queued";
+  receiveMode.hidden = !agent.receiveMode;
+  receiveMode.disabled = !agent.receiveMode || !agent.autoReceive;
   if (!agent.online) pane.element.querySelector(".shortcut-menu:popover-open")?.hidePopover();
   const message = inbox.find(item => item.id === pane.selectedMessage) || inbox.find(item => item.state === "pending") || inbox[0];
   pane.message = message;
   const prefix = message?.fromTopic ? "跨话题 · " + message.fromTopic + " · " : "";
   const label = message?.state === "delivery_uncertain" ? "送达待核对" : "消息";
   presentPane(pane, {
-    name: agent.name, project: agent.project, engine: engineNames[agent.engine], online: agent.online, powerAction:pane.presentation?.powerAction,
+    id: agent.id, name: agent.name, project: agent.project, engine: engineNames[agent.engine], online: agent.online, powerAction:pane.presentation?.powerAction,
     status: activity === "offline" ? "未启动" : activity === "waiting" ? "待处理" : activityLabels[activity],
-    exitText: !agent.online && view.terminal ? "终端已退出" + (view.exitCode ? "（" + view.exitCode + "）" : "") : "",
+    exitText: !agent.online ? view.wakeError || (view.terminal ? "终端已退出" + (view.exitCode ? "（" + view.exitCode + "）" : "") : "") : "",
     caption: message ? prefix + "来自 @" + message.from + " 的" + label + (inbox.length > 1 ? " · " + inbox.length + " 条" : "") : "",
     inboxState: message?.state, inboxCount: inbox.length, ignoreCount: inbox.filter(canIgnore).length, canIgnore: !!message && canIgnore(message)
   });
@@ -213,7 +286,7 @@ async function paneAction(pane, action, messageId = null) {
     await action();
     await refresh();
     const currentFocus = document.activeElement;
-    if (!pane.surface.hidden && !pane.element.hidden && panes.has(pane.agent.id) && (currentFocus === previousFocus || currentFocus === document.body)) {
+    if (!pane.surface.hidden && !pane.element.hidden && panes.has(pane.agent.id) && currentFocus === previousFocus) {
       if (pane.view.agent.online) pane.term.focus();
       else pane.element.querySelector(".start-pane").focus();
     }

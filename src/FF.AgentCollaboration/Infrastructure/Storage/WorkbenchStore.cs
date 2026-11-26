@@ -48,10 +48,18 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
             if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("session_title"))
                 Exec("ALTER TABLE windows ADD COLUMN session_title TEXT");
             if (requestedProject != null) SaveProject(requestedProject);
+            if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("approval"))
+                Exec("ALTER TABLE windows ADD COLUMN approval TEXT");
+            if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("receive_mode"))
+                Exec("ALTER TABLE windows ADD COLUMN receive_mode TEXT NOT NULL DEFAULT 'queued'");
             // 这三种引擎在旧版无法勾选自动接收。只升级一次，之后尊重每个窗口的开关。
             if (Exec("INSERT OR IGNORE INTO settings VALUES('native_inbox_v2','1')") == 1)
                 Exec("UPDATE windows SET auto_receive=1 WHERE closed=0 AND engine IN ('qwen','codebuddy','zcode')");
             InitializeTopics();
+            if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("role"))
+                Exec("ALTER TABLE windows ADD COLUMN role TEXT; ALTER TABLE windows ADD COLUMN new_session_pending INTEGER NOT NULL DEFAULT 0");
+            InitializeManagedMcps();
+            InitializeManagedSkills();
             Exec("CREATE TABLE IF NOT EXISTS copilot_session_archives(session TEXT PRIMARY KEY)");
             bool customPaths = CustomPaths;
             // 旧库可能保存了目录但还没有 custom_paths。普通重开应沿用当时的路径与交接模式。
@@ -62,6 +70,10 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
                 Exec("ALTER TABLE inbox ADD COLUMN created_at TEXT");
             if (!Read("PRAGMA table_info(inbox)", row => row.GetString(1)).Contains("acknowledged"))
                 Exec("ALTER TABLE inbox ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0");
+            if (!Read("PRAGMA table_info(inbox)", row => row.GetString(1)).Contains("wake_requested"))
+                Exec("ALTER TABLE inbox ADD COLUMN wake_requested INTEGER NOT NULL DEFAULT 0");
+            InitializeFederation();
+            Exec("CREATE INDEX IF NOT EXISTS inbox_wake_target ON inbox(target) WHERE wake_requested=1 AND state='pending' AND acknowledged=0");
             Exec("CREATE INDEX IF NOT EXISTS inbox_topic_recent ON inbox(topic_id); CREATE INDEX IF NOT EXISTS inbox_source_recent ON inbox(source)");
             if (!customPaths) ConfigureHandoffs(keepHandoffs ? CurrentHandoffs(handoffs) : handoffs);
             Exec("DELETE FROM settings WHERE key='backup_source'");

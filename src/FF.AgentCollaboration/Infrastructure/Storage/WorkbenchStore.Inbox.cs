@@ -11,7 +11,7 @@ internal sealed partial class WorkbenchStore
     private const string InboxColumns = """
         id,target,sender,text,files,document,return_hint,state,document_ref,
         (SELECT t.name FROM windows s JOIN topics t ON t.id=s.topic_id
-         WHERE s.id=inbox.source AND s.topic_id<>inbox.topic_id),source,acknowledged
+         WHERE s.id=inbox.source AND s.topic_id<>inbox.topic_id),source,acknowledged,reply_to,final_reply
         """;
 
     private Func<SqliteDataReader, InboxItem> ReadInboxItem()
@@ -24,7 +24,7 @@ internal sealed partial class WorkbenchStore
             string? path = managed ? DocumentPath(directory, reference ?? row.GetString(0)) : reference;
             return new(row.GetString(0), row.GetString(1), row.GetString(2), row.GetString(3),
                 JsonSerializer.Deserialize<string[]>(row.GetString(4))!, path, Optional(row, 6), row.GetString(7))
-            { ProjectDocument = !managed && reference != null, FromTopic = Optional(row, 9), Source = row.GetString(10), Acknowledged = row.GetBoolean(11) };
+            { ProjectDocument = !managed && reference != null, FromTopic = Optional(row, 9), Source = row.GetString(10), Acknowledged = row.GetBoolean(11), ReplyTo = Optional(row, 12), FinalReply = row.IsDBNull(13) ? null : row.GetBoolean(13) };
         };
     }
 
@@ -49,7 +49,7 @@ internal sealed partial class WorkbenchStore
     }
 
     internal InboxItem Send(string grant, string targetAddress, string message, IReadOnlyList<string> files,
-        string? returnHint, string? document, bool supersedePrevious)
+        string? returnHint, string? document, bool supersedePrevious, string? replyTo = null, bool finalReply = true)
     {
         InboxItem? record = null;
         string? createdDocument = null;
@@ -59,6 +59,14 @@ internal sealed partial class WorkbenchStore
             {
                 var source = Caller(grant);
                 var target = Recipient(source, targetAddress);
+                string? parent = null;
+                if (replyTo != null)
+                {
+                    var task = ReceivedTaskFor(source.Id,replyTo);
+                    if (task.Source!=target.Id) throw new WorkbenchError("回信目标应为原发件窗口",WorkbenchFailure.Forbidden);
+                    RecordTaskReply(task, finalReply);
+                    parent = task.Id;
+                }
                 string? reference = document == null ? null : ProjectMarkdown(source.Project, Topic(source.TopicId).Folder, document);
                 string[] attachments = files.Select(file => ProjectFolders.Attachment(source.Project, file)).ToArray();
                 string id = Guid.NewGuid().ToString("N");
@@ -82,14 +90,14 @@ internal sealed partial class WorkbenchStore
                     summary = string.Join(' ', message.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
                     summary = summary.Length > 220 ? summary[..220] + "…" : summary;
                 }
-                if (supersedePrevious) Supersede(source.Id, target.Id);
+                if (supersedePrevious && replyTo == null) Supersede(source.Id, target.Id);
                 Exec("""
-                    INSERT INTO inbox(id,source,target,sender,text,files,document,return_hint,state,document_ref,topic_id,created_at)
-                    VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6,$p7,'pending',$p8,$p9,CURRENT_TIMESTAMP)
+                    INSERT INTO inbox(id,source,target,sender,text,files,document,return_hint,state,document_ref,topic_id,created_at,wake_requested,work_state,reply_to,final_reply)
+                    VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6,$p7,'pending',$p8,$p9,CURRENT_TIMESTAMP,$p10,$p11,$p12,$p13)
                     """, id, source.Id, target.Id, source.Name, summary, JsonSerializer.Serialize(attachments), longMessage, returnHint,
-                    managedReference ?? reference, target.TopicId);
+                    managedReference ?? reference, target.TopicId, target.AutoReceive && Topic(target.TopicId).Status == "active", parent == null ? "queued" : null, parent, parent == null ? null : (bool?)finalReply);
                 record = new(id, target.Id, source.Name, summary, attachments, createdDocument ?? reference, returnHint, "pending")
-                { ProjectDocument = reference != null, QueueHint = QueueHint(target) };
+                { ProjectDocument = reference != null, QueueHint = QueueHint(target), ReplyTo = parent, FinalReply = parent == null ? null : finalReply };
             });
             return record!;
         }
@@ -129,23 +137,30 @@ internal sealed partial class WorkbenchStore
 
     // [T05] 重发只产生新的待投递记录。权限、目标及原始内容在同一事务中确定。
     internal InboxItem Resend(string grant, string originalId, string? target, bool supersedePrevious)
+        => ResendFrom(()=>Caller(grant),originalId,target,supersedePrevious);
+
+    internal InboxItem ResendLocal(string originalId) =>
+        ResendFrom(()=>Window(Preview(originalId).Source ?? ""), originalId, null, false);
+
+    private InboxItem ResendFrom(Func<AgentWindow> sender, string originalId, string? target, bool supersedePrevious)
     {
         InboxItem? record = null;
         Atomic(() =>
         {
-            var source = Caller(grant);
+            var source = sender();
             var original = Read($"SELECT {InboxColumns} FROM inbox WHERE id=$p0 AND source=$p1",
                 ReadInboxItem(), originalId, source.Id).SingleOrDefault() ?? throw new WorkbenchError("只能重发自己发出的消息", WorkbenchFailure.Forbidden);
             var recipient = target == null ? Window(original.Target) : Recipient(source, target);
             if (original.ProjectDocument) ProjectMarkdown(source.Project, Topic(source.TopicId).Folder, original.Document!);
-            if (supersedePrevious) Supersede(source.Id, recipient.Id);
+            if (supersedePrevious && original.ReplyTo == null) Supersede(source.Id, recipient.Id);
             string id = Guid.NewGuid().ToString("N");
             Exec("""
-                INSERT INTO inbox(id,source,target,sender,text,files,document,return_hint,state,document_ref,topic_id,created_at)
+                INSERT INTO inbox(id,source,target,sender,text,files,document,return_hint,state,document_ref,topic_id,created_at,wake_requested,work_state,reply_to,final_reply)
                 SELECT $p1,source,$p2,sender,text,files,document,return_hint,'pending',
-                       CASE WHEN document=1 THEN coalesce(document_ref,id) ELSE document_ref END,$p3,CURRENT_TIMESTAMP
+                       CASE WHEN document=1 THEN coalesce(document_ref,id) ELSE document_ref END,$p3,CURRENT_TIMESTAMP,$p4,
+                       CASE WHEN work_state IS NOT NULL THEN 'queued' END,reply_to,final_reply
                 FROM inbox WHERE id=$p0
-                """, originalId, id, recipient.Id, recipient.TopicId);
+                """, originalId, id, recipient.Id, recipient.TopicId, recipient.AutoReceive && Topic(recipient.TopicId).Status == "active");
             record = original with { Id = id, Target = recipient.Id, State = "pending", Acknowledged = false, QueueHint = QueueHint(recipient) };
         });
         return record!;
@@ -158,6 +173,8 @@ internal sealed partial class WorkbenchStore
 
     internal string Cancel(string grant, string? id, string? target)
     {
+        string? remote=CancelPeer(grant,id,target);
+        if(remote!=null) return remote;
         string? cancelled = null;
         Atomic(() =>
         {
@@ -243,27 +260,57 @@ internal sealed partial class WorkbenchStore
                 (SELECT rowid FROM inbox WHERE source=w.id ORDER BY rowid DESC LIMIT $p1) WHERE w.topic_id=$p0
         )
         SELECT i.id,i.source,i.target,CASE WHEN s.topic_id<>$p0 THEN st.name||'/'||i.sender ELSE i.sender END,
-               CASE WHEN i.topic_id<>$p0 THEN tt.name||'/'||t.name ELSE t.name END,substr(i.text,1,96),i.state,strftime('%Y-%m-%dT%H:%M:%SZ',i.created_at),i.acknowledged
+               CASE WHEN i.topic_id<>$p0 THEN tt.name||'/'||t.name ELSE t.name END,substr(i.text,1,96),i.state,strftime('%Y-%m-%dT%H:%M:%SZ',i.created_at),i.acknowledged,
+               i.document=1 OR i.document_ref IS NOT NULL,CASE WHEN i.acknowledged=0 THEN i.work_state END
         FROM recent r JOIN inbox i ON i.rowid=r.seq JOIN windows t ON t.id=i.target JOIN topics tt ON tt.id=i.topic_id
         LEFT JOIN windows s ON s.id=i.source LEFT JOIN topics st ON st.id=s.topic_id ORDER BY r.seq DESC LIMIT $p1
         """, row => new TimelineEntry(row.GetString(0), row.GetString(1), row.GetString(2), row.GetString(3),
-            row.GetString(4), row.GetString(5), row.GetString(6), Optional(row, 7), row.GetBoolean(8)), topic, recent);
+            row.GetString(4), row.GetString(5), row.GetString(6), Optional(row, 7), row.GetBoolean(8), row.GetBoolean(9),Optional(row,10)), topic, recent);
 
     internal InboxItem Pending(string target, string id) => Read($"""
         SELECT {InboxColumns} FROM inbox WHERE id=$p0 AND target=$p1 AND state='pending' AND acknowledged=0
         """, ReadInboxItem(), id, target).SingleOrDefault() ?? throw new WorkbenchError("这条消息已处理或不存在", WorkbenchFailure.Conflict);
+    internal List<string> WakeTargets() => Read("""
+        SELECT DISTINCT i.target FROM inbox i JOIN windows w ON w.id=i.target JOIN topics t ON t.id=w.topic_id
+        WHERE i.wake_requested=1 AND i.state='pending' AND i.acknowledged=0
+          AND w.closed=0 AND w.online=0 AND w.auto_receive=1 AND t.status='active'
+        """, row => row.GetString(0));
+
+    internal bool TakeWake(string target) => Exec("""
+        UPDATE inbox SET wake_requested=0 WHERE target=$p0 AND wake_requested=1 AND state='pending' AND acknowledged=0
+          AND EXISTS (SELECT 1 FROM windows w JOIN topics t ON t.id=w.topic_id WHERE w.id=$p0 AND w.closed=0
+                      AND w.online=0 AND w.auto_receive=1 AND t.status='active')
+        """, target) > 0;
+
+    internal void ClearWake(string target) => Exec("UPDATE inbox SET wake_requested=0 WHERE target=$p0 AND wake_requested=1", target);
+
     internal List<InboxItem> Automatic() => Read($"""
         SELECT {InboxColumns} FROM inbox WHERE rowid IN (
             SELECT min(i.rowid) FROM inbox AS i JOIN windows AS w ON w.id=i.target JOIN topics t ON t.id=i.topic_id AND t.status='active'
             WHERE i.state='pending' AND i.acknowledged=0 AND w.closed=0 AND w.online=1 AND w.auto_receive=1 GROUP BY i.target
         ) ORDER BY rowid
         """, ReadInboxItem());
-    internal bool ClaimMessage(string id, bool automatic) => Exec("""
-        UPDATE inbox SET state='writing' WHERE id=$p0 AND state='pending' AND acknowledged=0 AND EXISTS(
+    internal bool ClaimMessage(string id, bool automatic, bool immediate = false)
+    {
+        bool claimed=false;
+        Atomic(()=>
+        {
+            var found=Read("SELECT i.target FROM fed_incoming f JOIN inbox i ON i.id=f.local WHERE f.local=$p0",r=>r.GetString(0),id).SingleOrDefault();
+            bool dedicated=found!=null && DedicatedReader(found);
+            if(dedicated && CurrentPeerRequest(found!)!=null) return;
+            claimed=Exec("""
+        UPDATE inbox SET state='writing',wake_requested=0 WHERE id=$p0 AND state='pending' AND acknowledged=0 AND EXISTS(
             SELECT 1 FROM windows JOIN topics t ON t.id=windows.topic_id WHERE windows.id=inbox.target AND closed=0 AND online=1
-            AND ($p1=0 OR (auto_receive=1 AND t.status='active'))
+            AND ($p1=0 OR (auto_receive=1 AND t.status='active' AND ($p2=0 OR receive_mode='immediate')))
         )
-        """, id, automatic) == 1;
+        """, id, automatic, immediate) == 1;
+            if(claimed && dedicated) Exec("UPDATE fed_incoming SET active=1 WHERE local=$p0",id);
+        });
+        return claimed;
+    }
     internal void FinishMessage(string id, string state) =>
         Exec("UPDATE inbox SET state=$p1 WHERE id=$p0 AND state='writing'", id, state);
+
+    internal bool ConfirmLateReceipt(string id) =>
+        Exec("UPDATE inbox SET state='delivered' WHERE id=$p0 AND state='delivery_uncertain' AND acknowledged=0", id) == 1;
 }

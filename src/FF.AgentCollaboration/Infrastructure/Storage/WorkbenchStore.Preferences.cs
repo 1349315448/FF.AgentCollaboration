@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FF.AgentCollaboration.Domain;
+using FF.AgentCollaboration.Infrastructure.Files;
 
 namespace FF.AgentCollaboration.Infrastructure.Storage;
 
@@ -31,6 +32,15 @@ internal sealed partial class WorkbenchStore
     {
         string? saved = Read("SELECT value FROM settings WHERE key='projects'", row => row.GetString(0)).SingleOrDefault();
         return saved == null ? [] : JsonSerializer.Deserialize<string[]>(saved) ?? [];
+    }
+
+    internal string RegisteredProject(string requested)
+    {
+        if (string.IsNullOrWhiteSpace(requested) || !Path.IsPathFullyQualified(requested) || requested.StartsWith(@"\\") || requested.StartsWith("//"))
+            throw new WorkbenchError("请选择工作台中的本地项目", WorkbenchFailure.Forbidden);
+        string canonical = Path.TrimEndingDirectorySeparator(Path.GetFullPath(requested));
+        return ProjectList().Paths.FirstOrDefault(path => ProjectFolders.Same(path, canonical))
+        ?? throw new WorkbenchError("项目尚未添加或已移除", WorkbenchFailure.Forbidden);
     }
 
     // [T13] 已打开的选项卡按用户顺序排在前面；话题和未关闭窗口补齐旧库中的项目。

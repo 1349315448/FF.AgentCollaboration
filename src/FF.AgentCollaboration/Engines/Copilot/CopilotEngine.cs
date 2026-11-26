@@ -182,19 +182,17 @@ internal sealed class CopilotEngine(string cwd) : RpcEngine
         if (window.Effort != null) args.AddRange(["--reasoning-effort", window.Effort]);
         if (window.Mode == "agent") args.Add("--mode=interactive");
         if (window.Mode == "autopilot") args.Add("--autopilot");
+        if (window.Approval == "auto") args.Add("--allow-all-tools");
         var config = JsonSerializer.Serialize(new
         {
-            mcpServers = new
-            {
-                lx_collab = new
+            mcpServers = mcp.Servers("copilot", new
                 {
                     type = "local",
                     command = mcp.Command,
                     args = mcp.Arguments,
                     tools = mcp.Tools,
                     env = new { LX_P0_WINDOW_GRANT = "${LX_P0_WINDOW_GRANT}" }
-                }
-            }
+                })
         });
         args.AddRange(["--additional-mcp-config", config, "--allow-tool=lx_collab"]);
         return args;

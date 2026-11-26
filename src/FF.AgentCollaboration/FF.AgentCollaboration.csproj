@@ -9,9 +9,12 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Tomlyn" Version="2.11.1" />
+    <PackageReference Include="YamlDotNet" Version="16.3.0" />
     <PackageReference Include="Microsoft.Windows.Console.ConPTY" Version="1.25.261109001" GeneratePathProperty="true" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <None Include="../../LICENSE" Link="LICENSE" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <None Include="../../docs/licenses/YamlDotNet.txt" Link="licenses/YamlDotNet.txt" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Update="启动工作台.bat" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Update="Skills/ff-agent-collab/SKILL.md" TargetPath="ff-agent-collab/SKILL.md"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
@@ -31,7 +34,9 @@
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
-  <Target Name="LegacyReleaseEntryPoints" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+  <Target Name="LegacyReleaseEntryPoints" AfterTargets="Build"
+          Condition="'$(Configuration)' == 'Release' and
+                     ($(RuntimeIdentifier.StartsWith('win-')) or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))))">
     <ItemGroup>
       <CompatFile Include="exe;dll;deps.json;runtimeconfig.json" />
     </ItemGroup>

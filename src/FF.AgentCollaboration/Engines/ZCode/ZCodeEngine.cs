@@ -103,10 +103,10 @@ internal sealed class ZCodeEngine(string cwd) : Engine
         var server = new { type = "stdio", command = mcp.Command, args = mcp.Arguments, enabled = true, protocolVersion = "legacy" };
         var config = Path.Combine(directory, "config.json");
         TopicArchive.CheckPath(config);
-        File.WriteAllText(config, JsonSerializer.Serialize(new
-        {
-            features = new { mcp = true }, storage = new { sessionDbPath = database }, mcp = new { servers = new { lx_collab = server } }
-        }));
+        var settings=new Dictionary<string,object> { ["features"]=new {mcp=true}, ["storage"]=new {sessionDbPath=database},
+            ["mcp"]=new {servers=mcp.Servers("zcode",server)} };
+        if(mcp.ExtraSkillRoot!=null) settings["skills"]=new {roots=new[]{mcp.ExtraSkillRoot}};
+        File.WriteAllText(config,JsonSerializer.Serialize(settings));
         var environment = new Dictionary<string, string>
         {
             ["USERPROFILE"] = profile,

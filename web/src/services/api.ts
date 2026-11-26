@@ -1,8 +1,12 @@
+import {pageId} from "./workbenchPage";
+
 interface RequestOptions { method?: string; body?: unknown; signal?: AbortSignal }
 export async function request<T = unknown>(path: string, { method = "GET", body, signal }: RequestOptions = {}): Promise<T> {
-  const options: RequestInit = { method, signal };
+  const headers = new Headers();
+  const options: RequestInit = { method, signal, headers };
+  if (method !== "GET" && pageId) headers.set("X-FF-View", pageId);
   if (body != null) {
-    options.headers = { "Content-Type": "application/json" };
+    headers.set("Content-Type", "application/json");
     options.body = JSON.stringify(body);
   }
   const response = await fetch("/api" + path, options);

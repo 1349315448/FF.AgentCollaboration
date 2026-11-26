@@ -5,6 +5,7 @@ export function SetupDialog() {
         <header className="dialog-header"><h2 id="setup-title">初始化 FF.Agent 工作台</h2></header>
         <div className="dialog-body">
           <p className="setup-intro">选择三个存储目录。点击初始化后将创建数据库并打开工作台。</p>
+          <label>本端节点名称<input id="setup-node-name" maxLength={60} required autoComplete="off"/></label>
           <div id="setup-paths"></div>
           <p className="form-error" id="setup-error" role="alert" hidden></p>
         </div>

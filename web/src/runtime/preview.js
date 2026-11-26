@@ -1,4 +1,5 @@
 import { request } from "../services/api";
+import { copyText } from "../services/clipboard";
 import { byId } from "./dom.js";
 import { canIgnore } from "./pane.js";
 import { refresh, refreshing } from "./workbench.js";
@@ -31,8 +32,10 @@ function showPreview(item) {
   dialog.showModal();
 }
 byId("copy-preview").addEventListener("click", async () => {
-  await navigator.clipboard.writeText(byId("preview-content").textContent);
-  byId("copy-preview").textContent = "已复制";
+  try {
+    await copyText(byId("preview-content").textContent);
+    byId("copy-preview").textContent = "已复制";
+  } catch (e) { byId("preview-status").textContent = e.message; }
 });
 
 export { showPreview };
