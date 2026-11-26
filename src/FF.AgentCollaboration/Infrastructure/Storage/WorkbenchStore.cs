@@ -79,6 +79,13 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
             Exec("DELETE FROM settings WHERE key='backup_source'");
             Exec("UPDATE windows SET grant_hash=NULL, online=0 WHERE online=1 OR grant_hash IS NOT NULL");
             Exec("UPDATE inbox SET state='delivery_uncertain' WHERE state='writing'");
+            if (!Read("PRAGMA table_info(inbox)", row => row.GetString(1)).Contains("native_offer"))
+                Exec("ALTER TABLE inbox ADD COLUMN native_offer TEXT");
+            if (!Read("PRAGMA table_info(inbox)", row => row.GetString(1)).Contains("native_offered_at"))
+                Exec("ALTER TABLE inbox ADD COLUMN native_offered_at INTEGER");
+            if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("channel_confirmed"))
+                Exec("ALTER TABLE windows ADD COLUMN channel_confirmed INTEGER NOT NULL DEFAULT 0");
+            Exec("UPDATE inbox SET native_offer=NULL WHERE state='pending' AND native_offer IN ('queued','immediate')");
         });
         foreach (var topic in Topics().Where(topic => topic.Folder == null))
             Atomic(() =>

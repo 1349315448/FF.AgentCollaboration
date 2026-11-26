@@ -34,6 +34,19 @@ test("CodeBuddy palette-243 prediction with a hardware caret allows a receipt", 
   assert.equal((await inspect(grey(label), {engine:"qwen"})).empty, false);
 });
 
+test("CodeBuddy recognizes styled predictions with the hardware caret, including the remote console palette", async () => {
+  const suggestion = "Check queued reply delivery status";
+  for (const style of ["\x1b[90m", "\x1b[38;2;85;87;83m", "\x1b[2m"]) {
+    const muted = style + suggestion + "\x1b[0m";
+    assert.equal((await inspect(muted)).empty, true, "muted native prediction");
+    assert.equal((await inspect(muted + "我补充的字")).draft, true, "mixed human draft");
+    assert.equal((await inspect(muted, {x:9})).draft, true, "caret inside text");
+  }
+  assert.equal((await inspect(suggestion)).draft, true, "human text after pressing Home");
+  assert.equal((await inspect(" ".repeat(95) + "↵ send", {sendHint:false})).empty, true, "right aligned send badge only");
+  assert.equal((await inspect("↵ send", {sendHint:false})).draft, true, "typed badge text");
+});
+
 test("CodeBuddy accepts a busy input only at the native framed editor and identifies the steer queue", async () => {
   const run = "✹ Adapting… (11s · waiting for model)";
   const tip = "  └ Tip: Start with small features\r\n    and verify changes";

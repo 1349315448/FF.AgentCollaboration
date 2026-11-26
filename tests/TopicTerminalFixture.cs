@@ -57,6 +57,7 @@ class TopicTerminalFixture
     {
         if (args.Length > 0 && (args[0] == "login" || args[0] == "auth" || args[0] == "status")) { Environment.ExitCode = WorkbenchEngineFixture.Main(args); return; }
         if (args.Contains("--version")) { Console.WriteLine("fixture 2.1"); return; }
+        if (args.Contains("--help") && File.Exists("channel.fixture")) { Console.WriteLine("--channels <value>"); return; }
         if (args.Contains("--help") || args.Contains("--stdio")) { WorkbenchEngineFixture.Main(args); return; }
         if (args.Contains("app-server")) { WorkbenchEngineFixture.AppServer(); return; }
         if (args.Contains("--headless")) { WorkbenchEngineFixture.Main(args); return; }
@@ -82,6 +83,7 @@ class TopicTerminalFixture
         System.Threading.Timer statusTicker = null;
         bool replaceOnKey = false;
         Action draw = () => {
+            if (File.Exists("channel.fixture")) File.WriteAllText("draft-observed.txt", draft);
             string cursor = newline ? "4;2" : "1;" + Math.Min(40, 3 + draft.Length);
             string content = "› " + (draft.Length == 0 ? "\x1b[2mAsk Codex to do anything\x1b[22m" : draft);
             if (newline)
@@ -118,7 +120,7 @@ class TopicTerminalFixture
                     native == "qoder" ? "Generating… (esc to cancel)" : "∴ Thinking...";
                 string suggested = draft.Length > 0 ? draft : native == "qwen"
                     ? "\x1b[4m再\x1b[24;38;2;108;112;134m测试一下投递 @码农GPT\x1b[0m"
-                    : native == "codebuddy" ? "\x1b[38;5;243mCheck reply delivery status\x1b[39m    ↵ send"
+                    : native == "codebuddy" ? "\x1b[90mCheck queued reply delivery status\x1b[39m    ↵ send"
                     : "\x1b[7m查\x1b[0;2m询回执投递状态\x1b[0m";
                 content = (busy ? indicator : "✓ Worked for 15s") + "\r\n──────────────────────────\r\n> " + suggested +
                     "\r\n──────────────────────────\r\n" + (native == "qwen" ? "qwen4-max · 1.0m Context 1.9% used" :

@@ -14,7 +14,7 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 
 `MSG_ID` 标识本条消息，`FROM_AGENT` 是来源，`MSG` 是正文。`SUMMARY` 配合 `HANDOFF_DOC` 指向交接文档，`ATTACH_FILES` 列出附带路径，`RETURN_HINT` 说明回送要求。关联回信的 `REPLY_TO` 指向原任务，`REPLY_KIND` 区分进展和最终结果。遇到 `EXTERNAL_COLLAB_POLICY: READ_ONLY`，仅审阅并回信，禁止写文件、提交或推送。
 
-投递成功返回 `queued`，终端确认提交后显示已送达。协作状态独立记录。开始处理某条任务时上报 `working`；无须回信的任务做完后上报 `completed`，要求回信的任务用关联的最终结果结案。同一窗口收到多个任务时，逐条使用各自的 MSG_ID。普通回信无须再次回执。
+发送后返回 `queued`。收到原生信箱通知时，调用 `receive_message` 领取对应的完整消息；也可不传编号领取最早可收取的一封。返回 null 时结束本次检查。工具响应写出后，工作台登记已送达。协作状态独立记录。开始处理某条任务时上报 `working`；无须回信的任务做完后上报 `completed`，要求回信的任务用关联的最终结果结案。同一窗口收到多个任务时，逐条使用各自的 MSG_ID。普通回信无须再次回执。
 
 ## 3. MCP 接口
 
@@ -27,6 +27,7 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 | `send_to_agent` 重发／撤回 | resend 为自己原消息的完整 ID，可附 target 改投；原文档与附件复用。cancel 传完整 ID，或传 true 加 target 撤回最近一条可撤回消息。 | 重发返回新的 queued 编号；撤回返回 id、status 为 cancelled |
 | `report_task_status` | 必填 messageId、status，两者为字符串。status 取 working 或 completed；只对本窗口实际收到的任务有效。 | `{"status":"working"}` 或 `{"status":"completed"}` |
 | `read_handoff_doc` | 必填字符串 pathOrId，使用实际 HANDOFF_DOC 路径、完整编号或唯一的 8 位 MSG_ID。 | Markdown 正文 |
+| `receive_message` | 可传通知内的完整 messageId 和 channelReceipt。空参数领取本窗口最早可接收的消息。 | 含 id、message 的信封，或 null |
 | `finish_topic` | 必填字符串 summary，最多 2000 字符。仅在获准结束当前话题时调用。 | 含 id、status、summary 的对象 |
 | `read_collaboration_skill` | 空对象 | 当前运行目录中的本手册原文 |
 
@@ -36,6 +37,7 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 
 ```jsonl
 {"name":"list_windows","arguments":{"detail":true,"allTopics":true}}
+{"name":"receive_message","arguments":{}}
 {"name":"send_to_agent","arguments":{"target":"@接口","message":"请核对协议版本与兼容性","document":"docs/protocol.md","autoReturnHint":true}}
 {"name":"send_to_agent","arguments":{"target":"@接口","message":"另查错误码的覆盖范围","supersedePrevious":false}}
 {"name":"report_task_status","arguments":{"messageId":"1258ab45","status":"working"}}

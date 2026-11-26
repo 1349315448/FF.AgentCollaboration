@@ -254,6 +254,9 @@ function updatePane(pane, view) {
   autoReceive.checked = agent.autoReceive;
   const receiveMode = pane.element.querySelector(".receive-mode");
   receiveMode.value = agent.receiveMode ?? "queued";
+  receiveMode.title = view.nativeInbox
+    ? "优先向当前会话直投。首次连接未获确认时，兼容投递会等待输入框安全。"
+    : "兼容投递：原生建议视为空框；已输入的草稿或审批会暂缓投递。";
   receiveMode.hidden = !agent.receiveMode;
   receiveMode.disabled = !agent.receiveMode || !agent.autoReceive;
   if (!agent.online) pane.element.querySelector(".shortcut-menu:popover-open")?.hidePopover();
@@ -261,11 +264,13 @@ function updatePane(pane, view) {
   pane.message = message;
   const prefix = message?.fromTopic ? "跨话题 · " + message.fromTopic + " · " : "";
   const label = message?.state === "delivery_uncertain" ? "送达待核对" : "消息";
+  const receipt = message?.state !== "pending" || !agent.online ? "" : message.nativeOffer ? " · 等待会话领取" :
+    !agent.autoReceive ? " · 自动接收已关闭" : !view.nativeInbox && !view.inputReady ? " · 等待终端可接收" : "";
   presentPane(pane, {
     id: agent.id, name: agent.name, project: agent.project, engine: engineNames[agent.engine], online: agent.online, powerAction:pane.presentation?.powerAction,
     status: activity === "offline" ? "未启动" : activity === "waiting" ? "待处理" : activityLabels[activity],
     exitText: !agent.online ? view.wakeError || (view.terminal ? "终端已退出" + (view.exitCode ? "（" + view.exitCode + "）" : "") : "") : "",
-    caption: message ? prefix + "来自 @" + message.from + " 的" + label + (inbox.length > 1 ? " · " + inbox.length + " 条" : "") : "",
+    caption: message ? prefix + "来自 @" + message.from + " 的" + label + receipt + (inbox.length > 1 ? " · " + inbox.length + " 条" : "") : "",
     inboxState: message?.state, inboxCount: inbox.length, ignoreCount: inbox.filter(canIgnore).length, canIgnore: !!message && canIgnore(message)
   });
 }

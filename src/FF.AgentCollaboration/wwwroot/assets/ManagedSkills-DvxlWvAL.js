@@ -1,4 +1,4 @@
-import{h as re,c as a,r as u,j as t,e as X}from"./index-osrFdj-i.js";import{R as de,C as M}from"./ResourceCatalog-Bb3LDzb2.js";import{a as Y}from"./MarkdownBody-DVoTJlv9.js";import"./_commonjsHelpers-CqkleIqs.js";const m="/managed-skills",te=(o="my-skill")=>`---
+import{h as re,c as a,r as u,j as t,e as X}from"./index-owymes62.js";import{R as de,C as M}from"./ResourceCatalog-BIu72gQF.js";import{a as Y}from"./MarkdownBody-CuXiYKtM.js";import"./_commonjsHelpers-CqkleIqs.js";const m="/managed-skills",te=(o="my-skill")=>`---
 name: `+o+`
 description: 说明何时使用此技能
 ---

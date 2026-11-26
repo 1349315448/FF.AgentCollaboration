@@ -13,4 +13,4 @@ internal sealed record ChangeApproval(string? Terminal, string Approval);
 internal sealed record RenameAgent(string? Name);
 internal sealed record SelectProject(string? Path);
 
-internal sealed record MentionTarget(string SourceTerminal, string TargetId, string TargetTerminal);
+internal sealed record MentionTarget(string SourceTerminal, string TargetId, string? TargetTerminal = null);

@@ -60,7 +60,11 @@ internal sealed partial class WorkbenchStore
     internal void StartConfigured(AgentWindow w, string grant) => Atomic(() => { SaveConfiguration(w); Start(w, grant); });
 
     internal void Start(AgentWindow window, string grant) =>
-        Exec("UPDATE windows SET grant_hash=$p1,online=1,new_session_pending=0,session=$p2,session_title=$p3,approval=$p4 WHERE id=$p0 AND closed=0",
+        Exec("""
+            UPDATE inbox SET native_offer=CASE WHEN native_offer='manual' THEN 'manual' END,native_offered_at=unixepoch()
+            WHERE target=$p0 AND state='pending' AND native_offer IS NOT NULL;
+            UPDATE windows SET grant_hash=$p1,online=1,new_session_pending=0,channel_confirmed=0,session=$p2,session_title=$p3,approval=$p4 WHERE id=$p0 AND closed=0
+            """,
             window.Id, Hash(grant), window.Session, window.SessionTitle, window.Approval);
     internal void RestoreSession(AgentWindow previous) =>
         Exec("UPDATE windows SET grant_hash=NULL,online=0,session=$p1,session_title=$p2,approval=$p3,new_session_pending=$p4 WHERE id=$p0 AND closed=0",
@@ -68,8 +72,14 @@ internal sealed partial class WorkbenchStore
     internal void Offline(string id) => Exec("UPDATE windows SET grant_hash=NULL,online=0 WHERE id=$p0", id);
     internal void StopWindow(string id) => Atomic(() => { ClearWake(id); Offline(id); });
     internal void Close(string id) => Exec("UPDATE windows SET grant_hash=NULL,online=0,closed=1 WHERE id=$p0", id);
-    internal void AutoReceive(string id, bool? enabled, string? mode) =>
+    internal void AutoReceive(string id, bool? enabled, string? mode) => Atomic(() =>
+    {
         Exec("UPDATE windows SET auto_receive=COALESCE($p1,auto_receive),receive_mode=COALESCE($p2,receive_mode) WHERE id=$p0 AND closed=0", id, enabled, mode);
+        Exec("""
+            UPDATE inbox SET native_offer=NULL WHERE target=$p0 AND state='pending' AND native_offer IN ('queued','immediate')
+            AND NOT EXISTS(SELECT 1 FROM windows w WHERE w.id=$p0 AND w.auto_receive=1 AND w.receive_mode=inbox.native_offer)
+            """,id);
+    });
     internal AgentWindow Caller(string grant) =>
         Read($"SELECT {AgentColumns} FROM windows WHERE grant_hash=$p0 AND online=1 AND closed=0", Agent, Hash(grant)).SingleOrDefault()
         ?? throw new WorkbenchError("Agent 连接已失效", WorkbenchFailure.Forbidden);

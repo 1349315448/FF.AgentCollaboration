@@ -35,10 +35,29 @@ internal abstract class Engine : IDisposable
     internal virtual Task<string> NewSession(string title, string? model, string? source, CancellationToken ct) =>
         Task.FromResult(Guid.NewGuid().ToString("D"));
     internal abstract List<string> NativeArguments(AgentWindow window, EngineMcp mcp, string? newTitle, string? forkSource);
-    internal virtual Task<TerminalLaunch> PrepareTerminal(AgentWindow window, EngineMcp mcp, string? newTitle,
-        string? forkSource, bool reopening, CancellationToken ct) =>
-        Task.FromResult(new TerminalLaunch(NativeArguments(window, mcp, newTitle, forkSource), TerminalEnvironment(window, mcp)));
+    internal virtual async Task<TerminalLaunch> PrepareTerminal(AgentWindow window, EngineMcp mcp, string? newTitle,
+        string? forkSource, bool reopening, CancellationToken ct)
+    {
+        var args = NativeArguments(window, mcp, newTitle, forkSource);
+        bool channels = false;
+        if (window.Engine == "codebuddy")
+        {
+            var (code, help) = await EngineAuthentication.Command(window.Engine, window.Project, ["--help"], ct);
+            channels = code == 0 && help.Contains("--channels ",StringComparison.Ordinal);
+        }
+        if (window.Engine == "claude")
+        {
+            // Claude 从 2.1.80 支持频道；部分版本的 --help 隐藏此预览参数。
+            var (code, version) = await EngineAuthentication.Command("claude",window.Project,["--version"],ct);
+            channels = code == 0 && Version.TryParse(version.Split(' ')[0],out var installed) && installed >= new Version(2,1,80);
+        }
+        if (channels) args.InsertRange(0,["--channels","server:lx_collab"]);
+        return new TerminalLaunch(args, TerminalEnvironment(window, mcp)) { NativeInbox = channels };
+    }
     public virtual void Dispose() { }
 }
 
-internal sealed record TerminalLaunch(List<string> Arguments, IReadOnlyDictionary<string, string>? Environment);
+internal sealed record TerminalLaunch(List<string> Arguments, IReadOnlyDictionary<string, string>? Environment)
+{
+    internal bool NativeInbox { get; init; }
+}

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useWorkbench, type Topic, type ProjectTotals } from "../../store/workbenchStore";
-import { navigation, projectKey } from "../../services/navigation";
+import { navigation, projectKey, remoteOnline } from "../../services/navigation";
 import { fitProjectPath } from "../../services/projectPath";
 import { TopicAgentList } from "./AgentNavigationItem";
 import { NavigationName } from "./NavigationName";
@@ -35,7 +35,7 @@ function TopicBranch({topic}:{topic:Topic}) {
   const {expanded,toggle}=useBranch("topic."+topic.id,selected);
   const {members, unread}=rosters.get(topic.id)!;
   const remotes=snapshot?.federation?.remotes.filter(r=>r.topicId===topic.id) ?? [];
-  const online=members.filter(m=>m.agent.online).length + remotes.filter(r=>r.connected && r.online).length;
+  const online=members.filter(m=>m.agent.online).length + remotes.filter(remoteOnline).length;
   const row=useRef<HTMLDivElement>(null);
   useEffect(()=>{if (selected) row.current?.scrollIntoView({block:"nearest",inline:"nearest"});},[selected]);
   return <li>
@@ -70,7 +70,7 @@ function ProjectBranch({path,total,topics}:{path:string;total:ProjectTotals;topi
   },[path]);
   const topicIds=new Set(topics.map(t=>t.id));
   const remotes=new Map(snapshot?.federation?.remotes.filter(r=>topicIds.has(r.topicId)).map(r=>[r.id,r]));
-  const active=total.agents-total.offline + [...remotes.values()].filter(r=>r.connected && r.online).length;
+  const active=total.agents-total.offline + [...remotes.values()].filter(remoteOnline).length;
   const description=path+" · "+total.topics+" 话题 · 工作 "+total.working+" · 空闲 "+total.idle+" · 离线 "+total.offline;
   return <li data-project={path}>
     <div className="tree-row project-button" data-key={key} id={current?"current-project":undefined}

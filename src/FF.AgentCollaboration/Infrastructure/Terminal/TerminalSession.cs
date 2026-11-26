@@ -112,6 +112,7 @@ internal sealed class TerminalSession : IDisposable
     }
 
     internal string Generation { get; } = Guid.NewGuid().ToString("N");
+    internal bool NativeInbox { get; init; }
     private bool unsubmittedNewSession;
     internal bool CanReopenEmpty { get { lock (outputLock) return unsubmittedNewSession; } }
     // 调用方在终端释放前注销等待。登录 CLI 可能先退出，ConPTY 的输出管道仍然打开。
@@ -346,11 +347,15 @@ internal sealed class TerminalSession : IDisposable
     internal bool CanDeliver(bool automatic, bool immediate = false)
     {
         lock (outputLock)
-            return Online && (!automatic || (mentionPickers.Count == 0 && bracketedPasteEnabled && pasteRevision == revision && !draftMayContainText &&
+        {
+            if (!Online || mentionPickers.Count != 0 || draftMayContainText) return false;
+            if (!automatic) return !screens.Values.Any(s => s.Revision == revision && s.Screen is "blocked" or "draft");
+            return bracketedPasteEnabled && pasteRevision == revision &&
                 ((ready.Values.Contains(revision) && Stopwatch.GetElapsedTime(lastActivity) >= Quiet) ||
                  (immediate && revision >= nextPromptRevision && Stopwatch.GetElapsedTime(lastKeyboardInput) >= Quiet &&
                   screens.Values.Any(s => s.Revision == revision && s.BusyInput) &&
-                  !screens.Values.Any(s => s.Revision == revision && (s.Screen is "blocked" or "draft" || s.Draft != null))))));
+                  !screens.Values.Any(s => s.Revision == revision && (s.Screen is "blocked" or "draft" || s.Draft != null))));
+        }
     }
 
     // 只有本次回车之后、原生队列明确显示当前编号，才算 CLI 已接手。

@@ -11,7 +11,7 @@ internal sealed partial class WorkbenchStore
     private const string InboxColumns = """
         id,target,sender,text,files,document,return_hint,state,document_ref,
         (SELECT t.name FROM windows s JOIN topics t ON t.id=s.topic_id
-         WHERE s.id=inbox.source AND s.topic_id<>inbox.topic_id),source,acknowledged,reply_to,final_reply
+         WHERE s.id=inbox.source AND s.topic_id<>inbox.topic_id),source,acknowledged,reply_to,final_reply,native_offer
         """;
 
     private Func<SqliteDataReader, InboxItem> ReadInboxItem()
@@ -24,7 +24,7 @@ internal sealed partial class WorkbenchStore
             string? path = managed ? DocumentPath(directory, reference ?? row.GetString(0)) : reference;
             return new(row.GetString(0), row.GetString(1), row.GetString(2), row.GetString(3),
                 JsonSerializer.Deserialize<string[]>(row.GetString(4))!, path, Optional(row, 6), row.GetString(7))
-            { ProjectDocument = !managed && reference != null, FromTopic = Optional(row, 9), Source = row.GetString(10), Acknowledged = row.GetBoolean(11), ReplyTo = Optional(row, 12), FinalReply = row.IsDBNull(13) ? null : row.GetBoolean(13) };
+            { ProjectDocument = !managed && reference != null, FromTopic = Optional(row, 9), Source = row.GetString(10), Acknowledged = row.GetBoolean(11), ReplyTo = Optional(row, 12), FinalReply = row.IsDBNull(13) ? null : row.GetBoolean(13), NativeOffer = Optional(row,14) };
         };
     }
 
@@ -287,27 +287,91 @@ internal sealed partial class WorkbenchStore
     internal List<InboxItem> Automatic() => Read($"""
         SELECT {InboxColumns} FROM inbox WHERE rowid IN (
             SELECT min(i.rowid) FROM inbox AS i JOIN windows AS w ON w.id=i.target JOIN topics t ON t.id=i.topic_id AND t.status='active'
-            WHERE i.state='pending' AND i.acknowledged=0 AND w.closed=0 AND w.online=1 AND w.auto_receive=1 GROUP BY i.target
+            WHERE i.state='pending' AND i.acknowledged=0 AND w.closed=0 AND w.online=1
+            AND (w.auto_receive=1 OR i.native_offer='manual') GROUP BY i.target
         ) ORDER BY rowid
         """, ReadInboxItem());
+    // 授权领取与送达分开。发给 CLI 的通知只包含编号，已撤回、停用或跨窗的消息始终不可领取。
+    internal bool OfferNativeMessage(InboxItem item, string mode) => Exec("""
+        UPDATE inbox SET native_offer=$p2,native_offered_at=unixepoch() WHERE id=$p0 AND target=$p1 AND state='pending' AND acknowledged=0
+        AND native_offer IS NOT $p2 AND (native_offer IS NOT 'manual' OR $p2='manual')
+        AND EXISTS(SELECT 1 FROM windows w JOIN topics t ON t.id=w.topic_id WHERE w.id=inbox.target
+            AND w.online=1 AND w.closed=0 AND ($p2='manual' OR (w.auto_receive=1 AND t.status='active' AND w.receive_mode=$p2)))
+        """,item.Id,item.Target,mode)>0;
+
+    private string? NativeOffer(string window, string? messageId)
+    {
+        if (DedicatedReader(window) && CurrentPeerRequest(window) != null) return null;
+        return Read("""
+        SELECT i.id FROM inbox i JOIN windows w ON w.id=i.target JOIN topics t ON w.topic_id=t.id
+        WHERE i.target=$p0 AND ($p1 IS NULL OR i.id=$p1) AND i.state='pending' AND i.acknowledged=0
+        AND w.online=1 AND w.closed=0 AND (i.native_offer='manual' OR
+            (i.native_offer=w.receive_mode AND w.auto_receive=1 AND t.status='active'))
+        ORDER BY i.rowid LIMIT 1
+        """,row=>row.GetString(0),window,messageId).SingleOrDefault();
+    }
+
+    internal string? NextNativeOffer(string grant) => NativeOffer(Caller(grant).Id,null);
+
+    internal InboxItem? TakeNativeMessage(string grant, string? messageId, bool fromChannel)
+    {
+        InboxItem? item = null;
+        Atomic(() =>
+        {
+            var window = Caller(grant);
+            var id = NativeOffer(window.Id,messageId);
+            if (id == null) return;
+            var pending = Pending(window.Id,id);
+            if (ClaimPending(pending))
+            {
+                Exec("UPDATE inbox SET native_offer='claimed',native_offered_at=unixepoch() WHERE id=$p0",id);
+                if (fromChannel) Exec("UPDATE windows SET channel_confirmed=1 WHERE id=$p0",window.Id);
+                item = pending;
+            }
+        });
+        return item;
+    }
+
+    // 频道推送只携带编号。只在本次启动尚未确认过频道且编号仍未领取时允许兼容路径认领。
+    internal bool AwaitingCompatibility(string id) => Read("""
+        SELECT 1 FROM inbox i JOIN windows w ON w.id=i.target WHERE i.id=$p0 AND i.state='pending'
+        AND i.acknowledged=0 AND w.channel_confirmed=0 AND i.native_offered_at<=unixepoch()-15
+        """, r=>r.GetInt32(0),id).Count != 0;
+
     internal bool ClaimMessage(string id, bool automatic, bool immediate = false)
     {
-        bool claimed=false;
-        Atomic(()=>
+        bool claimed = false;
+        Atomic(() =>
         {
-            var found=Read("SELECT i.target FROM fed_incoming f JOIN inbox i ON i.id=f.local WHERE f.local=$p0",r=>r.GetString(0),id).SingleOrDefault();
-            bool dedicated=found!=null && DedicatedReader(found);
-            if(dedicated && CurrentPeerRequest(found!)!=null) return;
-            claimed=Exec("""
-        UPDATE inbox SET state='writing',wake_requested=0 WHERE id=$p0 AND state='pending' AND acknowledged=0 AND EXISTS(
-            SELECT 1 FROM windows JOIN topics t ON t.id=windows.topic_id WHERE windows.id=inbox.target AND closed=0 AND online=1
-            AND ($p1=0 OR (auto_receive=1 AND t.status='active' AND ($p2=0 OR receive_mode='immediate')))
-        )
-        """, id, automatic, immediate) == 1;
-            if(claimed && dedicated) Exec("UPDATE fed_incoming SET active=1 WHERE local=$p0",id);
+            var pending = Read($"""
+                SELECT {InboxColumns} FROM inbox WHERE id=$p0 AND state='pending' AND acknowledged=0
+                AND EXISTS(SELECT 1 FROM windows w JOIN topics t ON t.id=w.topic_id
+                    WHERE w.id=inbox.target AND w.online=1 AND w.closed=0
+                    AND ($p1=0 OR (w.auto_receive=1 AND t.status='active' AND ($p2=0 OR w.receive_mode='immediate'))))
+                """,ReadInboxItem(),id,automatic,immediate).SingleOrDefault();
+            if (pending != null && (pending.NativeOffer == null || AwaitingCompatibility(id)))
+                claimed = ClaimPending(pending);
         });
         return claimed;
     }
+
+    private bool ClaimPending(InboxItem item)
+    {
+        bool reader = item.Source == "peer-mailbox" && DedicatedReader(item.Target);
+        if (reader && CurrentPeerRequest(item.Target) != null) return false;
+        Exec("UPDATE inbox SET state='writing',wake_requested=0 WHERE id=$p0",item.Id);
+        if (reader) Exec("UPDATE fed_incoming SET active=1 WHERE local=$p0",item.Id);
+        return true;
+    }
+
+    internal int ReconcileNativeClaims() => Exec("""
+        UPDATE inbox SET state='delivery_uncertain' WHERE native_offer='claimed' AND state='writing'
+          AND native_offered_at<=unixepoch()-30
+        """);
+
+    internal void FinishNativeMessage(string id, bool written) => Exec("""
+        UPDATE inbox SET state=$p1 WHERE id=$p0 AND native_offer='claimed' AND state IN ('writing','delivery_uncertain')
+        """,id,written ? "delivered" : "delivery_uncertain");
     internal void FinishMessage(string id, string state) =>
         Exec("UPDATE inbox SET state=$p1 WHERE id=$p0 AND state='writing'", id, state);
 

@@ -31,19 +31,21 @@ def verify(exe, case):
                     FF_TEST_WORKBENCH_EXE=str(exe), FF_TEST_WORKBENCH_STATE=str(state)):
         create_test = "--create" in sys.argv
         delivery_test = "--phase13" in sys.argv
+        buddy_inbox_test = "--buddy-inbox" in sys.argv
         inspector_test = "--inspector" in sys.argv
         git_test = "--git" in sys.argv
         mcp_test = "--mcps" in sys.argv
         skills_test = "--skills" in sys.argv
         expanded_test = "--expanded" in sys.argv
         if expanded_test: os.environ["CODEX_HOME"]=str(case / "receipt-home")
-        scoped = expanded_test or create_test or delivery_test or inspector_test or git_test or mcp_test or skills_test
+        scoped = buddy_inbox_test or expanded_test or create_test or delivery_test or inspector_test or git_test or mcp_test or skills_test
         with host(exe, state, case / "one" if scoped else None, knowledge=knowledge, initialize=scoped) as url:
             script = Path(__file__).with_name("check_managed_skills_ui.cjs" if skills_test else "check_managed_mcps.cjs" if mcp_test else "check_git_panel.cjs" if git_test else
                 "check_inspector.cjs" if inspector_test else "check_create.cjs" if create_test else "check_topics.cjs")
             # Individual assertions retain their deadlines. The full suite runs eight engines sequentially,
             # including 16 native restarts and five authenticated round trips between terminals.
-            subprocess.run(["node", script, url, exe, case, *(["--expanded"] if expanded_test else ["--phase13"] if delivery_test else [])], check=True, timeout=200 if scoped else 720)
+            flags = [flag for flag in ("--expanded", "--phase13", "--buddy-inbox") if flag in sys.argv]
+            subprocess.run(["node", script, url, exe, case, *flags], check=True, timeout=200 if scoped else 720)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 import { useRef, useLayoutEffect, useState, type ComponentProps } from "react";
 import { WorkspaceIcon } from "../layout/WorkspaceIcon";
-import { PendingPeers, MailApprovals, type PeerMail } from "../federation/Federation";
+import { MailApprovals, viewApplication, type PeerMail } from "../federation/Federation";
 import { useWorkbench, type TimelineEntry } from "../../store/workbenchStore";
 
 const receipts: Record<string,string> = {pending:"待接收", writing:"写入中", delivered:"已送达", delivery_uncertain:"待核对",ignored:"已忽略",accepted:"对端已接收",sent:"已发出",sending:"发送中",superseded:"已覆盖",cancelled:"已撤回",blocked:"已拦截"};
@@ -51,13 +51,15 @@ export function CollabLogSection() {
   const names:Record<string,string>={application:"接入申请",incoming:"外部来信",outgoing:"发往外部","reply-in":"外部回信","reply-out":"回信已发",blocked:"已拦截",audit:"变更告警"};
   function peerRow(m:PeerMail){
     const icon=mailIcons[m.kind] ?? "envelope";
-    const open=()=>openDocument(m.topicId,"peer:"+m.seq);
-    return <div className="log-document-row" key={"peer"+m.seq}><button type="button" className="timeline-entry fed-mail-row" data-kind={m.kind} onClick={open}>
+    const application=m.kind==="application" && pending.some(g=>g.id===m.source);
+    const open=()=>application?viewApplication(m.source):openDocument(m.topicId,"peer:"+m.seq);
+    return <div className={"log-document-row"+(application?" pending-application":"")} key={"peer"+m.seq}><button type="button" className="timeline-entry fed-mail-row" data-kind={m.kind} onClick={open}>
       <span className="log-time"><WorkspaceIcon name={icon}/>{timestamp(m.createdAt)}</span>
       <span className="log-route" title={names[m.kind]}>{m.label}</span><span title={m.text}>{m.text}</span>
       <span className="log-state" title={m.deliveryState ?? names[m.kind]}>{m.deliveryState ? receipts[m.deliveryState] ?? "投递失败" : "—"}</span>
       <WorkState state={m.workState}/>
-    </button>{m.hasDocument?<button aria-label="预览交接文档" onClick={open}><WorkspaceIcon name="docs"/></button>:<span aria-hidden="true"/>}</div>;
+    </button>{application?<button type="button" className="text-button" onClick={open}>查看</button>:
+      m.hasDocument?<button aria-label="预览交接文档" onClick={open}><WorkspaceIcon name="docs"/></button>:<span aria-hidden="true"/>}</div>;
   }
   const localRows=filter==="全部"?entries.filter(e=>e.source!=="peer-mailbox"&&!fed?.remotes.some(r=>r.id===e.source))
     .map(e=>({date:e.createdAt??"",row:<LogRow key={e.id} entry={e} topic={selectedTopicId!}/>})):[];
@@ -74,7 +76,6 @@ export function CollabLogSection() {
       {uncertain>0 && <span className="log-state" title="接收终端尚未确认提交，可展开日志核对">{uncertain} 条待核对</span>}
       {latest?.createdAt && <time className="log-time" dateTime={latest.createdAt}>{timestamp(latest.createdAt).slice(-8)}</time>}<span id="log-action">▾</span>
     </button>
-    <PendingPeers />
     <div className="fed-filters" aria-label="筛选信箱">{["全部","外部来信","待审申请"].map(value=>
       <button className="text-button" key={value} aria-pressed={filter===value} onClick={()=>{setFilter(value);see();}}>{value}</button>)}
       {filter!=="待审申请" && <span className="mail-column-labels"><span>投递状态</span><span>协作状态</span></span>}</div>

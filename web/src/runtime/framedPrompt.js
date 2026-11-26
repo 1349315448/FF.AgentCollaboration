@@ -61,19 +61,18 @@ function qwenQueuedId(lines, row, footer, buffer) {
 // Windows 千问在建议首字画下划线光标。草稿移到行首也有同样光标，须核对后面每个可见字。
 function ghostSuggestion(engine, buffer, row, start, editor, sendHint) {
   const cursor = buffer.getLine(buffer.baseY + row)?.getCell?.(start);
-  // CodeBuddy 2.186 用真实终端光标停在行首，整条建议（包括首字）都是调色板 243。
-  const palettePrediction = engine === "codebuddy" && sendHint && buffer.cursorY === row && buffer.cursorX === start &&
-    cursor?.isFgPalette() && cursor.getFgColor() === 243;
-  if (!palettePrediction && !(cursor?.isInverse() || (engine === "qwen" && cursor?.isUnderline()))) return false;
+  // 腾讯主题会将同一原生建议画成 243、亮黑、RGB 灰或弱化文字，硬件光标仍停在输入起点。
+  const hardwarePrediction = engine === "codebuddy" && sendHint && buffer.cursorY === row && buffer.cursorX === start && !cursor?.isInverse();
+  if (!hardwarePrediction && !(cursor?.isInverse() || (engine === "qwen" && cursor?.isUnderline()))) return false;
   if (!cursor.getChars() || !editor[0].startsWith(cursor.getChars())) return false;
   let mutedText = false;
   for (const [index, text] of editor.entries()) {
     if (!text) continue;
-    if (index && engine !== "qwen" && !palettePrediction) return false;
+    if (index && engine !== "qwen" && !hardwarePrediction) return false;
     const line = buffer.getLine(buffer.baseY + row + index);
     let x = index ? line.translateToString(true).search(/\S/) : start;
     let offset = 0;
-    if (!index && !palettePrediction) { x += cursor.getWidth(); offset = cursor.getChars().length; }
+    if (!index && !hardwarePrediction) { x += cursor.getWidth(); offset = cursor.getChars().length; }
     while (offset < text.length) {
       const cell = line.getCell(x++);
       if (!cell) return false;
@@ -84,9 +83,7 @@ function ghostSuggestion(engine, buffer, row, start, editor, sendHint) {
       if (!chars.trim()) continue;
       const fg = cell.getFgColor();
       const rgb = [fg >> 16, (fg >> 8) & 255, fg & 255];
-      if (palettePrediction) {
-        if (!cell.isFgPalette() || fg !== 243) return false;
-      } else if (!(cell.isDim() || (cell.isFgPalette() && fg === 8) ||
+      if (!(cell.isDim() || (cell.isFgPalette() && (fg === 8 || (hardwarePrediction && fg === 243))) ||
           (cell.isFgRGB() && Math.max(...rgb) <= 160 && Math.max(...rgb) - Math.min(...rgb) <= 32))) return false;
       mutedText = true;
     }
@@ -188,6 +185,8 @@ export function readFramedPrompt(engine, term, lines) {
   const cellLine = buffer.getLine(buffer.baseY + row);
   const cursorCell = cellLine?.getCell?.(x);
   const physicalStart = buffer.cursorY === row && (buffer.cursorX === x || (!text && buffer.cursorX === x + 1));
+  if (engine === "codebuddy" && physicalStart && editor.length === 1 && /^\s{4,}↵\s*(?:send|发送)\s*$/i.test(first.slice(x)) &&
+      first.length >= term.cols - 8) text = "";
   const atStart = physicalStart || !!cursorCell?.isInverse();
   const placeholder = zcode ? /^(?:Type a prompt|输入提示词)$/i :
     /^(?:Type your message or @path\/to\/file|Type your request, or \/usage|输入您的消息或 @ 文件路径|输入消息或 @path\/to\/file)$/i;

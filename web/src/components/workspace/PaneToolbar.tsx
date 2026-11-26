@@ -12,7 +12,7 @@ export function PaneToolbar() {
         <button className="text-button pane-approval" type="button" aria-label="切换审批" title="选择审批权限并启动或重启当前终端">切换审批</button>
         <div className="receive-controls">
           <label className="auto-receive"><input type="checkbox" role="switch" />自动接收</label>
-          <select className="receive-mode" aria-label="收件方式" title="排队等待空闲。立即接收会使用当前 CLI 的原生插话或队列，遇到草稿或审批时等待。">
+          <select className="receive-mode" aria-label="收件方式" title="立即接收会立即开放会话收件。排队接收在 Agent 待命时开放。两种方式都保留输入草稿。">
             <option value="queued">排队接收</option>
             <option value="immediate">立即接收</option>
           </select>

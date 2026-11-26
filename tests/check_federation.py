@@ -112,6 +112,9 @@ def verify(exe, case):
         msg = "/api/federation/messages"
         assert wire(msg,None,{})[0] == 401
         assert wire(msg,token,{"id":new_id(),"text":"hello"})[0] == 403
+        code, error = http(local, "/api/peers/remotes", {"topicId":topic,"link":link,"purpose":"本机验证"})
+        assert code == 409 and "本工作台" in error["error"], (code,error)
+        assert not http(local,"/api/peers")[1]["remotes"]
         remote = http(client, "/api/peers/remotes", {"topicId":target,"link":link,"purpose":"代码审阅"})[1]["id"]
         view = lambda url: http(url,"/api/peers")[1]
         g = until(lambda:view(local)["grants"],lambda ls: len(ls)==1)[0]

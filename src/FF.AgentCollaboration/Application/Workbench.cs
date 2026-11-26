@@ -31,7 +31,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             terminals.TryGetValue(agent.Id, out var terminal);
             var (online, inputReady, activity) = terminal?.ViewState() ?? (false, false, "offline");
             return new WindowView(agent with { Online = online }, terminal?.Generation, terminal?.ExitCode,
-                inputReady, activity, state.Inbox(agent.Id), wakeErrors.GetValueOrDefault(agent.Id), online && pendingMcps.ContainsKey(agent.Id));
+                inputReady, activity, state.Inbox(agent.Id), wakeErrors.GetValueOrDefault(agent.Id), online && pendingMcps.ContainsKey(agent.Id), terminal?.NativeInbox == true);
         }).ToArray();
         var byTopic = windows.ToLookup(w => w.Agent.TopicId);
         var topics = state.Topics().Select(topic =>
@@ -392,7 +392,8 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         try
         {
             terminals[window.Id] = new TerminalSession(window.Engine, executable, launch.Arguments,
-                ProjectFolders.Resolve(window.Project), grant, 100, 30, events.Changed, launch.Environment, engine.SubmissionReceipts(window));
+                ProjectFolders.Resolve(window.Project), grant, 100, 30, events.Changed, launch.Environment, engine.SubmissionReceipts(window))
+                { NativeInbox = launch.NativeInbox };
             state.AppliedMcps(window.Id, revision);
             return window with { Online = true };
         }
@@ -500,14 +501,32 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         try
         {
             var source = Terminal(id);
-            var target = Terminal(WorkbenchInput.Id(selection.TargetId));
-            if (id == selection.TargetId || !source.Online || !target.Online ||
-                source.Generation != selection.SourceTerminal || target.Generation != selection.TargetTerminal)
+            string targetId = WorkbenchInput.Id(selection.TargetId);
+            if (id == targetId || !source.Online || source.Generation != selection.SourceTerminal)
                 throw new WorkbenchError("窗口已离线或切换会话，请重新选择", WorkbenchFailure.Conflict);
             using var store = new WorkbenchStore(Root);
-            var peer = store.Window(selection.TargetId);
-            string prefix = store.Window(id).TopicId == peer.TopicId ? "" : store.Topic(peer.TopicId).Name + "/";
-            await source.Input(Encoding.UTF8.GetBytes("@" + prefix + peer.Name + " "), ct);
+            string topic = store.Window(id).TopicId;
+            var remotes = store.RemoteRecipients(topic).ToList();
+            string address;
+            if (selection.TargetTerminal == null)
+            {
+                var peer = remotes.FirstOrDefault(r => r.Id == targetId && r.Online && r.Connected)
+                    ?? throw new WorkbenchError("外部 Agent 已离线或授权已变更，请重新选择", WorkbenchFailure.Conflict);
+                bool sameName = remotes.Any(r => r.Id != peer.Id && r.AgentName.Equals(peer.AgentName, StringComparison.OrdinalIgnoreCase))
+                    || store.Windows().Any(w => w.TopicId == topic && w.Name.Equals(peer.AgentName, StringComparison.OrdinalIgnoreCase));
+                address = sameName || peer.AgentName != WorkbenchInput.AgentName(peer.AgentName) || peer.AgentName.StartsWith("reply-", StringComparison.Ordinal)
+                    ? peer.Id : peer.AgentName;
+            }
+            else
+            {
+                var target = Terminal(targetId);
+                if (!target.Online || target.Generation != selection.TargetTerminal)
+                    throw new WorkbenchError("窗口已离线或切换会话，请重新选择", WorkbenchFailure.Conflict);
+                var peer = store.Window(targetId);
+                bool qualify = topic != peer.TopicId || remotes.Any(r => r.AgentName.Equals(peer.Name, StringComparison.OrdinalIgnoreCase));
+                address = qualify ? store.Topic(peer.TopicId).Name + "/" + peer.Name : peer.Name;
+            }
+            await source.Input(Encoding.UTF8.GetBytes("@" + address + " "), ct);
         }
         finally { lifecycle.Release(); }
     }
@@ -519,8 +538,9 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         {
             using var state = new WorkbenchStore(Root);
             var message = state.Pending(id, WorkbenchInput.Id(request.MessageId));
-            if (!await Deliver(terminal, message, automatic: false, ct))
-                throw new WorkbenchError("终端已退出或这条消息已处理", WorkbenchFailure.Conflict);
+            if (terminal.NativeInbox) await OfferNative(state, terminal, message, "manual", ct);
+            else if (!await DeliverCompatible(state, terminal, message, false, state.Window(id).ReceiveMode == "immediate", ct, manualClick: true))
+                throw new WorkbenchError("等待终端可接收；人工草稿和审批会保留", WorkbenchFailure.Conflict);
             return;
         }
         if (string.IsNullOrEmpty(request.Text) || request.Text.Length > 8192 || request.Text.Any(char.IsControl))
@@ -543,14 +563,24 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         finally { lifecycle.Release(); }
     }
 
-    private async Task<bool> Deliver(TerminalSession terminal, InboxItem message, bool automatic, CancellationToken ct, bool immediate = false)
+    private async Task OfferNative(WorkbenchStore state, TerminalSession terminal, InboxItem message, string mode, CancellationToken ct)
     {
-        using var state = new WorkbenchStore(Root);
+        if (message.NativeOffer == mode || message.NativeOffer == "manual") return;
+        if (message.Source == "peer-mailbox") await state.BeginPeerAudit(message.Id,ct);
+        if (!state.OfferNativeMessage(message,mode)) return;
+        waking.TryRemove(new KeyValuePair<string,string>(message.Target, terminal.Generation));
+        events.Changed();
+    }
+
+    private async Task<bool> DeliverCompatible(WorkbenchStore state, TerminalSession terminal, InboxItem message,
+        bool automatic, bool immediate, CancellationToken ct, bool manualClick = false)
+    {
+        if (!terminal.CanDeliver(!manualClick, immediate)) return false;
+        if (message.Source == "peer-mailbox") await state.BeginPeerAudit(message.Id, ct);
         bool claimed = false;
         try
         {
-            if(message.Source=="peer-mailbox") await state.BeginPeerAudit(message.Id,ct);
-            bool written = await terminal.Deliver(message, automatic, () =>
+            bool delivered = await terminal.Deliver(message, !manualClick, () =>
             {
                 claimed = state.ClaimMessage(message.Id, automatic, immediate);
                 if (claimed)
@@ -560,8 +590,8 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
                 }
                 return claimed;
             }, ct, immediate);
-            if (written) state.FinishMessage(message.Id, "delivered");
-            return written;
+            if (delivered) state.FinishMessage(message.Id, "delivered");
+            return delivered;
         }
         catch
         {
@@ -587,6 +617,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
                 if (current != version) events.RefreshPages();
                 version = current;
                 var windows = state.Windows().ToDictionary(w => w.Id);
+                if (state.ReconcileNativeClaims() > 0) events.RefreshPages();
                 await state.CheckPeerAudits(id=>terminals.TryGetValue(id,out var t)?t.ViewState().Activity:"offline",stoppingToken);
                 foreach (var terminal in terminals.Values)
                     foreach (string message in terminal.ReconcileReceipts())
@@ -606,12 +637,21 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
                 foreach (var entry in state.Automatic())
                 {
                     if (!windows.TryGetValue(entry.Target, out var recipient) || !terminals.TryGetValue(entry.Target, out var terminal)) continue;
-                    bool immediate = recipient.ReceiveMode == "immediate";
-                    if (!terminal.CanDeliver(automatic: true, immediate)) continue;
-                    try { await Deliver(terminal, entry, automatic: true, stoppingToken, immediate); }
+                    if (!terminal.Online) continue;
+                    try
+                    {
+                        if (terminal.NativeInbox)
+                        {
+                            if (entry.NativeOffer != null && state.AwaitingCompatibility(entry.Id))
+                                await DeliverCompatible(state, terminal, entry, entry.NativeOffer != "manual", recipient.ReceiveMode == "immediate", stoppingToken);
+                            else if (recipient.ReceiveMode == "immediate" || terminal.ViewState().Activity == "idle")
+                                await OfferNative(state, terminal, entry, recipient.ReceiveMode, stoppingToken);
+                        }
+                        else await DeliverCompatible(state, terminal, entry, entry.NativeOffer != "manual", recipient.ReceiveMode == "immediate", stoppingToken);
+                    }
                     catch (Exception error) when (error is IOException or ObjectDisposedException or OperationCanceledException)
                     {
-                        logger.LogWarning("Terminal write outcome for {Message} could not be confirmed", entry.Id);
+                        logger.LogWarning("Delivery outcome for {Message} could not be confirmed", entry.Id);
                     }
                 }
             }

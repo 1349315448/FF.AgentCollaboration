@@ -99,6 +99,27 @@ async function run() {
       await until(()=>sql("SELECT state FROM inbox WHERE id=?",msg)[0][0]==="delivered","native session confirms exact body");
       console.log("PASS Codex native receipt awaiting, complete expanded draft, zero new frames, two Enters, one accepted message");return;
     }
+    if (process.argv.includes("--buddy-inbox")) {
+      const project = path.join(root,"one");
+      const post = async (route,data) => {
+        const result = await page.request.post(base+"/api"+route,{data});
+        assert(result.ok(),await result.text());return result.json();
+      };
+      fs.writeFileSync(path.join(project,"native-prompt.fixture"),"codebuddy");
+      fs.writeFileSync(path.join(project,"channel.fixture"),"");
+      const topic = await post("/topics",{name:"灰字与收件",project});
+      const target = await post("/windows",{topic:topic.id,name:"接收",engine:"codebuddy",newSession:true});
+      const sender = await post("/windows",{topic:topic.id,name:"发件",engine:"codex",newSession:true,project:path.join(root,"two")});
+      sql("UPDATE windows SET grant_hash=? WHERE id=?",crypto.createHash("sha256").update(token).digest("hex").toUpperCase(),sender.id);
+      await page.goto(base);
+      await page.waitForFunction(id=>window.panes?.get?.(id)?.view.inputReady,target.id);
+      const msg = mcp("send_to_agent",{target:target.id,message:"确认灰色建议不阻塞收件"}).id;
+      await until(()=>sql("SELECT state FROM inbox WHERE id=?",msg)[0][0]==="delivered","unconfirmed channel falls back on an empty CodeBuddy editor",35000);
+      assert.equal(logLines("one","accepted.txt").filter(line=>line.includes(msg.slice(0,8))).length,1);
+      assert.equal(logLines("one","enters.txt").length,1);
+      assert.equal(sql("SELECT channel_confirmed FROM windows WHERE id=?",target.id)[0][0],0);
+      console.log("PASS unconfirmed native channel falls back to CodeBuddy with grey suggestion and submits exactly once");return;
+    }
     if (process.argv.includes("--phase13")) {
       const create = async (route,data) => {
         const r=await page.request.post(base+"/api"+route,{data}); assert(r.ok(),await r.text()); return r.json();
@@ -629,7 +650,7 @@ async function run() {
     await page.evaluate(id => { window.beforeRename = panes.get(id).socket; }, left);
     await pane(left).getByRole("button", {name:"修改 Agent 名称"}).click();
     await page.locator("#rename-name").fill("测试");
-    await page.locator("#rename-form").getByRole("button", {name:"保存"}).click();
+    await page.locator("#agent-config-basic").getByRole("button", {name:"保存"}).click();
     await page.locator("#rename-error").filter({hasText:"同名"}).waitFor();
     await page.locator("#rename-name").fill("同名");
     await page.locator("#rename-name").press("Enter");
@@ -1050,7 +1071,7 @@ async function run() {
     const ignoredPending = send("@设计/同名","已人工处理的待交接");
     const pendingBar = pane(right).locator(".inbox");
     await pendingBar.waitFor();
-    assert.deepEqual(await pendingBar.locator("button").allTextContents(), ["下一条","预览","忽略","写入"]);
+    assert.deepEqual(await pendingBar.locator("button").allTextContents(), ["下一条","预览","忽略","立即投递"]);
     const entered = logLines("two","enters.txt").length;
     await pendingBar.getByRole("button", {name:"忽略",exact:true}).click();
     await pendingBar.waitFor({state:"hidden"});

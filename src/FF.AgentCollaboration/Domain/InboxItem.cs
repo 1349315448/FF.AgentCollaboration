@@ -9,6 +9,7 @@ internal sealed record InboxItem(string Id, string Target, string From, string T
     public string? ReplyTo { get; init; }
     public bool? FinalReply { get; init; }
     public bool Acknowledged { get; init; }
+    public string? NativeOffer { get; init; }
     internal string? QueueHint { get; init; }
 
     internal string AsText()

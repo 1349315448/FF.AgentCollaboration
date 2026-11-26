@@ -11,7 +11,7 @@ internal sealed partial class WorkbenchStore
         Atomic(() =>
         {
             if (Topic(topic).Status != "active") throw new WorkbenchError("请先重新打开话题");
-            if (provider == FedSetting("node_id")) throw new FederationException(409, "self_pair");
+            if (provider == FedSetting("node_id")) throw new WorkbenchError("这是本工作台的 Agent，不能添加为外部协作 Agent。", WorkbenchFailure.Conflict);
             var prior = Read("SELECT id,pin FROM fed_remote WHERE provider=$p0 AND window_id=$p1 AND status IN ('applying','pending','approved')",
                 r => (r.GetString(0), r.GetString(1)), provider, window).SingleOrDefault();
             if (prior.Item1 != null)

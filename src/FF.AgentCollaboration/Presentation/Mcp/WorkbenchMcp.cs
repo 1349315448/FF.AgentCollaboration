@@ -42,6 +42,13 @@ internal static class WorkbenchMcp
             inputSchema=new { type="object", properties=new { messageId=new {type="string"}, status=new {type="string", @enum=new[]{"working","completed"}} },
                 required=new[]{"messageId","status"}, additionalProperties=false } },
         Mcp.Tool(CollaborationTools.ReadDocument, "Read a Markdown handoff you sent or received. Use its HANDOFF_DOC path, full message ID, or unique 8-hex MSG_ID. Plain MSG messages have no handoff document.", "pathOrId"),
+        new
+        {
+            name = CollaborationTools.Receive,
+            description = "Receive one released message in this conversation. Pass the full messageId from a channel notification or omit it for the oldest available message. Null means nothing to process.",
+            inputSchema = new { type = "object", properties = new { messageId = new {type="string"},
+                channelReceipt = new {type="string",description="Copy the receipt from the native channel notification when present."} }, additionalProperties = false }
+        },
         Mcp.Tool(CollaborationTools.FinishTopic, "Finish your current topic with a short completion summary.", "summary"),
         Mcp.Tool(CollaborationTools.ReadSkill, "Read this FF.CP window's ff-agent-collab skill and examples for delegation, review, and delivering images to the user.")
     ];
@@ -54,6 +61,8 @@ internal static class WorkbenchMcp
         string grant = Mcp.WindowGrant();
         (string Name, string? Role)? known = null;
         string? updatedIdentity = null;
+        string? receipt = null, lastHint = null;
+        bool supportsChannel = false;
         void ObserveIdentity(AgentWindow window)
         {
             var identity = (window.Name, window.Role);
@@ -63,6 +72,16 @@ internal static class WorkbenchMcp
         }
         return Mcp.Serve(Tools, (name, input) =>
         {
+            if (name == CollaborationTools.Receive)
+            {
+                using var state = new WorkbenchStore(root);
+                string? id = (string?)input["messageId"];
+                string? channelReceipt = (string?)input["channelReceipt"];
+                bool channelRead = id != null && channelReceipt == ChannelReceipt(grant,id);
+                var message = state.TakeNativeMessage(grant,id == null ? null : WorkbenchInput.Id(id),channelRead);
+                receipt = message?.Id;
+                return message == null ? "null" : JsonSerializer.Serialize(new {id=message.Id,message=message.AsText()});
+            }
             string result = Call(root, grant, name, input, ObserveIdentity);
             if (port.HasValue && name is CollaborationTools.Send or CollaborationTools.FinishTopic or CollaborationTools.ReportTask)
             {
@@ -77,13 +96,60 @@ internal static class WorkbenchMcp
         {
             using var state = new WorkbenchStore(root);
             var caller = state.Caller(grant);
+            supportsChannel = caller.Engine is "claude" or "codebuddy";
             known = (caller.Name, caller.Role);
             updatedIdentity = null;
             return $"FF.Agent 窗口 @{caller.Name}，所属话题「{state.Topic(caller.TopicId).Name}」。" +
                 (caller.Role == null ? "" : $"当前窗口身份：{caller.Role}。") +
+                "协作收件通过 receive_message 进入当前会话。收到信件编号时调用该工具领取，空结果表示已由其他调用领取或已撤回。" +
                 "用 @名称 或 @话题/名称 寻址。长文通过 document 传 Markdown 路径，message 用简短摘要。" +
                 "开始收到的任务用 report_task_status(MSG_ID, working)；无须回信用 completed 结案，需回信用 send_to_agent 的 replyTo 关联原 MSG_ID。中途回信加 finalReply=false。更新需求默认 supersedePrevious=true；独立任务设为 false。交接、审核或交付图片时，调用 read_collaboration_skill 读取本窗口的 ff-agent-collab 规范和示例。";
-        }, () => { var update = updatedIdentity; updatedIdentity = null; return update; });
+        }, () =>
+        {
+            var update = updatedIdentity;
+            updatedIdentity = null;
+            if (receipt != null || !supportsChannel) return update;
+            using var state = new WorkbenchStore(root);
+            var id = state.NextNativeOffer(grant);
+            if (id == null || id == lastHint) return update;
+            lastHint = id;
+            return (update == null ? "" : update + "\n") + Notice(id);
+        }, () => supportsChannel, ct => NotifyInbox(root,grant,ct), success =>
+        {
+            if (receipt == null) return;
+            using var state = new WorkbenchStore(root);
+            state.FinishNativeMessage(receipt,success);
+            receipt = null;
+        });
+    }
+
+    private static string Notice(string id) => $"协作信箱有新消息，请调用 receive_message，messageId 填 {id}。";
+
+    private static string ChannelReceipt(string grant,string id) => Convert.ToHexString(
+        System.Security.Cryptography.HMACSHA256.HashData(System.Text.Encoding.UTF8.GetBytes(grant),System.Text.Encoding.UTF8.GetBytes(id)))[..24];
+
+    private static async Task NotifyInbox(string root, string grant, CancellationToken ct)
+    {
+        using var state = new WorkbenchStore(root);
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+        string? notified = null;
+        long version = -1;
+        do
+        {
+            var current = state.DataVersion;
+            if (current == version) continue;
+            version = current;
+            string? id;
+            try { id = state.NextNativeOffer(grant); }
+            catch (WorkbenchError e) when (e.Failure == WorkbenchFailure.Forbidden) { return; }
+            if (id != null && id != notified)
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new {jsonrpc="2.0", method="notifications/claude/channel",
+                    @params=new {content=Notice(id) + " 同时传 channelReceipt=" + ChannelReceipt(grant,id),meta=new {message_id=id}}}));
+                Console.Out.Flush();
+            }
+            notified = id;
+        } while (await timer.WaitForNextTickAsync(ct));
     }
 
     private static string Call(string root, string grant, string name, JsonNode input, Action<AgentWindow> observeIdentity)

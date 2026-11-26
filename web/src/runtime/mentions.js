@@ -6,6 +6,7 @@ import { panes } from "../services/terminalRegistry";
 import { isDialogOpen, mentionShortcut, setMentionShortcut, snapshot } from "../store/workbenchStore";
 import { sendControl } from "./terminal.js";
 import { refresh } from "./workbench.js";
+import { remoteOnline } from "../services/navigation";
 
 const mentionPicker = byId("agents-dialog");
 const peerSearch = byId("peer-search");
@@ -114,11 +115,15 @@ function renderPeers(reset = false) {
   if (!mentionPicker.open) return;
   const query = [...peerSearch.value.trim().toLocaleLowerCase().replace(/^@/, "")];
   const topics = new Map(snapshot.topics.map(t => [t.id, t.name]));
-  const rows = snapshot.windows.filter(w => w.agent.online && w.agent.id !== pane.agent.id).map(({agent,terminal}) => {
+  const locals = snapshot.windows.filter(w => w.agent.online && w.agent.id !== pane.agent.id).map(({agent,terminal}) => {
     const topic = topics.get(agent.topicId) ?? "", same = agent.topicId === pane.agent.topicId;
     return {id:agent.id, terminal, name:agent.name, title:agent.sessionTitle || "", topic, same,
       address:"@" + (same ? "" : topic + "/") + agent.name};
-  }).filter(row => [row.name,row.title,row.topic,row.address].some(field => matchesPeer(field, query)))
+  });
+  const remotes = (snapshot.federation?.remotes ?? []).filter(r => r.topicId === pane.agent.topicId && remoteOnline(r))
+    .map(r => ({id:r.id, name:r.agentName, title:r.nodeName, topic:topics.get(r.topicId) ?? "", same:true,
+      address:"@" + r.agentName, label:"外部 · " + r.nodeName}));
+  const rows = [...locals, ...remotes].filter(row => [row.name,row.title,row.topic,row.address].some(field => matchesPeer(field, query)))
     .sort((a,b) => Number(b.same) - Number(a.same));
   const signature = JSON.stringify(rows);
   if (!reset && state.signature === signature) return;
@@ -130,10 +135,10 @@ function renderPeers(reset = false) {
     button.id = "peer-" + row.id;
     button.tabIndex = -1;
     button.dataset.id = row.id;
-    button.dataset.terminal = row.terminal;
+    if (row.terminal) button.dataset.terminal = row.terminal;
     button.setAttribute("role", "option");
     button.setAttribute("aria-selected", "false");
-    button.append(node("strong", "", "@" + row.name), node("small", "", row.topic));
+    button.append(node("strong", "", "@" + row.name), node("small", "", row.label ?? row.topic));
     button.title = [row.address, row.title].filter(Boolean).join(" · ");
     button.onmousedown = event => event.preventDefault();
     button.onclick = () => confirmPeer(button);

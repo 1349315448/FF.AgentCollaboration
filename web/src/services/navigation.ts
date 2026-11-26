@@ -2,6 +2,9 @@ import type { Activity } from "../store/workbenchStore";
 
 export const activityLabels: Record<Activity,string> = { offline:"离线", idle:"待命", working:"进行中", waiting:"需要处理", finished:"已结束" };
 export function projectKey(path: string) { return path.replaceAll("/", "\\").replace(/\\+$/, "").toLowerCase(); }
+export function remoteOnline(remote:{status:string;connected:boolean;online:boolean}) {
+  return remote.status==="approved" && remote.connected && remote.online;
+}
 
 export interface NavigationActions {
   removeProject(path:string):void;

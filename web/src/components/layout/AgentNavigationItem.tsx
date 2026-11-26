@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { navigation } from "../../services/navigation";
+import { navigation, remoteOnline } from "../../services/navigation";
 import type { WindowView } from "../../store/workbenchStore";
 import { RemoteCapsule, type Federation } from "../federation/Federation";
 import { WorkspaceIcon } from "./WorkspaceIcon";
@@ -24,7 +24,6 @@ function AgentNavigationItem({view, tree = false}:{view:WindowView; tree?:boolea
     </button>
     <NavigationName className="member-name" title={"@"+agent.name+" · "+states[activity]} onSelect={()=>navigation.selectAgent(agent.topicId,agent.id)}
       onRename={()=>navigation.renameAgent(agent.id)}>{"@"+agent.name}</NavigationName>
-    {!tree && <button type="button" className="nav-edit icon-button" aria-label={"设置 @"+agent.name} title="Agent 设置" onClick={()=>navigation.renameAgent(agent.id)}><WorkspaceIcon name="edit"/></button>}
     <small className="nav-engine" title={engine}>{engine.replace(/^(GitHub |腾讯 |千问 |智谱 )/,"").replace(/ Code$/,"")}</small>
     <button type="button" className="nav-quota" title={quota?.title ?? "点击刷新额度"} aria-label={"刷新 @"+agent.name+" 的剩余额度"}
       disabled={quota?.loading} onClick={async()=>{const {loadQuota}=await import("../../runtime/quota.js");loadQuota(agent.engine,true);}}>[{quota?.value??"—"}]</button>
@@ -42,7 +41,7 @@ export function TopicAgentList({members, remotes, tree = false}:{
       key:"local-"+view.agent.id, online:view.agent.online, item:<AgentNavigationItem view={view} tree={tree}/>
     })),
     ...remotes.map(remote => ({
-      key:"remote-"+remote.id, online:remote.connected && remote.online, item:<RemoteCapsule remote={remote} tree={tree}/>
+      key:"remote-"+remote.id, online:remoteOnline(remote), item:<RemoteCapsule remote={remote} tree={tree}/>
     }))
   ];
   entries.sort((a,b) => Number(b.online) - Number(a.online));

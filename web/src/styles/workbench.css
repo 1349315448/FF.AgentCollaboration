@@ -342,12 +342,9 @@ button:disabled { cursor: default; opacity: .42; }
 .tree-arrow,.tree-actions button { display:grid; place-items:center; flex:none; height:24px; min-width:14px; }
 .tree-arrow svg,.tree-actions svg,.agent-mail-count svg,.project-select svg { width:13px; height:13px; flex:none; }
 .tree-total,.tree-agent-state,.tree-remote small { margin-left:auto; flex:none; font:11px var(--mono); color:var(--muted); }
-.tree-agent-state { color:var(--activity-color); }
+.tree-agent-state,.tree-remote small { color:var(--activity-color); }
 .nav-engine,.nav-quota { color:var(--muted); font:10px var(--mono); white-space:nowrap; }
 .nav-engine { flex:none; }
-.nav-edit { display:none; width:16px; height:18px; padding:0; flex:none; }
-.nav-edit svg {width:12px;height:12px}
-.topic-agent-tag:is(:hover,:focus-within) .nav-edit {display:inline-grid;place-items:center}
 #agent-config-history:not([hidden]),#agent-config-basic:not([hidden]) {display:flex;flex:1;min-height:0;flex-direction:column}
 #agent-config-basic .dialog-body {flex:1;overflow-y:auto;align-content:start;gap:14px}
 #config-launch-fields:not([hidden]) {display:grid;gap:10px}

@@ -19,6 +19,12 @@
 .fed-mail-row[data-kind=audit] {color:var(--danger);}
 .fed-mail-row[data-kind=blocked] {color:var(--muted);}
 .fed-mail-approvals {padding:6px 10px;}
+.fed-application-row {display:flex;align-items:center;gap:8px;min-height:26px;border-bottom:1px solid var(--line-soft);}
+.fed-application-row svg {width:14px;height:14px;flex:none;}
+.fed-application-row b,.fed-application-row span {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.fed-application-row span {flex:1;color:var(--muted);}
+.fed-application-row button,.pending-application > .text-button {color:var(--accent);}
+.log-document-row.pending-application {grid-template-columns:minmax(0,1fr) auto;}
 #federation-dialog fieldset { border:0; margin:0; max-height:70vh; overflow:auto; min-width:0; }
 .fed-fields,.fed-grant { display:grid; gap:9px; }
 .fed-fields label:not(.fed-row) { display:grid; gap:4px; }
@@ -32,7 +38,6 @@
 .fed-grant p { margin:0; overflow-wrap:anywhere; }.fed-grant header small { margin-left:auto; }
 .remote-capsule { border:1px solid var(--line); border-radius:5px; background:var(--surface); white-space:nowrap; }
 .remote-capsule svg,.fed-badge svg { width:12px;height:12px; }
-.remote-capsule [data-online=true] { background:#48c78e; }
 .fed-badge { flex:none; font-size:11px; }
 .fed-controls { display:flex; align-items:center; gap:3px; position:relative; white-space:nowrap; }
 .fed-controls .text-button { font-size:11px; }
@@ -46,4 +51,3 @@
   .pane:not([data-collapsed=true]) .pane-header { gap:3px; padding-inline:4px; }
 }
 .fed-text {white-space:pre-wrap;overflow-wrap:anywhere;max-height:9rem;overflow:auto}
-.fed-pending {display:flex;align-items:center;gap:4px;color:var(--accent);padding-inline:10px}

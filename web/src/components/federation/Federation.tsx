@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from "react";
-import {navigation} from "../../services/navigation";
+import {navigation, remoteOnline} from "../../services/navigation";
 import {request} from "../../services/api";
 import {copyText} from "../../services/clipboard";
 import {useWorkbench} from "../../store/workbenchStore";
@@ -17,7 +17,7 @@ export interface PeerMail {seq:number;topicId:string;kind:string;source:string;t
 export interface Federation {grants:Grant[]; remotes:Capsule[]; sharedWindows:string[]; mail:PeerMail[]}
 interface Share {enabled:boolean; permissionMode:string; dedicatedReadOnly:boolean; link:string|null; restarted:boolean}
 interface NodeInfo {nodeId:string; nodeName:string; selectedIp:string|null; activeIp:string|null; addresses:string[]; publicEndpoint:string|null; restartRequired:boolean}
-type Selection = {windowId:string} | {remoteId:string;topicId:string};
+type Selection = {windowId:string} | {remoteId:string;topicId:string} | {grantId:string};
 
 const quotaLabels = {daily:"每日", hourly:"每小时", total:"总次数", unlimited:"无限制"};
 const states:Record<string,string> = {applying:"正在申请",pending:"待审批",approved:"已授权",revoked:"已吊销",rejected:"已拒绝"};
@@ -25,12 +25,7 @@ const open = (detail:Selection)=>window.dispatchEvent(new CustomEvent("ff-peer-d
 const put = <T,>(path:string,body:unknown)=>request<T>("/peers/"+path,{method:"PUT",body});
 const errorText = (error:unknown)=>error instanceof Error ? error.message : "操作失败";
 
-export function PendingPeers() {
-  const grants=useWorkbench().snapshot?.federation?.grants.filter(g=>g.status==="pending");
-  if (!grants?.length) return null;
-  return <div className="fed-pending" role="status"><WorkspaceIcon name="network"/>
-    <button className="text-button" onClick={()=>open({windowId:grants[0].windowId})}>{grants.length} 条外部协作申请待审核</button></div>;
-}
+export const viewApplication=(grantId:string)=>open({grantId});
 
 export function NodePreferences() {
   const [node,setNode]=useState<NodeInfo>(),[name,setName]=useState(""),[ip,setIp]=useState(""),[note,setNote]=useState("");
@@ -126,11 +121,14 @@ function quotaText(remote:Capsule, detail=false) {
 }
 
 export function RemoteCapsule({remote:r,tree=false}:{remote:Capsule;tree?:boolean}) {
-  return <button type="button" data-remote-id={r.id} className={tree?"tree-remote":"remote-capsule"} onClick={async event=>{event.stopPropagation();await navigation.switchTopic(r.topicId);open({remoteId:r.id,topicId:r.topicId});}}
-        title={`${r.nodeName || "申请中"} · ${r.nodeId} · ${states[r.status]} ${quotaText(r,true)}`}>
-        <WorkspaceIcon name="network"/><span className="nav-dot" data-online={r.connected&&r.online}/><b>@{r.agentName}</b>
+  const online=remoteOnline(r), status=r.status==="approved" ? (online?"在线":"离线") : states[r.status];
+  const details=()=>open({remoteId:r.id,topicId:r.topicId});
+  return <button type="button" data-remote-id={r.id} data-activity={online?"idle":"offline"} className={tree?"tree-remote":"remote-capsule"}
+        onClick={event=>{event.stopPropagation();if(event.detail===0) details();else if(tree) void navigation.switchTopic(r.topicId);}}
+        onDoubleClick={details} title={`${r.nodeName || "申请中"} · ${status} · 双击查看详情`}>
+        <WorkspaceIcon name="network"/><span className="nav-dot" aria-hidden="true"/><b>@{r.agentName}</b>
         {quotaText(r) && <span className="remote-quota">{quotaText(r)}</span>}
-        <small>{tree?"远端":(r.nodeName || states[r.status])+" · "+r.nodeId.slice(0,8)}</small>
+        <small>{tree?status:(r.nodeName || states[r.status])+" · "+r.nodeId.slice(0,8)}</small>
       </button>;
 }
 
@@ -144,24 +142,24 @@ function MailApproval({grant,run}:{grant:Grant;run:Run}) {
       .catch(()=>{ if(current) setCanWrite(false); });
     return ()=>{current=false;};
   },[grant.windowId]);
-  return <div><WorkspaceIcon name="mailRequest"/><GrantPolicy grant={grant} canWrite={canWrite} run={run}/></div>;
+  return <GrantPolicy grant={grant} canWrite={canWrite} run={run}/>;
 }
 export function MailApprovals({grants}:{grants:Grant[]}) {
-  const [error,setError]=useState("");
-  const run:Run=async op=>{setError("");try{await op();}catch(e){setError(errorText(e));}};
-  return <div className="fed-mail-approvals">{grants.map(g=><MailApproval key={g.id} grant={g} run={run}/>)}
-    {grants.length===0 && <small>没有待审申请</small>}{error && <p role="alert">{error}</p>}</div>;
+  return <div className="fed-mail-approvals">{grants.map(g=><div key={g.id} className="fed-application-row">
+    <WorkspaceIcon name="mailRequest"/><b>{g.nodeName}</b><span title={g.purpose}>{g.purpose}</span>
+    <button type="button" className="text-button" onClick={()=>viewApplication(g.id)}>查看</button>
+  </div>)}{grants.length===0 && <small>没有待审申请</small>}</div>;
 }
-function PeerComposer({path,requestId,topicId,run}:{path:string;requestId?:string;topicId?:string;run:Run}) {
+function PeerComposer({path,requestId,run}:{path:string;requestId:string;run:Run}) {
   const [text,setText]=useState(""),[sent,setSent]=useState("");
   const [checked,setChecked]=useState(true);
   const key=useRef("");
   return <form className="fed-fields" onSubmit={e=>{e.preventDefault();void run(async()=>{
     key.current ||= Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,"0")).join("");
-    await request(path,{method:"POST",body:{id:key.current,requestId,text,topicId,...(requestId?{finalReply:checked}:{expectsReply:checked})}});setText("");key.current="";setSent(requestId?"回信已写入通道":"对端已接收");
-  });}}><label>{requestId?"回信":"发给对端"}<textarea required maxLength={8000} rows={2} value={text} onChange={e=>{setText(e.target.value);key.current="";setSent("");}}/></label>
-    <div className="fed-row"><label><input type="checkbox" checked={checked} onChange={e=>{setChecked(e.target.checked);key.current="";}}/>{requestId?"最终结果":"需要回信"}</label>
-      <button className="button" disabled={!text.trim()}>{requestId?"发送回信":"发送消息"}</button><small role="status">{sent}</small></div></form>;
+    await request(path,{method:"POST",body:{id:key.current,requestId,text,finalReply:checked}});setText("");key.current="";setSent("回信已写入通道");
+  });}}><label>回信<textarea required maxLength={8000} rows={2} value={text} onChange={e=>{setText(e.target.value);key.current="";setSent("");}}/></label>
+    <div className="fed-row"><label><input type="checkbox" checked={checked} onChange={e=>{setChecked(e.target.checked);key.current="";}}/>最终结果</label>
+      <button className="button" disabled={!text.trim()}>发送回信</button><small role="status">{sent}</small></div></form>;
 }
 function ReceivedRequests({grant,run}:{grant:Grant;run:Run}) {
   const [items,setItems]=useState<{id:string;text:string}[]>([]),[error,setError]=useState("");
@@ -267,16 +265,19 @@ export function FederationDialog() {
   },[]);
   const run:Run=async op=>{setBusy(true);notify("");try{await op();}catch(e){notify(errorText(e));}finally{setBusy(false);}};
   const remote=selection && "remoteId" in selection && snapshot?.federation?.remotes.find(r=>r.id===selection.remoteId && r.topicId===selection.topicId);
-  const title=selection && "windowId" in selection ? "@"+(snapshot?.windows.find(w=>w.agent.id===selection.windowId)?.agent.name||"Agent")+" · 外部协作" :
+  const grantId=selection && "grantId" in selection ? selection.grantId : undefined;
+  const grant=snapshot?.federation?.grants.find(g=>g.id===grantId && g.status==="pending");
+  useEffect(()=>{if(grantId && !grant) ref.current?.close();},[grantId,grant]);
+  const title=grantId ? "外部协作申请" : selection && "windowId" in selection ? "@"+(snapshot?.windows.find(w=>w.agent.id===selection.windowId)?.agent.name||"Agent")+" · 外部协作" :
     remote?"@"+remote.agentName:"添加外部协作 Agent";
   return <dialog ref={ref} id="federation-dialog" closedby="any" aria-labelledby="fed-title" onClose={()=>select(undefined)}>
     <header className="dialog-header"><h2 id="fed-title">{title}</h2><button type="button" className="icon-button" aria-label="关闭" onClick={()=>ref.current?.close()}>×</button></header>
     <fieldset disabled={busy} className="dialog-body fed-fields">
+    {grant && <MailApproval key={grant.id} grant={grant} run={run}/>}
     {selection && "windowId" in selection && <Provider key={selection.windowId} id={selection.windowId} run={run}/>}
     {remote && <><b>{remote.nodeName} · {remote.nodeId.slice(0,8)}</b><span>{states[remote.status]} · {remote.connected?(remote.online?"Agent 在线":"Agent 离线"):"未连接"}</span>
       {remote.status==="approved" && <span className="remote-quota-detail">{quotaText(remote,true)}</span>}
       {remote.error && <small>{remote.error}</small>}{remote.lastReply && <p className="fed-text">最近回信　{remote.lastReply}</p>}
-      {remote.status==="approved" && <PeerComposer path={"/peers/remotes/"+remote.id+"/messages"} topicId={remote.topicId} run={run}/>}
       <button className="button" onClick={()=>run(async()=>{await request("/peers/remotes/"+remote.id+"?topic="+remote.topicId,{method:"DELETE"});ref.current?.close();})}>移除本地胶囊</button></>}
     </fieldset>{note && <p role="alert" className="form-error">{note}</p>}
   </dialog>;
