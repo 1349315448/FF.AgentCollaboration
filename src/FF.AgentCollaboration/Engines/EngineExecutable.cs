@@ -52,6 +52,7 @@ internal static class EngineExecutable
         }
         if (name == "cursor") return CursorEngine.FindExecutable();
         if (name == "opencode") return OpenCodeEngine.FindExecutable();
+        if (name == "antigravity") return AntigravityEngine.FindExecutable();
         if (name == "zcode")
         {
             string archName = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? "arm64" : "x64";

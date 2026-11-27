@@ -249,6 +249,8 @@ class TopicTerminalFixture
                 else
                 {
                     File.AppendAllText("accepted.txt", draft + Environment.NewLine);
+                    if (File.Exists("audit-marker.fixture"))
+                        File.Move("audit-marker.fixture", "audit-marker.txt");
                     draft = ""; newline = approval = folded = false;
                     if (mode == "folded-retry") busy = false;
                     ReplyToPeer(draw);

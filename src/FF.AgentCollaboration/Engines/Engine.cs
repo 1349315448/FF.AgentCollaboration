@@ -17,10 +17,13 @@ internal abstract class Engine : IDisposable
         "zcode" => new ZCodeEngine(cwd),
         "cursor" => new CursorEngine(cwd),
         "opencode" => new OpenCodeEngine(cwd),
+        "antigravity" => new AntigravityEngine(cwd),
         _ => throw new WorkbenchError("请选择受支持的引擎")
     };
 
     internal abstract EngineCapabilities Capabilities { get; }
+    internal virtual bool CreatesSessionBeforeLaunch => true;
+    internal virtual bool SupportsDedicatedReader => true;
     internal virtual ISubmissionReceiptSource? SubmissionReceipts(AgentWindow window) => null;
     internal abstract Task<EngineAccount> Account(CancellationToken ct);
     internal virtual string[] LoginArguments => ["login"];

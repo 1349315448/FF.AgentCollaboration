@@ -205,23 +205,39 @@ def verify(exe, case):
         assert not view(client)["remotes"]
         until(contacts,lambda rows:not rows)
         until(lambda:view(local)["grants"][0],lambda item:not item["connected"])
-        offline_reply={"id":new_id(),"requestId":first,"text":"断线时的回信"}
-        assert http(local,grant_url+g["id"]+"/replies",offline_reply)[0] == 200
-        assert http(local,grant_url+g["id"]+"/replies",offline_reply)[0] == 200
+        def agent_reply(text, final=False):
+            # This fixture simulates a receiving Agent with an already delivered request.
+            grant = new_id() * 2
+            with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
+                task = db.execute("SELECT local FROM fed_incoming WHERE request=?", (first,)).fetchone()[0]
+                db.execute("UPDATE inbox SET state='delivered' WHERE id=?", (task,))
+                db.execute("UPDATE windows SET online=1,grant_hash=? WHERE id=?",
+                           (hashlib.sha256(grant.encode()).hexdigest().upper(), w))
+                db.commit()
+            try:
+                result=mcp(exe,provider,grant,"send_to_agent",target="@reply-"+task,message=text,
+                           replyTo=task,finalReply=final)
+                assert not result.get("isError"),result
+            finally:
+                with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
+                    db.execute("UPDATE windows SET online=0,grant_hash=NULL WHERE id=?", (w,))
+                    db.commit()
+
+        offline_reply="断线时的回信"
+        agent_reply(offline_reply)
         assert http(client,"/api/peers/remotes",{"topicId":target,"link":link,"purpose":"审阅"})[1]["id"] == remote
         until(rem,lambda r:r["connected"] and r["lastReply"]=="断线时的回信")
         if cloud:
             assert advertise("")[0] == 200
             until(rem,lambda r:not r["connected"] and r["status"]=="approved")
             assert wire("/api/federation/application",claim)[0] == 403
-            assert http(local,grant_url+g["id"]+"/replies",{"id":new_id(),"requestId":first,"text":"云端离线续收"})[0] == 200
+            agent_reply("云端离线续收")
             assert advertise(origin)[0] == 200
             until(rem,lambda r:r["connected"] and r["lastReply"]=="云端离线续收")
             print("PASS outbound cloud pairing, forwarded HTTPS port, messages and SSE cursor recovery")
         with closing(sqlite3.connect(requester / "workbench.sqlite")) as db:
-            assert db.execute("SELECT count(*) FROM fed_received WHERE remote=? AND body=?",(remote,offline_reply["text"])).fetchone()[0]==1
-        reply = http(local, grant_url+g["id"]+"/replies", {"id":new_id(),"requestId":first,"text":"审核完成"})
-        assert reply[0] == 200, reply
+            assert db.execute("SELECT count(*) FROM fed_received WHERE remote=? AND body=?",(remote,offline_reply)).fetchone()[0]==1
+        agent_reply("审核完成", final=True)
         until(rem,lambda r:r["lastReply"]=="审核完成")
         with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
             assert db.execute("SELECT count(*) FROM inbox").fetchone()[0] == 2

@@ -7,8 +7,8 @@ namespace FF.AgentCollaboration.Engines;
 internal static class McpConfig
 {
     internal static bool Supports(string engine,string transport) => transport switch {
-        "stdio" or "http" => EngineNames.Supports(engine),
-        "sse" => EngineNames.Supports(engine) && engine is not ("codex" or "traecli"),
+        "stdio" or "http" => EngineNames.Supports(engine) && engine != "antigravity",
+        "sse" => EngineNames.Supports(engine) && engine is not ("codex" or "traecli" or "antigravity"),
         _ => false
     };
 

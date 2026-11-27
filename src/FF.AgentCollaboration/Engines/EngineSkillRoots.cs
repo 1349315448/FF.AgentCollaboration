@@ -13,7 +13,7 @@ internal static class EngineSkillRoots
         ["codex"]=("CODEX_HOME",".codex"), ["copilot"]=("COPILOT_HOME",".copilot"), ["claude"]=("CLAUDE_CONFIG_DIR",".claude"),
         ["codebuddy"]=("CODEBUDDY_CONFIG_DIR",".codebuddy"), ["traecli"]=("TRAE_HOME",".trae"),
         ["qwen"]=("QWEN_HOME",".qwen"), ["qoder"]=("QODER_CONFIG_DIR",".qoder"), ["zcode"]=("",".zcode"), ["cursor"]=("",".cursor"),
-        ["opencode"]=("XDG_CONFIG_HOME",".opencode")
+        ["opencode"]=("XDG_CONFIG_HOME",".opencode"), ["antigravity"]=("",".gemini/config")
     };
     private static string Home=>Environment.GetEnvironmentVariable("USERPROFILE")??Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private static string Key(string path)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
@@ -29,7 +29,8 @@ internal static class EngineSkillRoots
         return engine=="opencode"?Path.Combine(Path.GetFullPath(value,cwd??Home),"opencode","skills"):
             Path.Combine(Path.GetFullPath(value,cwd??Home),"skills");
     }
-    private static string Project(string engine,string project)=>Path.Combine(project,engine=="copilot"?".github":Homes[engine].Folder,"skills");
+    private static string Project(string engine,string project)=>Path.Combine(project,engine switch {
+        "copilot"=>".github", "antigravity"=>".agents", _=>Homes[engine].Folder },"skills");
     internal static string ClaudeOverlay(string data,string project)=>Path.Combine(data,"engine-profiles","skill-roots","claude",Key(project));
     internal static string ZCodeGlobal(string data)=>Path.Combine(data,"engine-profiles","skill-roots","zcode","skills");
     internal static bool PrivateTarget(SkillTarget t)=>t.Engine=="library" || t.Engine=="claude" && t.Project.Length>0 ||

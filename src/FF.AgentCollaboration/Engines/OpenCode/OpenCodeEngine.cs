@@ -12,6 +12,8 @@ namespace FF.AgentCollaboration.Engines;
 
 internal sealed class OpenCodeEngine(string cwd) : Engine
 {
+    internal override bool SupportsDedicatedReader => false;
+
     private const string Name = "opencode";
     private const string InlineConfig = "OPENCODE_CONFIG_CONTENT";
     private static readonly Regex VersionNumber = new(@"^(?:opencode2?[\s/v]+)?v?(\d+\.\d+\.\d+)(?:[-+][A-Za-z0-9.+-]+)?$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);

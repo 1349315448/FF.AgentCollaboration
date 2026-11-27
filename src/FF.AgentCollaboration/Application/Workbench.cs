@@ -224,9 +224,10 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             var updated = current with {Name = name, Role = role};
             if (changingEngine)
             {
-                if (engine == "opencode" && state.DedicatedReader(id)) throw new WorkbenchError("请先关闭专用审阅再切换到 OpenCode CLI");
                 if (EngineExecutable.TryFindExecutable(engine) == null) throw new WorkbenchError("请先安装所选引擎", WorkbenchFailure.Unavailable);
                 using var adapter = Engine.Create(engine, current.Project);
+                if (!adapter.SupportsDedicatedReader && state.DedicatedReader(id))
+                    throw new WorkbenchError("所选引擎暂不支持专用审阅终端，请先关闭专用审阅");
                 var mode = EmptyToNull(input.Mode);
                 if (mode != null && !adapter.Capabilities.Modes.Any(m => m.Id == mode)) throw new WorkbenchError("该引擎不支持所选模式");
                 updated = updated with { Engine = engine, Model = Option(input.Model,"模型"), Effort = Option(input.Effort,"推理档位"),
@@ -303,10 +304,14 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         if (window.Session == null)
         {
             newTitle = state.Topic(window.TopicId).Name + "-" + window.Name;
-            using var timeout = SessionCatalog.Deadline(ct);
-            string id = await engine.NewSession(newTitle, window.Model, forkSource, timeout.Token);
-            if (id == forkSource || !engine.ValidSessionId(id)) throw new WorkbenchError("引擎未返回独立的会话编号", WorkbenchFailure.Unavailable);
-            window = window with { Session = id, SessionTitle = newTitle };
+            window = window with { SessionTitle = newTitle };
+            if (engine.CreatesSessionBeforeLaunch)
+            {
+                using var timeout = SessionCatalog.Deadline(ct);
+                string id = await engine.NewSession(newTitle, window.Model, forkSource, timeout.Token);
+                if (id == forkSource || !engine.ValidSessionId(id)) throw new WorkbenchError("引擎未返回独立的会话编号", WorkbenchFailure.Unavailable);
+                window = window with { Session = id };
+            }
         }
         else if (window.SessionTitle == null)
         {
@@ -347,7 +352,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         }
         bool reader=state.DedicatedReader(window.Id);
         if (shareOnRestart != null) reader=shareOnRestart.RestrictedTerminal(reader);
-        if (reader && window.Engine == "opencode") throw new WorkbenchError("OpenCode CLI 暂不支持专用审阅终端");
+        if (reader && !engine.SupportsDedicatedReader) throw new WorkbenchError("当前引擎暂不支持专用审阅终端");
         long revision = state.McpRevisions().GetValueOrDefault(window.Id);
         if (!reader)
         {
@@ -451,7 +456,9 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             using var state = new WorkbenchStore(Root);
             var window = state.Window(id);
             bool current = state.DedicatedReader(id);
-            if (input.RestrictedTerminal(current) && window.Engine == "opencode") throw new WorkbenchError("OpenCode CLI 暂不支持专用审阅终端");
+            using var engine = Engine.Create(window.Engine, window.Project);
+            if (input.RestrictedTerminal(current) && !engine.SupportsDedicatedReader)
+                throw new WorkbenchError("当前引擎暂不支持专用审阅终端");
             if (input.RestrictedTerminal(current) != current)
             {
                 terminals.TryGetValue(id, out var terminal);

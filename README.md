@@ -46,6 +46,7 @@
 | Claude Code | `claude` | 智谱 ZCode | `zcode` |
 | TRAE CLI 2 | `traecli` | Qoder CLI | `qodercli` |
 | OpenCode | `opencode` / `opencode2` | Cursor CLI | `agent` / `cursor-agent` |
+| Google Antigravity CLI | `agy` | | |
 
 在「工作台配置 → CLI 引擎」检测安装状态、查看版本和更新方式。会话分支、额度查询等选项按各引擎的支持情况显示。
 

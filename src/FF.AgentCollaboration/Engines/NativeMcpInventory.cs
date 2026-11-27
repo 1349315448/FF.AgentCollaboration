@@ -122,6 +122,7 @@ internal static class NativeMcpInventory
             "qwen"=>[Path.Combine(QwenPath("QWEN_HOME",Path.Combine(home,".qwen")),"settings.json")],
             "qoder"=>[Path.Combine(UserDir("QODER_CONFIG_DIR",".qoder"),"settings.json")],
             "cursor"=>[Path.Combine(home,".cursor","mcp.json")],
+            "antigravity"=>[Path.Combine(home,".gemini","config","mcp_config.json")],
             "zcode"=>[Path.Combine(home,".zcode","cli","config.json"),Path.Combine(home,".agents","mcp.json")], _=>[] };
         foreach(var p in engine=="codebuddy"?user.Where(File.Exists).Take(1):user) yield return p;
         if(project==null) yield break;
@@ -131,9 +132,10 @@ internal static class NativeMcpInventory
             "copilot"=>[".mcp.json",".github/mcp.json"],"codebuddy"=>[".mcp.json","mcp.json"],
             "qwen"=>[".qwen/settings.json"],"qoder"=>[".qoder/settings.json",".qoder/settings.local.json",".mcp.json"],
             "cursor"=>[".cursor/mcp.json"],
+            "antigravity"=>[".agents/mcp_config.json",".agent/mcp_config.json","_agents/mcp_config.json","_agent/mcp_config.json"],
             "zcode"=>["zcode.json",".zcode/config.json"],_=>[] };
         var roots=new List<string>{project};
-        if(engine is "codex" or "copilot" or "zcode")
+        if(engine is "codex" or "copilot" or "zcode" or "antigravity")
         {
             var ancestors=new List<string>();
             for(var d=new DirectoryInfo(project);d!=null;d=d.Parent)

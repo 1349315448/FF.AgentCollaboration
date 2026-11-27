@@ -78,8 +78,6 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
             return network.ShareLink(db, id, restarted);
         });
         local.MapPut("/grants/{id}", (string id, PeerDecision input) => { using var db = Store(); db.DecidePeer(id, input); return Results.Ok(); });
-        local.MapGet("/grants/{id}/requests", (string id) => { using var db = Store(); return db.RecentPeerRequests(id); });
-        local.MapPost("/grants/{id}/replies", (string id, PeerMessage input) => { using var db = Store(); db.PeerReply(id, input); return Results.Ok(); });
         local.MapPost("/remotes", (RemoteApplication input) => { using var db = Store(); return new { id = FederationNetwork.AddRemote(db, input) }; });
         local.MapDelete("/windows/{window}/contacts/{id}", (string window,string id) =>
         {

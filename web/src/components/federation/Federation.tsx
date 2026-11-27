@@ -158,33 +158,6 @@ export function MailApprovals({grants}:{grants:Grant[]}) {
     <button type="button" className="text-button" onClick={()=>viewApplication(g.id)}>查看</button>
   </div>)}{grants.length===0 && <small>没有待审申请</small>}</div>;
 }
-function PeerComposer({path,requestId,run}:{path:string;requestId:string;run:Run}) {
-  const [text,setText]=useState(""),[sent,setSent]=useState("");
-  const [checked,setChecked]=useState(true);
-  const key=useRef("");
-  return <form className="fed-fields" onSubmit={e=>{e.preventDefault();void run(async()=>{
-    key.current ||= Array.from(crypto.getRandomValues(new Uint8Array(16)),b=>b.toString(16).padStart(2,"0")).join("");
-    await request(path,{method:"POST",body:{id:key.current,requestId,text,finalReply:checked}});setText("");key.current="";setSent("回信已写入通道");
-  });}}><label>回信<textarea required maxLength={8000} rows={2} value={text} onChange={e=>{setText(e.target.value);key.current="";setSent("");}}/></label>
-    <div className="fed-row"><label><input type="checkbox" checked={checked} onChange={e=>{setChecked(e.target.checked);key.current="";}}/>最终结果</label>
-      <button className="button" disabled={!text.trim()}>发送回信</button><small role="status">{sent}</small></div></form>;
-}
-function ReceivedRequests({grant,run}:{grant:Grant;run:Run}) {
-  const [items,setItems]=useState<{id:string;text:string}[]>([]),[error,setError]=useState("");
-  const [opened,toggle]=useState(false),[item,choose]=useState<{id:string;text:string}>();
-  useEffect(()=>{
-    if (!opened) return;
-    let current=true;
-    request<typeof items>("/peers/grants/"+grant.id+"/requests").then(v=>{if(current){setItems(v);choose(prior=>prior??v[0]);setError("");}}).catch(e=>{if(current)setError(errorText(e));});
-    return ()=>{current=false;};
-  },[opened,grant.id,grant.lastReceived,grant.used]);
-  const choices=item && !items.some(i=>i.id===item.id)?[item,...items]:items;
-  return <details onToggle={e=>toggle(e.currentTarget.open)}><summary>最近来信与回信</summary>
-    {error && <small role="alert">{error}</small>}{item ? <div className="fed-fields">
-      <select aria-label="选择来信" value={item.id} onChange={e=>choose(choices.find(i=>i.id===e.target.value))}>{choices.map(i=><option key={i.id} value={i.id}>{i.id.slice(0,8)} · {i.text.slice(0,40)}</option>)}</select>
-      <p className="fed-text">{item.text}</p><PeerComposer key={item.id} path={"/peers/grants/"+grant.id+"/replies"} requestId={item.id} run={run}/>
-    </div> : <small>暂无来信</small>}</details>;
-}
 function GrantPolicy({grant,canWrite,run}:{grant:Grant;canWrite:boolean;run:Run}) {
   const [mode,setMode]=useState<Mode>(grant.quotaMode),[limit,setLimit]=useState(grant.quotaLimit??20);
   const [write,setWrite]=useState(grant.permissionMode==="read_write"),[paused,pause]=useState(grant.paused),[upload,setUpload]=useState(grant.allowUpload);
@@ -208,7 +181,6 @@ function GrantPolicy({grant,canWrite,run}:{grant:Grant;canWrite:boolean;run:Run}
     <div className="fed-row"><button className="button primary" onClick={()=>run(()=>decide(active?"configure":"approve"))}>{active?"保存权限":"同意"}</button>
       {active && mode==="total" && <button className="button" onClick={()=>run(()=>decide("configure",true))}>清零计数</button>}
       <button className="text-button" onClick={()=>run(()=>decide(active?"revoke":"reject"))}>{active?"吊销":"拒绝"}</button></div></>}
-    {active && <ReceivedRequests grant={grant} run={run}/>}
   </article>;
 }
 

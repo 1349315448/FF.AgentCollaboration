@@ -3,7 +3,7 @@ import { request } from "./api";
 export const engineNames: Record<string, string> = {
   codex: "Codex", copilot: "GitHub Copilot", claude: "Claude Code",
   codebuddy: "腾讯 CodeBuddy Code", traecli: "TRAE CLI", zcode: "智谱 ZCode", qwen: "千问 Qwen Code", qoder: "Qoder CLI",
-  opencode: "OpenCode", cursor: "Cursor CLI"
+  opencode: "OpenCode", cursor: "Cursor CLI", antigravity: "Google Antigravity CLI"
 };
 
 export interface EngineCapabilities {
@@ -36,7 +36,8 @@ export const installGuides: Record<string, string> = {
   traecli: "https://docs.trae.cn/cli_get-started-with-trae-cli-2",
   zcode: "https://github.com/zai-org/ZCode/blob/main/apps/zcode-cli/docs/usage/01-quickstart.md",
   opencode: "https://opencode.ai/docs/",
-  cursor: "https://cursor.com/docs/cli/installation"
+  cursor: "https://cursor.com/docs/cli/installation",
+  antigravity: "https://antigravity.google/docs/cli-getting-started"
 };
 
 export const traeAccountNotice = "当前引擎不支持个人账户登录。TRAE 中国版 CLI 2.0 仅向企业旗舰版账号开放。";

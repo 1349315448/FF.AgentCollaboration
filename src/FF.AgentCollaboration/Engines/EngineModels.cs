@@ -13,7 +13,7 @@ internal sealed record StartupApproval(string Ask, string Auto, string Descripti
         "claude" or "codebuddy" or "qoder" => new("default", "auto", "使用 CLI 的自动审批策略，高风险操作仍可能被阻止或要求确认。"),
         "qwen" => new("default", "auto", "使用千问自动审批策略；仅支持旧模式的版本会自动接受编辑，其他操作仍需确认。"),
         "zcode" => new("build", "yolo", "YOLO 模式自动批准工具操作，包括写文件和执行命令。"),
-        "cursor" or "opencode" => null,
+        "cursor" or "opencode" or "antigravity" => null,
         _ => throw new ArgumentOutOfRangeException(nameof(engine))
     };
 }

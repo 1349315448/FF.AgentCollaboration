@@ -2,6 +2,7 @@
 const assert=require("node:assert/strict");
 const fs=require("node:fs");
 const path=require("node:path");
+const {execFileSync}=require("node:child_process");
 const {chromium}=require("playwright");
 const [provider,requester,windowId]=process.argv.slice(2);
 const link=require("node:fs").readFileSync(0,"utf8");
@@ -68,18 +69,13 @@ const link=require("node:fs").readFileSync(0,"utf8");
     await sendManual(longMail);
     await b.locator(".remote-quota-detail").filter({hasText:"剩余 20 / 21 次"}).waitFor();
     await a.locator('[data-window="'+windowId+'"] .fed-badge').click();
-    await incoming.locator("summary").click();
-    await incoming.getByText(longMail,{exact:true}).waitFor();
-    await incoming.getByLabel("回信",{exact:true}).fill("浏览器已收到");
-    await sendManual("另一条来信");
-    await incoming.locator("option").filter({hasText:"另一条来信"}).waitFor({state:"attached"});
-    assert.equal(await incoming.getByRole("textbox").inputValue(),"浏览器已收到");
-    await incoming.getByRole("button",{name:"发送回信"}).click();
-    await b.locator('.fed-mail-row[data-kind="reply-in"]').filter({hasText:"浏览器已收到"}).waitFor({state:"attached"});
-    assert.equal(await remoteDialog.getByText(/最近回信|浏览器已收到/).count(),0);
+    await incoming.getByRole("button",{name:"保存权限"}).waitFor();
+    assert.equal(await incoming.getByText(/最近来信与回信|发送回信/).count(),0);
+    assert.equal(await incoming.getByRole("textbox").count(),0);
+    assert.equal(await remoteDialog.getByText(/最近回信/).count(),0);
     assert.equal(await b.locator(".remote-capsule .terminal-surface").count(),0);
     assert.equal(await a.locator('[data-window="'+windowId+'"]').count(),1);
-    console.log("PASS Chromium node settings, remote capsule, approval, message and SSE reply with no remote PTY");
+    console.log("PASS Chromium node settings, remote capsule, approval and sharing settings without a manual reply form");
     await a.locator("#federation-dialog .dialog-header button").click();
     await b.locator("#federation-dialog .dialog-header button").click();
     assert(!sockets.some(url=>url.includes(remoteId+"/terminal")));
@@ -104,7 +100,8 @@ const link=require("node:fs").readFileSync(0,"utf8");
     for(const page of [a,b]) await page.evaluate(()=>{window.flightCount=0;
       new MutationObserver(records=>{for(const r of records) for(const n of r.addedNodes)
         if(n.classList?.contains("message-flight"))window.flightCount++;}).observe(document.body,{childList:true,subtree:true});});
-    assert((await b.request.post(requester+"/api/peers/remotes/"+remoteId+"/messages",{data:{id:requestId,text:"联邦离线唤醒验证"}})).ok());
+    fs.writeFileSync(path.join(project,"audit-marker.fixture"),"fixture");
+    assert((await b.request.post(requester+"/api/peers/remotes/"+remoteId+"/messages",{data:{id:requestId,text:"联邦离线唤醒验证",expectsReply:true}})).ok());
     await a.waitForFunction(id=>panes.get(id)?.view.agent.online,windowId,{timeout:30000});
     await b.waitForFunction(id=>snapshot.federation.remotes.some(r=>r.id===id && r.online && r.connected),remoteId);
     const colors=await b.locator('[data-remote-id="'+remoteId+'"] .nav-dot').evaluateAll(dots=>dots.map(dot=>getComputedStyle(dot).backgroundColor));
@@ -135,10 +132,29 @@ const link=require("node:fs").readFileSync(0,"utf8");
     assert.equal(fs.readFileSync(path.join(project,"accepted.txt"),"utf8").split("\n").filter(l=>l.includes("联邦离线唤醒验证")).length,1);
     assert.equal(fs.readFileSync(path.join(project,"terminal-pids.txt"),"utf8").trim().split(/\r?\n/).length,1);
     for(const page of [a,b]) await page.waitForFunction(()=>window.flightCount>0);
-    fs.writeFileSync(path.join(project,"audit-marker.txt"),"fixture");
-    const grants=(await (await a.request.get(provider+"/api/peers")).json()).grants;
-    const grant=grants.find(g=>g.windowId===windowId && g.status==="approved");
-    assert((await a.request.post(provider+"/api/peers/grants/"+grant.id+"/replies",{data:{id:crypto.randomUUID().replaceAll("-",""),requestId,text:"核对修改"}})).ok());
+    const reply=execFileSync("python",["-B","-c",`
+import hashlib, json, os, sqlite3, sys, uuid
+from pathlib import Path
+from contextlib import closing
+sys.path.insert(0, str(Path.cwd() / "tests"))
+from check_workbench import mcp
+window, request = sys.argv[1:]
+root = Path(os.environ["FF_TEST_WORKBENCH_STATE"])
+grant = uuid.uuid4().hex * 2
+with closing(sqlite3.connect(root / "workbench.sqlite")) as db:
+    task = db.execute("SELECT local FROM fed_incoming WHERE request=?", (request,)).fetchone()[0]
+    previous = db.execute("SELECT grant_hash FROM windows WHERE id=?", (window,)).fetchone()[0]
+    db.execute("UPDATE windows SET grant_hash=? WHERE id=?", (hashlib.sha256(grant.encode()).hexdigest().upper(), window))
+    db.commit()
+    try:
+        print(json.dumps(mcp(os.environ["FF_TEST_WORKBENCH_EXE"], root, grant, "send_to_agent",
+                             target="@reply-"+task, replyTo=task, finalReply=True, message="核对修改")))
+    finally:
+        db.execute("UPDATE windows SET grant_hash=? WHERE id=?", (previous, window))
+        db.commit()
+`,windowId,requestId],{encoding:"utf8"});
+    assert(!JSON.parse(reply).isError,reply);
+    await b.locator('.fed-mail-row[data-kind="reply-in"]').filter({hasText:"核对修改"}).waitFor({state:"attached"});
     await a.locator(".fed-mail-row[data-kind=audit]").filter({hasText:"audit-marker.txt"}).waitFor();
     await a.getByRole("button",{name:"外部来信",exact:true}).click();
     await a.locator(".fed-mail-row[data-kind=incoming]").filter({hasText:"请回一条确认"}).click();

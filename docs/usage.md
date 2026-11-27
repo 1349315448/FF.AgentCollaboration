@@ -46,9 +46,9 @@ Claude Code 与腾讯 CodeBuddy Code 支持原生频道的版本会请求启用�
 
    ![提供方查看申请并设置只读审阅与每日配额](images/approve-peer.png)
 
-4. **提供方**可以从 Agent 终端回复，也可以打开外部协作面板，在「最近来信与回信」选择原任务并发送回信。跨端 Markdown 附件每份最多 1 MiB。
+4. **提供方**在底部「协作信箱 → 外部来信」点开任务查看正文。接收 Agent 处理后，通过协作工具关联原任务回信。跨端 Markdown 附件每份最多 1 MiB。
 
-   ![提供方选择一条外部来信并填写回信](images/peer-inbox.png)
+   ![提供方在底部协作信箱查看外部来信](images/peer-inbox.png)
 
 5. **请求方**在协作信箱看回信。点正文可打开详细内容，有交接文档时从右侧阅读。
 
@@ -81,6 +81,8 @@ Claude Code 与腾讯 CodeBuddy Code 支持原生频道的版本会请求启用�
 CodeBuddy 需要 Node.js 18.20.8 或更高版本。选择 TRAE 中国版 CLI 2.0 时，工作台会提示账号限制；可在安装前核对自己的账号资格。[TRAE CLI 2.0 官方说明](https://docs.trae.cn/cli_about-trae-code-cli-2)
 
 OpenCode 支持 1.1.34 及之后的 1.x 和 2.4.2 及之后的 2.x，可在当前项目新建和恢复会话。Cursor CLI 需支持 `--plugin-dir`，历史会话在原生终端用 `/resume` 选择。两个引擎均可从新建 Agent 窗口打开官方安装指南，模型额度可在对应的服务商账号查看。[OpenCode CLI](https://opencode.ai/docs/cli/) · [Cursor CLI 参数](https://cursor.com/docs/cli/reference/parameters) · [Cursor 斜杠指令](https://cursor.com/docs/cli/reference/slash-commands)
+
+Google Antigravity CLI 安装后，在「新建 Agent」选择对应引擎。首次登录在原生终端完成，再返回工作台新建 Agent。历史会话用终端的 `/resume` 恢复，模型额度用 `/usage` 查看。工作台为每个窗格生成独立的 `lx_collab` 配置；可用原生 `/mcp` 检查加载状态。平台托管 MCP 和专用审阅终端暂未接入此引擎。[Antigravity 安装指南](https://antigravity.google/docs/cli-getting-started)
 
 点导航中的额度可刷新，将鼠标移至窗格额度可看详情。能显示的额度取决于引擎和账户。千问的 `/stats` 展示本机使用统计，百炼 Coding Plan 的剩余额度在百炼控制台查看。CodeBuddy 可在官网「个人主页 → 套餐与用量」查看剩余积分。
 

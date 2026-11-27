@@ -327,8 +327,6 @@ internal sealed partial class WorkbenchStore
         return new { id, status = "accepted", permissionMode = permission };
     }
 
-    internal void PeerReply(string grant, PeerMessage input) => Atomic(() => RecordPeerReply(grant, input));
-
     private void RecordPeerReply(string grant, PeerMessage input)
     {
         string id = WorkbenchInput.Id(input.Id), source = WorkbenchInput.Id(input.RequestId);
@@ -362,14 +360,6 @@ internal sealed partial class WorkbenchStore
         }
         if (input.FinalReply!=false)
             Exec("UPDATE fed_incoming SET active=0 WHERE grant_id=$p0 AND request=$p1", grant, source);
-    }
-
-    internal object RecentPeerRequests(string grant)
-    {
-        Window(Grant(grant).WindowId);
-        return Read("""
-            SELECT id,body,permission FROM fed_request WHERE grant_id=$p0 ORDER BY rowid DESC LIMIT 20
-            """, r => new { id = r.GetString(0), text = r.GetString(1), permissionMode = r.GetString(2) }, grant);
     }
 
     internal List<PeerEvent> PeerEvents(string grant, long after, bool acceptsContacts, bool acceptsRemoval) => Read("""
