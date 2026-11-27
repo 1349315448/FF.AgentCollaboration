@@ -23,9 +23,15 @@ builder.WebHost.ConfigureKestrel(server =>
         server.ConfigureHttpsDefaults(https => https.ServerCertificateSelector = (_, _) => certificate.Current);
 });
 
-var rooms = new InvitationRooms(origin, TimeProvider.System);
+builder.Services.AddSingleton(sp => new StunBindingService(origin, sp.GetRequiredService<ILogger<StunBindingService>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<StunBindingService>());
 byte[] issuerHash = InvitationRooms.Digest(key);
 var app = builder.Build();
+var helper = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows()
+    ? "FF.AgentCollaboration.WebRtc.exe" : "FF.AgentCollaboration.WebRtc");
+var rooms = new InvitationRooms(origin, TimeProvider.System, File.Exists(helper) ? helper : null,
+    app.Services.GetRequiredService<StunBindingService>());
+if (!File.Exists(helper)) app.Logger.LogWarning("缺少 WebRTC 组件，内置 TURN 中继不可用");
 app.Use(async (context, next) =>
 {
     // 公网可以直连 TLS，反向代理可在同主机通过环回 HTTP 转发。
@@ -72,6 +78,7 @@ api.MapPost("/rooms/{id:guid}/claim", (Guid id, HttpContext context) =>
 });
 api.MapGet("/rooms/{id:guid}/connect", (Guid id, HttpContext context) =>
     SignalingSocket.Handle(context, rooms, id, app.Lifetime.ApplicationStopping));
+api.MapGet("/rooms/{id:guid}/relay", (Guid id, HttpContext context) => TurnRoom.Handle(context, rooms, id));
 
 await app.StartAsync();
 Console.WriteLine("FF_SIGNALING " + app.Urls.First());

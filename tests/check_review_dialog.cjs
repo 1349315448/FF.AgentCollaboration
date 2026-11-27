@@ -79,25 +79,36 @@ async function verifySignalingSettings(page, url) {
   await page.keyboard.insertText(consoleLine);
   assert.equal(await fingerprint.inputValue(), consoleLine);
   await field.fill(process.env.FF_TEST_SIGNAL_KEY);
+  await dialog.getByText("其他 STUN / TURN 服务器（可选）", { exact: true }).click();
+  await dialog.getByRole("button", { name: "添加 STUN / TURN 服务器", exact: true }).click();
+  await dialog.getByLabel("STUN / TURN 地址", { exact: true }).fill(process.env.FF_TEST_TURN_URL);
+  await dialog.getByLabel("TURN 用户名", { exact: true }).fill("relay-user");
+  const relayPassword = dialog.getByLabel("TURN 密码", { exact: true });
+  await relayPassword.fill(process.env.FF_TEST_TURN_PASSWORD);
   await save.click();
   await dialog.getByText("已保存信令设置", { exact: true }).waitFor();
   assert.equal(await field.inputValue(), "");
   assert.equal(await field.getAttribute("placeholder"), "已保存，留空保留");
-  await dialog.getByRole("button", { name: "测试连接", exact: true }).click();
-  await dialog.getByText("连接成功，公钥指纹已核对", { exact: true }).waitFor();
+  assert.equal(await relayPassword.inputValue(), "");
+  assert.equal(await relayPassword.getAttribute("placeholder"), "已保存，留空保留");
+  await dialog.getByRole("button", { name: "测试信令连接", exact: true }).click();
+  await dialog.getByText("信令连接成功，公钥指纹已核对", { exact: true }).waitFor();
   await dialog.getByRole("button", { name: "关闭配置", exact: true }).click();
   await dialog.waitFor({ state: "hidden" });
   const reload = page.waitForResponse(response =>
     new URL(response.url()).pathname === "/api/peers/signaling/settings" && response.request().method() === "GET" && response.ok());
   await page.locator("#open-settings").click();
   await reload;
-  await dialog.getByRole("button", { name: "测试连接", exact: true }).waitFor();
+  await dialog.getByRole("button", { name: "测试信令连接", exact: true }).waitFor();
   await page.waitForFunction(pin => document.querySelector('input[placeholder="可粘贴服务器控制台的整行指纹"]')?.value === pin,
     process.env.FF_TEST_SIGNAL_PIN.toUpperCase());
   assert.equal(await dialog.getByLabel("服务地址", { exact: true }).inputValue(), process.env.FF_TEST_SIGNAL_ORIGIN);
   assert.equal(await field.inputValue(), "");
   assert.equal(await field.getAttribute("placeholder"), "已保存，留空保留");
-  console.log("PASS Chromium pastes a full console fingerprint line, verifies TLS and restores saved settings on reopen");
+  assert.equal(await dialog.getByLabel("STUN / TURN 地址", { exact: true }).inputValue(), process.env.FF_TEST_TURN_URL);
+  assert.equal(await relayPassword.inputValue(), "");
+  assert.equal(await relayPassword.getAttribute("placeholder"), "已保存，留空保留");
+  console.log("PASS Chromium saves TURN settings, verifies TLS and restores settings without credentials on reopen");
 }
 
 async function verify(url, mode) {

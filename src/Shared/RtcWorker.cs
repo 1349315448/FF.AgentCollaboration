@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 
-namespace FF.AgentCollaboration.Application;
+namespace FF.AgentCollaboration.Transport;
 
 /// <summary>浏览器独立的传输进程。标准输入仅交换 SDP 和启动参数。</summary>
 internal sealed class RtcWorker : IDisposable
@@ -10,7 +10,9 @@ internal sealed class RtcWorker : IDisposable
     private int disposed;
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
-    internal RtcWorker(string executable)
+    private readonly IDisposable? transport;
+
+    internal RtcWorker(string executable, IDisposable? transport = null)
     {
         var start = new ProcessStartInfo(executable)
         {
@@ -18,6 +20,7 @@ internal sealed class RtcWorker : IDisposable
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
         };
         process = Process.Start(start) ?? throw new IOException("无法启动 WebRTC 传输进程");
+        this.transport = transport;
         process.BeginErrorReadLine();
     }
 
@@ -52,6 +55,6 @@ internal sealed class RtcWorker : IDisposable
         if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
         catch (InvalidOperationException) { }
-        finally { process.Dispose(); }
+        finally { process.Dispose(); transport?.Dispose(); }
     }
 }

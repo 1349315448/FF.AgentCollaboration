@@ -34,6 +34,9 @@
 #federation-dialog .fed-share-feedback { margin:0; padding:0 14px 14px; }
 .fed-fields,.fed-grant { display:grid; gap:9px; }
 .fed-fields label:not(.fed-row) { display:grid; gap:4px; }
+.fed-ice-heading { margin:4px 0 0; }
+.fed-ice-server { min-width:0; margin:0; padding:9px 10px; border:1px solid var(--line); border-radius:5px; }
+.fed-ice-server .text-button { justify-self:start; }
 .fed-fields small,.remote-capsule small,.fed-grant code { color:var(--muted); }
 .fed-row,.remote-capsule,.fed-grant header,.fed-badge,.fed-policy { display:flex; align-items:center; gap:6px; }
 .fed-fields .fed-row label { display:inline-flex; align-items:center; gap:4px; }

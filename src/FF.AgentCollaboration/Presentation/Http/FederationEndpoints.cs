@@ -38,6 +38,7 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
             origin = state.Values.Origin,
             fingerprint = state.Values.Fingerprint,
             hasSigningKey = !string.IsNullOrWhiteSpace(state.Values.SigningKey),
+            iceServers = state.Values.Servers.Select(server => new { server.Url, server.Username, hasCredential = server.Credential != null }),
             bridgeAvailable = bridgeBlockReason == null,
             bridgeBlockReason,
             readError = state.ReadError

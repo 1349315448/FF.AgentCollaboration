@@ -61,13 +61,13 @@ internal sealed class SignalingTrust
         BaseAddress = new Uri(Origin, "/api/signaling/v1/"), Timeout = TimeSpan.FromSeconds(8)
     };
 
-    internal async Task<ClientWebSocket> Open(string room, string ticket, CancellationToken ct)
+    internal async Task<ClientWebSocket> Open(string room, string ticket, CancellationToken ct, bool relay = false)
     {
         var socket = new ClientWebSocket();
         socket.Options.RemoteCertificateValidationCallback = Validate;
         socket.Options.SetRequestHeader("Authorization", "Bearer " + ticket);
         var uri = new UriBuilder(Origin) { Scheme = "wss", Port = Origin.Port,
-            Path = "/api/signaling/v1/rooms/" + room + "/connect" }.Uri;
+            Path = "/api/signaling/v1/rooms/" + room + (relay ? "/relay" : "/connect") }.Uri;
         try
         {
             await socket.ConnectAsync(uri, ct);

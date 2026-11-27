@@ -11,7 +11,7 @@ $start.ArgumentList.Add('http://127.0.0.1:0')
 $start.UseShellExecute = $false
 $start.RedirectStandardOutput = $true
 $start.Environment['InternalService__Key'] = $issuerKey
-$start.Environment['Signaling__PublicOrigin'] = 'https://signal.example.invalid:9443'
+$start.Environment['Signaling__PublicOrigin'] = 'https://127.0.0.1:9443'
 $process = [System.Diagnostics.Process]::Start($start)
 
 function Assert-Equal($Actual, $Expected) {
@@ -22,12 +22,12 @@ function Request($Path, $Headers, $Body) {
     Invoke-WebRequest -Uri ($base + $Path) -Method Post -Headers $Headers -Body $Body -ContentType 'application/json' -TimeoutSec 5 -SkipHttpErrorCheck
 }
 
-function Connect($Room, $Token) {
+function Connect($Room, $Token, $Operation = 'connect') {
     $socket = [Net.WebSockets.ClientWebSocket]::new()
     try {
         $socket.Options.SetRequestHeader('Authorization', 'Bearer ' + $Token)
         $socket.Options.CollectHttpResponseDetails = $true
-        $uri = [uri]($base.Replace('http://','ws://') + $socketPath + '/' + $Room + '/connect')
+        $uri = [uri]($base.Replace('http://','ws://') + $socketPath + '/' + $Room + '/' + $Operation)
         [void]$socket.ConnectAsync($uri, $timeout.Token).GetAwaiter().GetResult()
         return $socket
     } catch {
@@ -76,7 +76,7 @@ try {
     $other = (Request $invitePath $issuer $metadata).Content | ConvertFrom-Json
     $link = [uri]$invitation.link
     Assert-Equal $link.Scheme 'ffcp'
-    Assert-Equal $link.Authority 'signal.example.invalid:9443'
+    Assert-Equal $link.Authority '127.0.0.1:9443'
     Assert-Equal $link.AbsolutePath ('/signal/' + $invitation.roomId)
     if ($link.Fragment.Length -ne 65 -or $link.ToString().Contains($invitation.hostTicket)) {
         throw 'The link must contain only the guest invitation secret'
@@ -90,13 +90,23 @@ try {
     Assert-Equal (Request $claim $join '{}').StatusCode 401
     Assert-Equal (Connect $invitation.roomId $link.Fragment.Substring(1)) 401
     Assert-Equal (Connect $other.roomId $ticket) 401
+    Assert-Equal (Connect $other.roomId $ticket 'relay') 401
+    Assert-Equal (Connect $invitation.roomId $link.Fragment.Substring(1) 'relay') 401
 
     $hostSocket = Connect $invitation.roomId $invitation.hostTicket
     Assert-Equal (Connect $invitation.roomId $invitation.hostTicket) 409
     $guest = Connect $invitation.roomId $ticket
     $otherHost = Connect $other.roomId $other.hostTicket
     Assert-Equal ((Receive $hostSocket | ConvertFrom-Json).type) 'ready'
-    Assert-Equal ((Receive $guest | ConvertFrom-Json).type) 'ready'
+    $ready = Receive $guest | ConvertFrom-Json
+    Assert-Equal $ready.type 'ready'
+    if ($ready.turnPassword) {
+        $relay = Connect $invitation.roomId $ticket 'relay'
+        try {
+            Assert-Equal $relay.State 'Open'
+            Assert-Equal (Connect $invitation.roomId $ticket 'relay') 409
+        } finally { $relay.Dispose() }
+    }
     $offer = '{"type":"offer","sdp":"v=0\r\ns=room-offer"}'
     $answer = '{"type":"answer","sdp":"v=0\r\ns=room-answer"}'
     $candidate = '{"type":"ice","candidate":{"candidate":"candidate:1 1 UDP 42 192.0.2.1 12345 typ host","sdpMid":"0"}}'

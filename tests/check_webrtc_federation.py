@@ -1,6 +1,6 @@
 """Exercise signaling, two isolated workbenches and their actual WebRTC workers."""
 
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, ExitStack
 import hashlib
 import json
 import os
@@ -8,6 +8,7 @@ from pathlib import Path
 from queue import Queue
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -20,15 +21,50 @@ from check_workbench import host, http, mcp, new_id
 
 
 @contextmanager
-def signals(dll, root, key):
+def stun_probe():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.settimeout(.2)
+        observed = threading.Event()
+        stop = threading.Event()
+        cookie = 0x2112A442
+
+        def answer():
+            while not stop.is_set():
+                try:
+                    request, source = listener.recvfrom(2048)
+                except socket.timeout:
+                    continue
+                if len(request) < 20 or request[:2] != b"\x00\x01" or request[4:8] != cookie.to_bytes(4, "big"):
+                    continue
+                address = int.from_bytes(socket.inet_aton(source[0]), "big") ^ cookie
+                mapped = struct.pack("!HHBBHI", 0x0020, 8, 0, 1, source[1] ^ (cookie >> 16), address)
+                listener.sendto(struct.pack("!HH", 0x0101, len(mapped)) + request[4:20] + mapped, source)
+                observed.set()
+
+        worker = threading.Thread(target=answer, daemon=True)
+        worker.start()
+        try:
+            yield f"stun:127.0.0.1:{listener.getsockname()[1]}", observed
+        finally:
+            stop.set()
+            worker.join(timeout=1)
+
+
+@contextmanager
+def signals(dll, root, key, *, block_udp=False):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     endpoint = f"https://127.0.0.1:{port}"
     env = dict(os.environ, InternalService__Key=key, Signaling__PublicOrigin=endpoint,
                Signaling__CertificatePath=str(root / "signal.pfx"))
-    with subprocess.Popen(["dotnet", dll, "--urls", endpoint], cwd=root, env=env,
-                          stdout=subprocess.PIPE, text=True, encoding="utf-8") as process:
+    with ExitStack() as scope:
+        if block_udp:
+            blocked = scope.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+            blocked.bind(("127.0.0.1", port))
+        process = scope.enter_context(subprocess.Popen(["dotnet", dll, "--urls", endpoint], cwd=root, env=env,
+                                      stdout=subprocess.PIPE, text=True, encoding="utf-8"))
         lines = Queue()
         def read():
             for line in process.stdout:
@@ -63,17 +99,31 @@ def browser_check(url, mode):
                    check=True, timeout=35)
 
 
-def verify(dll, exe, bridge, root, ui):
+def verify(dll, exe, bridge, root, ui, relay_only):
     key = new_id() * 2
     work = root / "project"
     work.mkdir()
+    proof = root / "relay-workers"
+    proof.mkdir()
     local, remote = root / "provider", root / "requester"
-    with signals(dll, root, key) as (origin, pin), patch.dict(os.environ,
-        LOCALAPPDATA=str(root / "profile"), Signaling__BridgeExecutable=bridge), \
+    with stun_probe() as (ice_url, observed), signals(dll, root, key, block_udp=relay_only) as (origin, pin), patch.dict(os.environ,
+        LOCALAPPDATA=str(root / "profile"), Signaling__BridgeExecutable=bridge,
+        FF_TEST_RELAY_ONLY="1" if relay_only else "0", FF_TEST_RELAY_PROOF=str(proof)), \
         host(exe, local, work) as provider, host(exe, remote, work) as requester:
+        address = urlsplit(origin)
+        if not relay_only:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp:
+                udp.settimeout(4)
+                transaction = os.urandom(12)
+                udp.sendto(bytes.fromhex("000100002112a442") + transaction, (address.hostname, address.port))
+                reply = udp.recv(64)
+                assert reply[:8] == bytes.fromhex("0101000c2112a442") and reply[8:20] == transaction
+                assert int.from_bytes(reply[26:28], "big") ^ 0x2112 == udp.getsockname()[1]
+                assert bytes(a ^ b for a, b in zip(reply[28:32], reply[4:8])) == socket.inet_aton("127.0.0.1")
         for url, signing_key in ((provider, key), (requester, None)):
             status, settings = http(url, "/api/peers/signaling/settings", {
-                "origin": origin, "fingerprint": pin, "signingKey": signing_key}, "PUT")
+                "origin": origin, "fingerprint": pin, "signingKey": signing_key,
+                "iceServers": [] if relay_only else [{"url": ice_url}]}, "PUT")
             assert status == 200 and settings["hasSigningKey"] == (signing_key is not None), settings
             assert "signingKey" not in settings
         p = http(provider, "/api/topics", {"name": "Provider", "project": str(work)})[1]["id"]
@@ -104,6 +154,10 @@ def verify(dll, exe, bridge, root, ui):
             assert get(provider)["grants"][0]["status"] == "pending"
         assert http(provider, "/api/peers/grants/" + grant["id"], {"action": "approve"}, "PUT")[0] == 200
         until(lambda: get(requester)["remotes"], lambda records: records and records[0]["connected"])
+        if not relay_only:
+            assert observed.is_set(), "the WebRTC workers did not use the STUN server configured in the database"
+        else:
+            assert len(list(proof.iterdir())) >= 2, "use the worker built with go test -c for --relay-only"
         message = new_id()
         status, receipt = http(requester, "/api/peers/remotes/" + capsule["id"] + "/messages",
                                {"id": message, "text": "通过后台 WebRTC 收件"}, timeout=20)
@@ -160,4 +214,4 @@ def verify(dll, exe, bridge, root, ui):
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="ff-webrtc-federation-") as folder:
-        verify(*(str(Path(item).resolve()) for item in sys.argv[1:4]), Path(folder), "--ui" in sys.argv[4:])
+        verify(*(str(Path(item).resolve()) for item in sys.argv[1:4]), Path(folder), "--ui" in sys.argv[4:], "--relay-only" in sys.argv[4:])

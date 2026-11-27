@@ -5,6 +5,7 @@ using System.Net.WebSockets;
 using System.Text.Json;
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Infrastructure.Storage;
+using FF.AgentCollaboration.Transport;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
@@ -174,11 +175,33 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
                     using var websocket = await session.Trust.Open(room.Room, room.Ticket, ct);
                     while (!ct.IsCancellationRequested)
                     {
-                        await Receive(websocket, "ready", ct);
+                        var ready = await Receive(websocket, "ready", ct);
                         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
                         timeout.CancelAfter(TimeSpan.FromSeconds(45));
-                        var ice = configuration.GetSection("Signaling:IceServers").Get<RtcIceServer[]>() ?? [];
-                        var peer = new RtcWorker(Executable(configuration)!);
+                        var ice = settings.Read().Values.Servers.Select(server => new
+                        {
+                            urls = new[] { server.Url! },
+                            // Pion 的 ICE 配置将认证字段按字符串读取，STUN 使用空字符串。
+                            username = server.Username ?? "",
+                            credential = server.Credential ?? ""
+                        }).ToList();
+                        var origin = session.Trust.Origin;
+                        if (ready.TryGetProperty("stun", out var stun) && stun.ValueKind == JsonValueKind.True)
+                        {
+                            string url = $"stun:{origin.Host}:{origin.Port}";
+                            if (!ice.Any(server => server.urls.Contains(url)))
+                                ice.Add(new { urls = new[] { url }, username = "", credential = "" });
+                        }
+                        TurnTunnel? tunnel = null;
+                        if (ready.TryGetProperty("turnPassword", out var password) && FederationPolicy.IsSecret(password.GetString()))
+                        {
+                            tunnel = new TurnTunnel(session.Trust, room.Room, room.Ticket);
+                            ice.Add(new { urls = new[] { $"turn:127.0.0.1:{tunnel.Port}?transport=tcp" },
+                                username = "member", credential = password.GetString()! });
+                        }
+                        RtcWorker peer;
+                        try { peer = new RtcWorker(Executable(configuration)!, tunnel); }
+                        catch { tunnel?.Dispose(); throw; }
                         session.Worker?.Dispose();
                         session.Worker = peer;
                         if (room.Host)
@@ -186,11 +209,11 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
                             await peer.Write(new { role = "provider", federationPort = network.RtcPort, iceServers = ice }, timeout.Token);
                             await Send(websocket, "offer", (await peer.Read(timeout.Token)).GetProperty("sdp").GetString(), timeout.Token);
                             var answer = await Receive(websocket, "answer", timeout.Token);
-                            await peer.Write(new { answer }, timeout.Token);
+                            await peer.Write(new { answer = answer.GetProperty("sdp").GetString() }, timeout.Token);
                         }
                         else
                         {
-                            string offer = await Receive(websocket, "offer", timeout.Token);
+                            string offer = (await Receive(websocket, "offer", timeout.Token)).GetProperty("sdp").GetString()!;
                             await peer.Write(new { role = "requester", offer, iceServers = ice }, timeout.Token);
                             await Send(websocket, "answer", (await peer.Read(timeout.Token)).GetProperty("sdp").GetString(), timeout.Token);
                         }
@@ -213,7 +236,7 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
         }
     }
 
-    private static async Task<string> Receive(ClientWebSocket websocket, string expected, CancellationToken ct)
+    private static async Task<JsonElement> Receive(ClientWebSocket websocket, string expected, CancellationToken ct)
     {
         var buffer = new byte[32 * 1024];
         while (true)
@@ -229,7 +252,7 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
             } while (!part.EndOfMessage);
             using var message = JsonDocument.Parse(buffer.AsMemory(0, count));
             if (message.RootElement.GetProperty("type").GetString() == expected)
-                return message.RootElement.TryGetProperty("sdp", out var sdp) ? sdp.GetString()! : "";
+                return message.RootElement.Clone();
         }
     }
 
@@ -241,5 +264,3 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
         foreach (var session in sessions.Values) session.Worker?.Dispose();
     }
 }
-
-internal sealed record RtcIceServer(string[] Urls, string? Username, string? Credential);

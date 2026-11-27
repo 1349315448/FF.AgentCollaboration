@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -21,6 +22,7 @@ type startRequest struct {
 	FederationPort int
 	Offer          string
 	IceServers     []webrtc.ICEServer
+	Password       string
 }
 
 const (
@@ -30,18 +32,21 @@ const (
 )
 
 func main() {
-	if err := run(os.Stdin, os.Stdout); err != nil {
+	if err := run(os.Stdin, os.Stdout, webrtc.ICETransportPolicyAll); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(input io.Reader, output io.Writer) error {
+func run(input io.Reader, output io.Writer, policy webrtc.ICETransportPolicy) error {
 	decoder := json.NewDecoder(input)
 	writer := json.NewEncoder(output)
 	var request startRequest
 	if err := decoder.Decode(&request); err != nil {
 		return err
+	}
+	if request.Role == "turn-server" {
+		return serveTurnRoom(request.Password, input, writer)
 	}
 	provider := request.Role == "provider"
 	if (provider && (request.FederationPort < 1 || request.FederationPort > 65535)) ||
@@ -51,7 +56,7 @@ func run(input io.Reader, output io.Writer) error {
 	var settings webrtc.SettingEngine
 	settings.DetachDataChannels()
 	connection, err := webrtc.NewAPI(webrtc.WithSettingEngine(settings)).NewPeerConnection(webrtc.Configuration{
-		ICEServers: request.IceServers,
+		ICEServers: request.IceServers, ICETransportPolicy: policy,
 	})
 	if err != nil {
 		return err
@@ -150,7 +155,10 @@ func publishDescription(ctx context.Context, connection *webrtc.PeerConnection, 
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-time.After(12 * time.Second):
-		return errors.New("ICE gathering timed out")
+		// A slow optional STUN/TURN service must not discard already gathered paths.
+		if !strings.Contains(connection.LocalDescription().SDP, "a=candidate:") {
+			return errors.New("ICE gathering timed out without candidates")
+		}
 	}
 	return writer.Encode(map[string]string{"sdp": connection.LocalDescription().SDP})
 }

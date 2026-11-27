@@ -1,0 +1,42 @@
+<Project>
+  <ItemGroup>
+    <None Include="$(WebRtcBridgeFile)" Condition="'$(WebRtcBridgeFile)' != ''" Link="%(Filename)%(Extension)" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Compile Include="../Shared/WebSocketStreamPump.cs" Link="Transport/WebSocketStreamPump.cs" />
+    <Compile Include="../Shared/RtcWorker.cs" Link="Transport/RtcWorker.cs" />
+  </ItemGroup>
+  <Target Name="PublishWebRtcBridge" AfterTargets="ComputeResolvedFilesToPublishList"
+          Condition="'$(WebRtcBridgeFile)' == ''">
+    <PropertyGroup>
+      <_WebRtcRuntime>$(RuntimeIdentifier)</_WebRtcRuntime>
+      <_WebRtcRuntime Condition="'$(_WebRtcRuntime)' == ''">$(DefaultAppHostRuntimeIdentifier)</_WebRtcRuntime>
+      <_WebRtcRuntime Condition="'$(_WebRtcRuntime)' == ''">$(NETCoreSdkRuntimeIdentifier)</_WebRtcRuntime>
+    </PropertyGroup>
+    <PropertyGroup>
+      <_WebRtcOS Condition="$(_WebRtcRuntime.StartsWith('win'))">windows</_WebRtcOS>
+      <_WebRtcOS Condition="$(_WebRtcRuntime.StartsWith('linux'))">linux</_WebRtcOS>
+      <_WebRtcOS Condition="$(_WebRtcRuntime.StartsWith('osx'))">darwin</_WebRtcOS>
+      <_WebRtcArch Condition="$(_WebRtcRuntime.EndsWith('-x64'))">amd64</_WebRtcArch>
+      <_WebRtcArch Condition="$(_WebRtcRuntime.EndsWith('-arm64'))">arm64</_WebRtcArch>
+      <_WebRtcArch Condition="$(_WebRtcRuntime.EndsWith('-x86'))">386</_WebRtcArch>
+      <_WebRtcName>FF.AgentCollaboration.WebRtc</_WebRtcName>
+      <_WebRtcName Condition="'$(_WebRtcOS)' == 'windows'">FF.AgentCollaboration.WebRtc.exe</_WebRtcName>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(_WebRtcArch)' != ''">
+      <_WebRtcSource>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '../FF.AgentCollaboration.WebRtc'))</_WebRtcSource>
+      <_WebRtcOutputDirectory>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'webrtc', '$(_WebRtcOS)-$(_WebRtcArch)'))</_WebRtcOutputDirectory>
+      <_WebRtcOutput>$(_WebRtcOutputDirectory)$(_WebRtcName)</_WebRtcOutput>
+    </PropertyGroup>
+    <MakeDir Condition="'$(_WebRtcArch)' != ''" Directories="$(_WebRtcOutputDirectory)" />
+    <Exec Condition="'$(_WebRtcArch)' != ''" WorkingDirectory="$(_WebRtcSource)"
+          EnvironmentVariables="CGO_ENABLED=0;GOOS=$(_WebRtcOS);GOARCH=$(_WebRtcArch)"
+          Command="go build -mod=readonly -buildvcs=false -trimpath -o &quot;$(_WebRtcOutput)&quot; ." IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="_WebRtcBuildExitCode" />
+    </Exec>
+    <Error Condition="'$(_WebRtcArch)' != '' and '$(_WebRtcBuildExitCode)' != '0'"
+           Text="无法构建 WebRTC 后台组件。请确认发布环境已安装 Go 1.24 或更高版本，且 go 在 PATH 中，或通过 WebRtcBridgeFile 指定已构建的组件。" />
+    <ItemGroup Condition="'$(_WebRtcArch)' != ''">
+      <ResolvedFileToPublish Include="$(_WebRtcOutput)" RelativePath="$(_WebRtcName)"
+                             CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    </ItemGroup>
+  </Target>
+</Project>

@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
+using System.Text.Json;
 
 namespace FF.AgentCollaboration.Signaling;
 
@@ -9,11 +10,10 @@ internal sealed record Invitation(string RoomId, string Link, string HostTicket,
 internal sealed record ClaimReceipt(string Ticket, DateTimeOffset ExpiresAt);
 
 /// <summary>原子签发和认领邀请，管理各房间的连接与转发队列。</summary>
-internal sealed class InvitationRooms(Uri origin, TimeProvider clock)
+internal sealed class InvitationRooms(Uri origin, TimeProvider clock, string? turnExecutable, StunBindingService stun)
 {
     private static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(15);
     private const int Capacity = 128;
-    private static readonly byte[] Ready = """{"type":"ready"}"""u8.ToArray();
     private static readonly byte[] PeerOffline = """{"type":"peer-offline"}"""u8.ToArray();
     private readonly Lock gate = new();
     private readonly Dictionary<Guid, Room> rooms = new();
@@ -23,7 +23,7 @@ internal sealed class InvitationRooms(Uri origin, TimeProvider clock)
         lock (gate)
         {
             var now = clock.GetUtcNow();
-            foreach (var entry in rooms.Where(entry => entry.Value.ExpiresAt <= now).ToArray())
+            foreach (var entry in rooms.Where(entry => entry.Value.ExpiresAt <= now && !entry.Value.Relay.Active).ToArray())
                 rooms.Remove(entry.Key);
             if (rooms.Count >= Capacity) return null;
 
@@ -66,8 +66,10 @@ internal sealed class InvitationRooms(Uri origin, TimeProvider clock)
             room.SetMember(host, peer);
             if (room.Member(!host) is { } other)
             {
-                Notify(peer, Ready);
-                Notify(other, Ready);
+                var ready = JsonSerializer.SerializeToUtf8Bytes(new { type = "ready", stun = stun.Available,
+                    turnPassword = turnExecutable == null ? null : room.Relay.Password });
+                Notify(peer, ready);
+                Notify(other, ready);
             }
             return (peer, false);
         }
@@ -93,6 +95,20 @@ internal sealed class InvitationRooms(Uri origin, TimeProvider clock)
 
     internal TimeSpan TimeRemaining(Peer peer) => peer.Room.ExpiresAt - clock.GetUtcNow();
 
+    internal (TurnRoom.Lease? Lease, int Status) OpenRelay(Guid id, string? ticket)
+    {
+        lock (gate)
+        {
+            var room = FindActive(id);
+            if (room?.GuestHash == null) return (null, 401);
+            bool host = Matches(room.HostHash, ticket);
+            if (!host && !Matches(room.GuestHash, ticket)) return (null, 401);
+            if (turnExecutable == null) return (null, 503);
+            var lease = room.Relay.Acquire(host, turnExecutable);
+            return (lease, lease == null ? 409 : 200);
+        }
+    }
+
     private Room? FindActive(Guid id) =>
         rooms.TryGetValue(id, out var room) && room.ExpiresAt > clock.GetUtcNow() ? room : null;
 
@@ -114,6 +130,7 @@ internal sealed class InvitationRooms(Uri origin, TimeProvider clock)
         internal byte[] HostHash { get; } = hostHash;
         internal byte[]? JoinHash { get; set; } = joinHash;
         internal byte[]? GuestHash { get; set; }
+        internal TurnRoom Relay { get; } = new();
         private Peer? host, guest;
 
         internal Peer? Member(bool asHost) => asHost ? host : guest;
