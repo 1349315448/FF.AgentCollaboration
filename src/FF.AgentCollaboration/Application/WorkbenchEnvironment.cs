@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Engines;
 using FF.AgentCollaboration.Infrastructure.Files;
@@ -26,7 +25,7 @@ internal static class WorkbenchEnvironment
     internal static async Task<HealthItem[]> Inspect(WorkbenchStore store, string data, CancellationToken ct)
     {
         var (archive, handoffs) = store.Directories;
-        var native = Path.Combine(AppContext.BaseDirectory, "runtimes", RuntimeInformation.RuntimeIdentifier, "native");
+        var native = AppContext.BaseDirectory;
         bool conpty = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) &&
             File.Exists(Path.Combine(native, "OpenConsole.exe")) && File.Exists(Path.Combine(native, "conpty.dll"));
         var winget = EngineInstallation.Winget();
