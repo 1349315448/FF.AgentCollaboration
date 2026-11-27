@@ -14,6 +14,10 @@ namespace FF.AgentCollaboration.Presentation.Http;
 
 internal static class WorkbenchHost
 {
+    internal static bool IsLoopback(HttpContext context) =>
+        context.Connection.LocalIpAddress is { } local && IPAddress.IsLoopback(local) &&
+        context.Connection.RemoteIpAddress is { } remote && IPAddress.IsLoopback(remote);
+
     internal static async Task Run(string root, string[] options)
     {
         string? project = null;
@@ -23,10 +27,12 @@ internal static class WorkbenchHost
         int? lanPort = null;
         bool fixedDirectory = false;
         bool openBrowser = false;
+        bool loopbackOnly = false;
         for (int index = 0; index < options.Length; index++)
         {
             if (options[index] == "--open-browser") { openBrowser = true; continue; }
             if (options[index] == "--fixed-data-dir") { fixedDirectory = true; continue; }
+            if (options[index] == "--loopback-only") { loopbackOnly = true; continue; }
             if (index + 1 == options.Length) throw new WorkbenchError($"请为 {options[index]} 指定参数");
             switch (options[index])
             {
@@ -43,13 +49,16 @@ internal static class WorkbenchHost
             index++;
         }
 
+        if (loopbackOnly && lanPort != null) throw new WorkbenchError("仅本机监听不能同时开启局域网 HTTP");
         CollaborationSkill.Read();
+        CollaborationSkill.ReadTeam(leader: true);
+        CollaborationSkill.ReadTeam(leader: false);
         string initial = root;
         var location = new WorkbenchLocation(initial, fixedDirectory, knowledge);
         using var startup = new WorkbenchStartup(location, initial, project, knowledge, handoffs);
         startup.OpenExisting();
         using var network = new FederationNetwork(startup);
-        network.SelectListener(port);
+        network.SelectListener(port, loopbackOnly);
         IPAddress? lanIp = null;
         if (lanPort != null)
         {

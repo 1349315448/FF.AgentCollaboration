@@ -5,6 +5,8 @@ import { fitProjectPath } from "../../services/projectPath";
 import { TopicAgentList } from "./AgentNavigationItem";
 import { NavigationName } from "./NavigationName";
 import { WorkspaceIcon } from "./WorkspaceIcon";
+import { ProjectKnowledgeDialog } from "../dialogs/ProjectKnowledgeDialog";
+import { knowledgeUiLocal } from "../../services/knowledge";
 
 // A selected path opens on page load. Remounting its parent preserves later user choices.
 const touchedBranches = new Set<string>();
@@ -55,7 +57,7 @@ function TopicBranch({topic}:{topic:Topic}) {
   </li>;
 }
 
-function ProjectBranch({path,total,topics}:{path:string;total:ProjectTotals;topics:Topic[]}) {
+function ProjectBranch({path,total,topics,onSettings}:{path:string;total:ProjectTotals;topics:Topic[];onSettings:()=>void}) {
   const {snapshot,topic}=useWorkbench();
   const key=projectKey(path), current=!!snapshot?.project && projectKey(snapshot.project)===key;
   const project=useBranch("project."+key,current);
@@ -74,8 +76,11 @@ function ProjectBranch({path,total,topics}:{path:string;total:ProjectTotals;topi
   const description=path+" · "+total.topics+" 话题 · 工作 "+total.working+" · 空闲 "+total.idle+" · 离线 "+total.offline;
   return <li data-project={path}>
     <div className="tree-row project-button" data-key={key} id={current?"current-project":undefined}
-      data-activity={(total.agents || remotes.size) && !active ? "offline" : total.activity} title={description} onClick={event=>{if (!(event.target as Element).closest("button")) project.toggle();}}>
-      <button type="button" className="project-select" aria-expanded={project.expanded} aria-label={description} onClick={project.toggle}>
+      data-activity={(total.agents || remotes.size) && !active ? "offline" : total.activity} title={description+(knowledgeUiLocal?" · 双击打开项目设置":"")}
+      onClick={event=>{if (!(event.target as Element).closest("button")) project.toggle();}}
+      onDoubleClick={event=>{if (knowledgeUiLocal && !(event.target as Element).closest(".tree-actions")) onSettings();}}>
+      <button type="button" className="project-select" aria-expanded={project.expanded} aria-label={description} onClick={project.toggle}
+        onKeyDown={event=>{if (knowledgeUiLocal && event.key==="F2") {event.preventDefault(); onSettings();}}}>
         <WorkspaceIcon name={project.expanded?"down":"right"}/><span className="nav-dot"/>
         <strong ref={name} id={current?"project-name":undefined} data-path={path} title={path}/>
       </button>
@@ -95,6 +100,7 @@ function ProjectBranch({path,total,topics}:{path:string;total:ProjectTotals;topi
 
 export function ProjectRail() {
   const {snapshot,totals}=useWorkbench();
+  const [settingsPath,setSettingsPath]=useState<string>();
   const all=[...totals.values()].reduce((sum,t)=>({working:sum.working+t.working,idle:sum.idle+t.idle,offline:sum.offline+t.offline}),{working:0,idle:0,offline:0});
   return <aside className="project-sidebar" aria-label="项目">
     <header className="brand">
@@ -104,9 +110,10 @@ export function ProjectRail() {
     </header>
     <div id="project-rail">
       <div className="project-tools"><strong>项目</strong><button type="button" className="text-button" id="add-project" aria-label="打开项目文件夹" disabled={!snapshot}>＋ 项目</button></div>
-      <nav id="project-tabs" aria-label="项目、话题与 Agent"><ul>{snapshot?.projects.map(path=><ProjectBranch key={projectKey(path)} path={path} total={totals.get(projectKey(path))!}
+      <nav id="project-tabs" aria-label="项目、话题与 Agent"><ul>{snapshot?.projects.map(path=><ProjectBranch key={projectKey(path)} path={path} total={totals.get(projectKey(path))!} onSettings={()=>setSettingsPath(path)}
         topics={snapshot.topics.filter(t=>projectKey(t.project)===projectKey(path))}/>)}</ul></nav>
       <footer className="project-states" title="本地 Agent 状态汇总"><span data-activity="working">工作 <b>{all.working}</b></span><span data-activity="idle">空闲 <b>{all.idle}</b></span><span data-activity="offline">离线 <b>{all.offline}</b></span></footer>
     </div>
+    {settingsPath && <ProjectKnowledgeDialog key={settingsPath} project={settingsPath} onClose={()=>setSettingsPath(undefined)}/>}
   </aside>;
 }

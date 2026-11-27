@@ -267,7 +267,8 @@ function updatePane(pane, view) {
   const receipt = message?.state !== "pending" || !agent.online ? "" : message.nativeOffer ? " · 等待会话领取" :
     !agent.autoReceive ? " · 自动接收已关闭" : !view.nativeInbox && !view.inputReady ? " · 等待终端可接收" : "";
   presentPane(pane, {
-    id: agent.id, name: agent.name, project: agent.project, engine: engineNames[agent.engine], online: agent.online, powerAction:pane.presentation?.powerAction,
+    id: agent.id, name: agent.name, project: agent.project, engine: engineNames[agent.engine], online: agent.online, isLeader: agent.isLeader,
+    powerAction: pane.presentation?.powerAction,
     status: activity === "offline" ? "未启动" : activity === "waiting" ? "待处理" : activityLabels[activity],
     exitText: !agent.online ? view.wakeError || (view.terminal ? "终端已退出" + (view.exitCode ? "（" + view.exitCode + "）" : "") : "") : "",
     caption: message ? prefix + "来自 @" + message.from + " 的" + label + receipt + (inbox.length > 1 ? " · " + inbox.length + " 条" : "") : "",

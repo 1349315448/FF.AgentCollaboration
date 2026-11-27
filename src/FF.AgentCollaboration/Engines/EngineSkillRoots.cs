@@ -12,7 +12,8 @@ internal static class EngineSkillRoots
     {
         ["codex"]=("CODEX_HOME",".codex"), ["copilot"]=("COPILOT_HOME",".copilot"), ["claude"]=("CLAUDE_CONFIG_DIR",".claude"),
         ["codebuddy"]=("CODEBUDDY_CONFIG_DIR",".codebuddy"), ["traecli"]=("TRAE_HOME",".trae"),
-        ["qwen"]=("QWEN_HOME",".qwen"), ["qoder"]=("QODER_CONFIG_DIR",".qoder"), ["zcode"]=("",".zcode")
+        ["qwen"]=("QWEN_HOME",".qwen"), ["qoder"]=("QODER_CONFIG_DIR",".qoder"), ["zcode"]=("",".zcode"), ["cursor"]=("",".cursor"),
+        ["opencode"]=("XDG_CONFIG_HOME",".opencode")
     };
     private static string Home=>Environment.GetEnvironmentVariable("USERPROFILE")??Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     private static string Key(string path)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
@@ -21,11 +22,12 @@ internal static class EngineSkillRoots
     {
         var (variable,folder)=Homes[engine];
         string? value=variable.Length==0?null:Environment.GetEnvironmentVariable(variable);
-        if(string.IsNullOrWhiteSpace(value)) value=Path.Combine(Home,folder);
+        if(string.IsNullOrWhiteSpace(value)) value=Path.Combine(Home,engine=="opencode"?".config":folder);
         if(value=="~") value=Home;
         else if(value.StartsWith("~/")||value.StartsWith(@"~\")) value=Path.Combine(Home,value[2..]);
         if(!Path.IsPathFullyQualified(value) && cwd==null) throw new WorkbenchError("CLI 的用户目录为相对路径，请使用绝对目录后同步");
-        return Path.Combine(Path.GetFullPath(value,cwd??Home),"skills");
+        return engine=="opencode"?Path.Combine(Path.GetFullPath(value,cwd??Home),"opencode","skills"):
+            Path.Combine(Path.GetFullPath(value,cwd??Home),"skills");
     }
     private static string Project(string engine,string project)=>Path.Combine(project,engine=="copilot"?".github":Homes[engine].Folder,"skills");
     internal static string ClaudeOverlay(string data,string project)=>Path.Combine(data,"engine-profiles","skill-roots","claude",Key(project));
@@ -78,11 +80,11 @@ internal static class EngineSkillRoots
             } catch(WorkbenchError e){issues.Add(engine+" · "+e.Message);}
             if(project!=null) Scan(Project(engine,project),engine);
         }
-        foreach(string engine in new[]{"codex","copilot","qwen","zcode"}) Scan(Path.Combine(Home,".agents","skills"),engine,isolatedUser:engine=="zcode");
+        foreach(string engine in new[]{"codex","copilot","qwen","zcode","cursor"}) Scan(Path.Combine(Home,".agents","skills"),engine,isolatedUser:engine=="zcode");
         if(project!=null)
         {
             Scan(Project("claude",project),"copilot");
-            foreach(string engine in new[]{"codex","copilot","qwen","zcode"}) Scan(Path.Combine(project,".agents","skills"),engine);
+            foreach(string engine in new[]{"codex","copilot","qwen","zcode","cursor"}) Scan(Path.Combine(project,".agents","skills"),engine);
             var ancestors=new List<string>();
             for(var d=new DirectoryInfo(project);d!=null;d=d.Parent)
             {

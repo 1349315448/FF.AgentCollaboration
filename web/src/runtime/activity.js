@@ -112,8 +112,7 @@ async function flyMessage(entry, preferTag = false) {
   if (document.visibilityState !== "visible") return;
   const from = messageAnchor(entry.source, preferTag);
   const fromTab = !!from?.closest(".topic-agents, #project-tabs");
-  const backgroundRoute = preferTag || fromTab && panes.get(entry.source)?.agent.topicId !== selectedTopicId;
-  let to = messageAnchor(entry.target, backgroundRoute);
+  let to = messageAnchor(entry.target, preferTag);
   if (!to?.getClientRects().length) return;
   if (!from?.getClientRects().length || from === to) return sweepRecipient(to);
   const source = from.getBoundingClientRect();
@@ -136,7 +135,7 @@ async function flyMessage(entry, preferTag = false) {
     {backgroundColor:"transparent", boxShadow:"inset 0 0 0 1px transparent"}];
   let tx, ty, direction, arcLength, approach, trackingTimer, sweep;
   function alignMailbox() {
-    const anchor = messageAnchor(entry.target, backgroundRoute);
+    const anchor = messageAnchor(entry.target, preferTag);
     if (!anchor?.getClientRects().length) return;
     to = anchor;
     const bounds = to.getBoundingClientRect();
@@ -220,14 +219,14 @@ async function flyMessage(entry, preferTag = false) {
 }
 
 function receiptEffect(entry, delivered) {
-  const target = messageAnchor(entry.target, true);
+  const target = messageAnchor(entry.target);
   if (!target?.getClientRects().length || document.visibilityState !== "visible") return;
   if (delivered) {
     const surface = target.closest(".pane") || target;
     surface.animate([{boxShadow:"inset 0 0 0 2px var(--accent)"},{boxShadow:"inset 0 0 0 2px transparent"}], 340);
     return;
   }
-  flyMessage(entry, true);
+  flyMessage(entry);
   const badge = target.querySelector(".agent-mail-count, .tag-inbox:not([hidden])") || target;
   const frames = badge === target
     ? [{backgroundColor:"var(--wash)"},{backgroundColor:"transparent"}]
@@ -242,7 +241,7 @@ function animateMessages(previous, current) {
     const cursor=previous.federation.mail?.[0]?.seq||0;
     for(const event of current.federation.mail||[]) {
       if(event.seq<=cursor) break;
-      if(["incoming","outgoing","reply-in","reply-out"].includes(event.kind)) receiptEffect(event,false);
+      if(["incoming","outgoing","reply-in","reply-out","permission"].includes(event.kind)) receiptEffect(event,false);
     }
   }
   const sameTopic = current.timelineTopic && previous.timelineTopic === current.timelineTopic;

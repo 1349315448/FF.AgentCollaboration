@@ -1,15 +1,17 @@
 import { useSyncExternalStore } from "react";
 import { projectKey } from "../services/navigation";
 import type { Federation } from "../components/federation/Federation";
+import type { KnowledgeMode } from "../services/knowledge";
+import type { TeamProposal } from "../services/teamProposals";
 
 export type Activity = "offline" | "idle" | "working" | "waiting" | "finished";
-export interface Topic { id: string; name: string; project: string; status: string; activity: Activity; goal?: string; finishSummary?: string }
-export interface Agent { role?: string|null; id: string; name: string; topicId: string; engine: string; online: boolean; project: string; autoReceive: boolean; receiveMode?: "queued" | "immediate" }
+export interface Topic { id: string; name: string; project: string; status: string; activity: Activity; goal?: string; finishSummary?: string; leaderWindowId?: string|null }
+export interface Agent { role?: string|null; id: string; name: string; topicId: string; engine: string; online: boolean; project: string; autoReceive: boolean; receiveMode?: "queued" | "immediate"; isLeader?: boolean }
 export interface Message { id: string; state: string; from: string; fromTopic?: string; acknowledged?: boolean }
 export interface WindowView { agent: Agent; activity: Activity; inbox: Message[]; terminal?: string; exitCode?: number; wakeError?: string }
 export interface TimelineEntry { id: string; source?:string; state: string; from: string; to: string; summary: string; acknowledged?: boolean; createdAt?: string; hasDocument?:boolean; workState?:string|null }
 export interface HandoffRoute { id: string; source: string; target: string; state: string; acknowledged: boolean }
-export interface Snapshot { project?: string; projects: string[]; topics: Topic[]; windows: WindowView[]; timelineTopic?: string; timeline: TimelineEntry[]; recentHandoffs?: HandoffRoute[]; federation?: Federation }
+export interface Snapshot { project?: string; projects: string[]; topics: Topic[]; windows: WindowView[]; timelineTopic?: string; timeline: TimelineEntry[]; recentHandoffs?: HandoffRoute[]; federation?: Federation; knowledgeModes?: Record<string,KnowledgeMode>; teamProposals?: TeamProposal[] }
 export interface Layout {
   primaryWindowId: string | null; activeWindowId: string | null; collapsedIds: string[]; splitRatio: number;
   workspaceMode: "agent" | "code"; agentInspectorOpen: boolean; agentInspectorRatio: number;

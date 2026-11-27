@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { request } from "../../services/api";
-import { engineNames, traeAccountNotice } from "../../services/engines";
+import { engineNames, installGuides, traeAccountNotice } from "../../services/engines";
 import {ReturnAgentSelect} from "../federation/ReturnAgentSelect";
 
 export function NewAgentDialog() {
@@ -27,18 +27,18 @@ export function NewAgentDialog() {
               <span className="change-label">更改</span>
             </button>
           </div>
-          <div className="field-pair">
-            <div className="field" role="radiogroup" aria-labelledby="engine-label" id="agent-engine">
-              <span id="engine-label"><span className="required">*必填</span> 引擎</span>
+          <div className="field">
+            <span id="engine-label"><span className="required">*必填</span> 引擎</span>
+            <div role="radiogroup" aria-labelledby="engine-label" id="agent-engine">
               {Object.entries(engineNames).map(([id, label]) => <div className="engine-row" key={id}>
                 <label><input type="radio" name="engine" value={id} defaultChecked={id === "codex"} /> {label}</label>
-                <button type="button" className="text-button" data-install={id} aria-label={"安装 " + label} hidden>安装</button>
+                <button type="button" className="text-button" data-install={id} aria-label={(installGuides[id] ? "安装指南 " : "安装 ") + label} hidden>安装</button>
               </div>)}
             </div>
-            <div className="field"><label htmlFor="session-source"><span className="required">*必填</span> 会话</label>
-              <select id="session-source" disabled><option value="" disabled>请选择会话</option><option value="new">新建</option><option value="latest" hidden disabled>恢复最近会话</option><option value="history">恢复已有会话</option></select>
-              <button className="button" type="button" id="open-engine-login" hidden>打开登录终端</button>
-            </div>
+          </div>
+          <div className="field"><label htmlFor="session-source"><span className="required">*必填</span> 会话</label>
+            <select id="session-source" disabled><option value="" disabled>请选择会话</option><option value="new">新建</option><option value="latest" hidden disabled>恢复最近会话</option><option value="history">恢复已有会话</option></select>
+            <button className="button" type="button" id="open-engine-login" hidden>打开登录终端</button>
           </div>
           <p id="trae-create-notice" className="field-hint" hidden>{traeAccountNotice}</p>
           <label className="field" id="history-field" hidden><span><span className="required">*必填</span> 历史会话</span><select id="history-session" required disabled></select></label>

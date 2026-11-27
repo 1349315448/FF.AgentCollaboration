@@ -144,7 +144,12 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
         var remote = db.Remote(id);
         if (remote?.Status != "approved" || remote.Token == null) throw new FederationException(403, "peer_not_approved");
         var message = new PeerMessage(WorkbenchInput.Id(input.Id), WorkbenchInput.Text(input.Text, "消息", 8000),ExpectsReply:dispatch?.ExpectsReply??input.ExpectsReply);
-        if (dispatch != null) message = message with { ContactKey = db.SenderContactKey(id,dispatch.Window) };
+        string? sender = dispatch?.Window ?? db.ManualContactAgent(id,input.TopicId);
+        if (sender != null) message = message with
+        {
+            SenderKey = WorkbenchStore.ScopedContactId(id,sender),
+            ContactKey = dispatch == null ? null : db.SenderContactKey(id,sender)
+        };
         if (dispatch == null) db.TrackManual(id, message with { TopicId = input.TopicId });
         using var client = Connect(remote);
         if (dispatch?.Content != null)
@@ -219,6 +224,7 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
                     using var req = Request(HttpMethod.Get, "events", remote.Token);
                     req.Headers.Add("Last-Event-ID", remote.Cursor.ToString(System.Globalization.CultureInfo.InvariantCulture));
                     req.Headers.Add("X-FF-Return-Contacts","1");
+                    req.Headers.Add("X-FF-Contact-Removal","1");
                     using var response = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
                     if (!response.IsSuccessStatusCode) await Read<JsonElement>(response, ct);
                     if (response.Content.Headers.ContentType?.MediaType != "text/event-stream") throw new InvalidDataException();
@@ -251,7 +257,7 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
                         else if (doc.RootElement.TryGetProperty("item", out var field))
                         {
                             var item = field.Deserialize<PeerEvent>(Json);
-                            if (item == null || item.Id <= 0 || item.Kind is not ("receipt" or "reply" or "contact") || item.Text is not { Length: <= 8000 } ||
+                            if (item == null || item.Id <= 0 || item.Kind is not ("receipt" or "reply" or "contact" or "contact-removed") || item.Text is not { Length: <= 8000 } ||
                                 !Guid.TryParseExact(item.RequestId, "N", out _)) throw new InvalidDataException();
                             db.ReceivePeerEvent(id, item);
                             events.Changed();

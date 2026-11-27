@@ -6,7 +6,14 @@ export default function RichPreview({file,url}:{file:FileView;url:string}) {
   if(file.kind==="pdf") return <iframe className="document-frame" title={"PDF · "+file.path} src={url}/>;
   if(file.kind==="excel" || file.kind==="ppt") return <Suspense fallback={<p className="inspector-empty">正在加载文档…</p>}><OfficePreview kind={file.kind} url={url} path={file.path}/></Suspense>;
   if(file.kind==="image") return <ImagePreview file={file} url={url}/>;
-  return <p className="inspector-empty">{file.kind==="legacy-ppt"?"请将旧版 .ppt 另存为 .pptx 后预览":file.kind==="large"?"文件超过预览上限（文本 512 KiB，图片与办公文档 20 MiB）":"此文件格式暂不支持预览"}</p>;
+  if(file.kind==="video") return <VideoPreview path={file.path} url={url}/>;
+  return <p className="inspector-empty">{file.kind==="legacy-ppt"?"请将旧版 .ppt 另存为 .pptx 后预览":file.kind==="large"?"文件超过预览上限（文本 512 KiB，图片与办公文档 20 MiB，视频 100 MiB）":"此文件格式暂不支持预览"}</p>;
+}
+
+function VideoPreview({path,url}:{path:string;url:string}) {
+  const [failed,setFailed]=useState(false);
+  return failed ? <p className="inspector-empty">浏览器无法播放此视频，请检查文件编码。</p> :
+    <video className="workspace-video" controls preload="metadata" src={url} aria-label={path} onError={()=>setFailed(true)}/>;
 }
 function ImagePreview({file,url}:{file:FileView;url:string}) {
   const [scale,setScale]=useState<number|null>(null),[turn,rotate]=useState(0),[dims,measure]=useState([0,0]);

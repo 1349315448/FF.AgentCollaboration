@@ -12,6 +12,7 @@
 .log-document-row .timeline-entry {gap:var(--mail-gap);grid-template-columns:minmax(0,calc(19ch + 16px)) minmax(0,clamp(8ch,20%,28ch)) minmax(0,1fr) repeat(2,var(--mail-status-width));}
 .log-work-state {text-align:right;color:var(--faint);font-size:11px;}
 .log-work-state[data-work=working] {color:var(--accent);}
+.log-work-state[data-work=need_info] {color:var(--amber);}
 .log-work-state:is([data-work=completed],[data-work=replied]) {color:var(--emerald);}
 @container (max-width:560px) {
   .log-document-row .timeline-entry {grid-template-columns:minmax(0,7ch) minmax(0,8ch) minmax(0,1fr) repeat(2,var(--mail-status-width));}
@@ -54,5 +55,8 @@
 #project-tabs .tree-return-contacts { list-style:none; margin:0 0 3px 43px; padding:0 0 0 10px; border-left:1px solid var(--line); }
 .tree-return-contacts li { display:flex; align-items:center; position:relative; gap:5px; min-width:0; height:24px; color:var(--muted); }
 .tree-return-contacts li::before { content:""; position:absolute; left:-10px; top:50%; width:7px; border-top:1px solid var(--line); }
+.tree-return-contacts button {display:flex; align-items:center; gap:5px; width:100%; min-width:0; height:100%; padding:0 4px; text-align:left; background:transparent; border:0; color:var(--text);}
+.tree-return-contacts button:hover,.tree-return-contacts button:focus-visible {background:var(--wash);}
+.tree-return-contacts button > small:not(.tree-agent-state),.tree-return-contacts svg {color:var(--muted);}
 .tree-return-contacts svg { height:12px; width:12px; flex:none; }
 .tree-return-contacts span,.tree-return-contacts small { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

@@ -42,6 +42,7 @@ function openPaneSessions(pane, tab = "history") {
   updateConfigEngine();
   const context = byId("pane-session-context");
   context.title = context.textContent = engineNames[pane.agent.engine] + " · " + pane.agent.project;
+  window.dispatchEvent(new CustomEvent("ff:agent-config", { detail: pane.agent.id }));
   dialog.showModal();
   byId("pane-session-new").hidden = true;
   showConfigTab(tab);
@@ -60,8 +61,13 @@ function showConfigTab(tab) {
 function configPayload() {
   const engine = byId("config-engine").value;
   const fields = {name:byId("rename-name").value, role:byId("config-role").value, engine};
+  if (!byId("config-model").disabled && !byId("config-model-fields").hidden) {
+    const model = byId("config-model").value || null, effort = byId("config-effort").value || null;
+    if (engine !== sessionPane.agent.engine || model !== (sessionPane.agent.model ?? null) || effort !== (sessionPane.agent.effort ?? null))
+      Object.assign(fields, {model, effort, updateModel:true});
+  }
   if (engine !== sessionPane.agent.engine)
-    for (const field of ["model", "effort", "mode", "approval"]) fields[field] = byId("config-"+field).value || null;
+    for (const field of ["mode", "approval"]) fields[field] = byId("config-"+field).value || null;
   return fields;
 }
 
@@ -77,11 +83,12 @@ async function updateConfigEngine() {
   const engine = byId("config-engine").value;
   const {agent} = sessionPane;
   const changed = engine !== agent.engine;
-  byId("config-launch-fields").hidden = !changed;
+  byId("config-launch-fields").hidden = false;
+  const modelField = byId("config-model");
+  modelField.disabled = true;
   byId("config-save").textContent = changed && agent.online ? "保存并重启终端" : "保存";
-  byId("config-effect").textContent = changed ? (agent.online ? "切换引擎将重启当前终端" : "下次打开时使用所选引擎") : "名称与身份立即保存";
+  byId("config-effect").textContent = changed && agent.online ? "切换引擎将重启当前终端" : "启动模型于下次打开终端时生效";
   byId("config-session-effect").textContent = agent.online ? "新建或切换会话将打开所选对话" : "下次打开时进入所选会话";
-  if (!changed) return;
   const status=byId("config-catalog-status");
   configModels=[];
   for (const field of ["model","mode"]) byId("config-"+field).replaceChildren(new Option("跟随引擎默认",""));
@@ -91,14 +98,26 @@ async function updateConfigEngine() {
   try {
     const caps=(await engineCapabilities())[engine];
     if (controller.signal.aborted) return;
-    byId("config-approval").closest("label").hidden=!caps?.startupApproval;
+    byId("config-approval").closest("label").hidden=!changed || !caps?.startupApproval;
     for(const mode of caps?.modes??[]) byId("config-mode").add(new Option(mode.label,mode.id));
-    byId("config-mode").closest("label").hidden=!caps?.modes?.length;
+    byId("config-mode").closest("label").hidden=!changed || !caps?.modes?.length;
+    byId("config-model-fields").hidden = caps?.models === false;
     const models=caps?.models===false ? [] : await request("/models/"+engine+"?"+new URLSearchParams({project:agent.project}),{signal:controller.signal});
     if(controller.signal.aborted) return;
     configModels=models;
-    for(const m of models) byId("config-model").add(new Option(m.name,m.id));
-    configEfforts();status.textContent="";
+    for(const m of models) modelField.add(new Option(m.name,m.id));
+    if (!changed && agent.model && !models.some(model=>model.id===agent.model))
+      modelField.add(new Option(agent.model, agent.model));
+    modelField.value = changed ? "" : agent.model ?? "";
+    configEfforts();
+    if (!changed && agent.effort) {
+      const effort = byId("config-effort");
+      if (![...effort.options].some(option=>option.value===agent.effort))
+        effort.add(new Option(agent.effort, agent.effort));
+      effort.value = agent.effort;
+    }
+    modelField.disabled = false;
+    status.textContent="";
   } catch(error){if(!controller.signal.aborted) status.textContent=error.message;}
 }
 

@@ -112,7 +112,9 @@ function reportPrompt(pane, prompt = observePrompt(pane)) {
   const clearedDraft = prompt.clear ? pane.draftRevision : undefined;
   if (prompt.clear) pane.draftRevision = undefined;
   if (clearedDraft != null) clearSubmitError(pane);
+  const reviewing = pane.view.inbox.filter(item => item.state === "delivery_uncertain");
   const writing = pane.view.inbox.find(item => item.state === "writing") ||
+    (reviewing.length === 1 && reviewing[0]) ||
     (pane.view.agent.autoReceive && pane.view.inbox.find(item => item.state === "pending"));
   const shortId = writing?.id?.slice(0, 8);
   const draftIds = [...new Set([...(prompt.draftText?.replace(/\s/g, "").matchAll(/\bMSG_ID:([0-9a-f]{8})(?![0-9a-f])/gi) || [])].map(m => m[1].toLowerCase()))];
@@ -209,7 +211,8 @@ function readNativePrompt(pane) {
     // 后端仍核对整条消息的尾部、键盘版本和原生审批状态。
     let end=row;
     const ownId=lines[first]?.match(/^\s*›\s*MSG_ID:\s*([a-f0-9]{8})\b/i)?.[1];
-    if(ownId && pane.view?.inbox.some(item=>item.state==="writing" && item.id.startsWith(ownId))) {
+    if(ownId && pane.view?.inbox.some(item=>
+      (item.state==="writing" || item.state==="delivery_uncertain") && item.id.startsWith(ownId))) {
       while(end+1<lines.length) {
         const line=buffer.getLine(buffer.baseY+end);
         const edge=line?.getCell(term.cols-1);

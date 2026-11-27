@@ -24,13 +24,15 @@ def new_id():
 
 
 @contextmanager
-def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=True, graceful=False, initialize=True, use_defaults=False, lan_http_port=None):
+def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=True, graceful=False, initialize=True, use_defaults=False, lan_http_port=None, federation=False):
     command = [executable, "workbench", "--port", "0"] if use_defaults else [
         executable, "workbench", root, "--port", "0", "--handoffs", handoffs or Path(root) / "handoffs"]
     if fixed:
         command.append("--fixed-data-dir")
     if lan_http_port:
         command += ["--lan-http-port", str(lan_http_port)]
+    elif not federation:
+        command.append("--loopback-only")
     if knowledge is not None:
         command += ["--knowledge", knowledge]
     if project:

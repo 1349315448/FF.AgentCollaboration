@@ -2,7 +2,7 @@ import { request } from "../../services/api";
 import { pageRetired } from "../../services/workbenchPage";
 import { useSyncExternalStore } from "react";
 
-export interface FileView { path:string; kind:"text"|"image"|"binary"|"large"|"ppt"|"excel"|"pdf"|"legacy-ppt"; size:number; content?:string; mtimeUtc:string }
+export interface FileView { path:string; kind:"text"|"image"|"video"|"binary"|"large"|"ppt"|"excel"|"pdf"|"legacy-ppt"; size:number; content?:string; mtimeUtc:string }
 export interface FileTab { path:string; file?:FileView; draft?:string; loading?:boolean; saving?:boolean; conflict?:boolean; error?:string }
 export interface EditorState { tabs:FileTab[]; active:string }
 const sessions = new Map<string, EditorSession>();

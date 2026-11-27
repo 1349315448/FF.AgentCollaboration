@@ -1,8 +1,9 @@
 import { Fragment } from "react";
 import { navigation, remoteOnline } from "../../services/navigation";
 import type { WindowView } from "../../store/workbenchStore";
-import { RemoteCapsule, type Federation } from "../federation/Federation";
+import { RemoteCapsule, viewReturnContact, type Federation } from "../federation/Federation";
 import { WorkspaceIcon } from "./WorkspaceIcon";
+import { LeaderFlag } from "./LeaderFlag";
 import { NavigationName } from "./NavigationName";
 import { engineNames } from "../../services/engines";
 import { useEngineQuota } from "../../services/engineQuota";
@@ -24,6 +25,7 @@ function AgentNavigationItem({view, tree = false}:{view:WindowView; tree?:boolea
     </button>
     <NavigationName className="member-name" title={"@"+agent.name+" · "+states[activity]} onSelect={()=>navigation.selectAgent(agent.topicId,agent.id)}
       onRename={()=>navigation.renameAgent(agent.id)}>{"@"+agent.name}</NavigationName>
+    {agent.isLeader && <LeaderFlag />}
     <small className="nav-engine" title={engine}>{engine.replace(/^(GitHub |腾讯 |千问 |智谱 )/,"").replace(/ Code$/,"")}</small>
     <button type="button" className="nav-quota" title={quota?.title ?? "点击刷新额度"} aria-label={"刷新 @"+agent.name+" 的剩余额度"}
       disabled={quota?.loading} onClick={async()=>{const {loadQuota}=await import("../../runtime/quota.js");loadQuota(agent.engine,true);}}>[{quota?.value??"—"}]</button>
@@ -49,8 +51,11 @@ export function TopicAgentList({members, remotes, contacts=[], tree = false}:{
   const Row = tree ? "li" : Fragment;
   return entries.map(entry => <Row key={entry.key}>{entry.item}
     {entry.children.length>0 && <ul className="tree-return-contacts" aria-label="申请方 Agent">{entry.children.map(c=>
-      <li key={c.id} data-contact={c.id} title={`@${c.name} · ${c.nodeName} · ${c.online?"在线":"离线"}`}>
-        <WorkspaceIcon name="network"/><span>@{c.name}</span><small>{c.nodeName}</small>
+      <li key={c.id} data-contact={c.id}><button type="button" data-activity={c.online?"idle":"offline"}
+        onClick={e=>{if(e.detail===0)viewReturnContact(c.id);}} onDoubleClick={()=>viewReturnContact(c.id)}
+        title={`@${c.name} · ${c.nodeName} · 双击管理协作`}>
+        <WorkspaceIcon name="network"/><span aria-hidden="true" className="nav-dot"/><span>@{c.name}</span><small>{c.nodeName}</small>
+        <small className="tree-agent-state">{c.online?"在线":"离线"}</small></button>
       </li>)}</ul>}
   </Row>);
 }

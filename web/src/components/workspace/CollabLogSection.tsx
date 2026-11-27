@@ -4,14 +4,14 @@ import { MailApprovals, viewApplication, type PeerMail } from "../federation/Fed
 import { useWorkbench, type TimelineEntry } from "../../store/workbenchStore";
 
 const receipts: Record<string,string> = {pending:"待接收", writing:"写入中", delivered:"已送达", delivery_uncertain:"待核对",ignored:"已忽略",accepted:"对端已接收",sent:"已发出",sending:"发送中",superseded:"已覆盖",cancelled:"已撤回",blocked:"已拦截"};
-const workStates:Record<string,string> = {queued:"排队中",working:"正在处理",completed:"已完成",replied:"已回复"};
+const workStates:Record<string,string> = {queued:"排队中",received:"已接收",working:"正在处理",need_info:"待补充",completed:"已完成",replied:"已回复"};
 function WorkState({state}:{state?:string|null}) {
   const label=state && workStates[state];
   return <span className="log-work-state" data-work={state??undefined} title={label?"协作状态 · "+label:"没有任务进度回执"}>{label || "—"}</span>;
 }
 const mailIcons: Record<string, ComponentProps<typeof WorkspaceIcon>["name"]> = {
   application: "mailRequest", incoming: "mailIncoming", outgoing: "mailOutgoing",
-  "reply-in": "mailReply", "reply-out": "mailReply", blocked: "mailNotice", audit: "mailNotice"
+  "reply-in": "mailReply", "reply-out": "mailReply", permission:"mailNotice", blocked: "mailNotice", audit: "mailNotice"
 };
 const empty: TimelineEntry[] = [];
 function timestamp(value?: string) {
@@ -46,9 +46,10 @@ export function CollabLogSection() {
   const pending=(fed?.grants??[]).filter(g=>g.status==="pending" && snapshot?.windows.some(w=>w.agent.topicId===selectedTopicId && w.agent.id===g.windowId));
   const key="ff-mail-seen-"+selectedTopicId;
   const checkpoint=seen?.topic===key?seen.seq:Number(localStorage.getItem(key)||0);
-  const unread=mail.filter(m=>m.seq>checkpoint && ["incoming","reply-in","audit","blocked"].includes(m.kind)).length;
+  const isIncoming=(m:PeerMail)=>["incoming","reply-in","audit","blocked","permission"].includes(m.kind);
+  const unread=mail.filter(m=>m.seq>checkpoint && isIncoming(m)).length;
   function see(){const seq=mail[0]?.seq||0;localStorage.setItem(key,String(seq));setSeen({topic:key,seq});}
-  const names:Record<string,string>={application:"接入申请",incoming:"外部来信",outgoing:"发往外部","reply-in":"外部回信","reply-out":"回信已发",blocked:"已拦截",audit:"变更告警"};
+  const names:Record<string,string>={application:"接入申请",incoming:"外部来信",outgoing:"发往外部","reply-in":"外部回信","reply-out":"回信已发",permission:"协作权限通知",blocked:"已拦截",audit:"变更告警"};
   function peerRow(m:PeerMail){
     const icon=mailIcons[m.kind] ?? "envelope";
     const application=m.kind==="application" && pending.some(g=>g.id===m.source);
@@ -63,7 +64,7 @@ export function CollabLogSection() {
   }
   const localRows=filter==="全部"?entries.filter(e=>e.source!=="peer-mailbox"&&!fed?.remotes.some(r=>r.id===e.source))
     .map(e=>({date:e.createdAt??"",row:<LogRow key={e.id} entry={e} topic={selectedTopicId!}/>})):[];
-  const rows=[...localRows,...mail.filter(m=>filter==="全部" || filter==="外部来信" && ["incoming","reply-in","audit","blocked"].includes(m.kind))
+  const rows=[...localRows,...mail.filter(m=>filter==="全部" || filter==="外部来信" && isIncoming(m))
     .map(m=>({date:m.createdAt,row:peerRow(m)}))].sort((a,b)=>b.date.localeCompare(a.date));
   const uncertain = entries.filter(entry=>entry.state==="delivery_uncertain"&&!entry.acknowledged).length;
   useLayoutEffect(() => { if (list.current) list.current.scrollTop = 0; }, [selectedTopicId, latest?.id,mail[0]?.seq]);

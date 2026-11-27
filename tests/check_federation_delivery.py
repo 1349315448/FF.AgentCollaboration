@@ -27,7 +27,7 @@ def wait_rows(root,sql,*args):
     raise AssertionError(sql)
 
 
-def verify_documents(exe,case,provider,requester,client,local,topic,target,w,remote,grant,wire,token,share,node,policy):
+def verify_documents(exe,case,provider,requester,client,local,topic,target,w,remote,grant,wire,token,share,node,policy,request_connection):
     def upload(key,name,data,credential=token):
         return wire("/api/federation/uploads",credential,data,**{"X-FF-File-Name":name,"X-FF-Upload-Key":key})
     assert policy(quotaMode="unlimited")[0]==200
@@ -55,14 +55,20 @@ def verify_documents(exe,case,provider,requester,client,local,topic,target,w,rem
     assert bound and "document.md" in path and (provider/"federation-inbox"/path).stat().st_size==1048576
     sender,wgrant,sourcegrant=new_id(),new_id()*2,new_id()*2
     def hashed(v):return hashlib.sha256(v.encode()).hexdigest().upper()
-    query(requester,"INSERT INTO windows(id,name,engine,project,topic_id,auto_receive,online,grant_hash) VALUES(?,'Writer','codex',?,?,0,1,?)",
-          sender,str(case),target,hashed(sourcegrant))
-    query(provider,"UPDATE windows SET online=1,grant_hash=? WHERE id=?",hashed(wgrant),w)
-    formal=case/"spec.md";formal.write_text("跨端交接原文",encoding="utf8")
     def tool(db,key,kind,**kwargs):
         response=mcp(exe,db,key,kind,**kwargs)
         assert not response.get("isError"),response
         return response["content"][0]["text"]
+    query(requester,"INSERT INTO windows(id,name,engine,project,topic_id,auto_receive,online,grant_hash) VALUES(?,'Writer','codex',?,?,0,1,?)",
+          sender,str(case),target,hashed(sourcegrant))
+    query(provider,"UPDATE windows SET online=1,grant_hash=? WHERE id=?",hashed(wgrant),w)
+    assert http(client,"/api/topics/"+target+"/leader",{"windowId":sender},"PUT")[0]==204
+    proposal=json.loads(tool(requester,sourcegrant,"propose_team_agents",summary="跨端审阅",members=[{
+        "name":"Reviewer","role":"审阅实现","taskSummary":"检查交接文档并回信","remoteId":remote}]))
+    code,result=http(client,"/api/topics/"+target+"/team-proposals/"+proposal["proposalId"]+"/confirm",
+                     {"members":[{"index":0}]})
+    assert code==200 and result["members"][0]["remoteId"]==remote,(code,result)
+    formal=case/"spec.md";formal.write_text("跨端交接原文",encoding="utf8")
     assert any(t.get("id")==remote for t in json.loads(tool(requester,sourcegrant,"list_windows",detail=True)))
     assert http(client,"/api/peers/remotes/"+remote+"/contact",{"topicId":target,"agentId":sender},"PUT")[0]==204
     mid=json.loads(tool(requester,sourcegrant,"send_to_agent",target="@Reviewer",message="请审阅",document=str(formal),autoReturnHint=True))["id"]
@@ -160,6 +166,13 @@ def verify_documents(exe,case,provider,requester,client,local,topic,target,w,rem
         rid=json.loads(tool(requester,sourcegrant,"send_to_agent",target=remote,message=text,autoReturnHint=needs_reply,supersedePrevious=False))["id"]
         original=wait_rows(provider,"SELECT local FROM fed_incoming WHERE request=?",rid)[0][0]
         query(provider,"UPDATE inbox SET state='delivered' WHERE id=?",original)
+        wait_rows(requester,"SELECT seq FROM fed_received WHERE remote=? AND request_id=? AND body='delivery:delivered' AND kind='receipt'",remote,rid)
+        for node_url in (client,local):
+            row=next(m for m in http(node_url,"/api/state")[1]["federation"]["mail"] if m["text"].startswith(text))
+            assert (row["deliveryState"],row["workState"])==("delivered","received"),row
+        tool(provider,wgrant,"report_task_status",messageId=original[:8],status="need_info")
+        wait_rows(requester,"SELECT seq FROM fed_received WHERE remote=? AND request_id=? AND body='work:need_info'",remote,rid)
+        assert next(m for m in http(client,"/api/state")[1]["federation"]["mail"] if m["text"].startswith(text))["workState"]=="need_info"
         if needs_reply:
             query(provider,"INSERT OR REPLACE INTO settings VALUES(?, '1')","peer_reader."+w)
             query(provider,"UPDATE windows SET session=? WHERE id=?",new_id(),w)
@@ -186,7 +199,57 @@ def verify_documents(exe,case,provider,requester,client,local,topic,target,w,rem
             row=next(m for m in http(node_url,"/api/state")[1]["federation"]["mail"] if m["text"].startswith(text))
             assert row["workState"]==end and row["deliveryState"]=="delivered",row
     print("PASS bilateral transport and collaboration receipts with intermediate, final and no-reply outcomes")
+    verify_contact_removal(exe,case,provider,requester,client,local,target,w,remote,grant,wire,token,share_url,sender,sourcegrant,tool,request_connection)
     query(provider,"UPDATE windows SET online=0,grant_hash=NULL WHERE id=?",w)
     query(requester,"UPDATE windows SET online=0,grant_hash=NULL WHERE id=?",sender)
     print("PASS authorized upload, UTF-8, size, quotas, binding, MCP round-trip with SSE Markdown, expiration")
     print("PASS late and manual mailbox attachments, dedicated reader isolation and stop, retry/cancel after a lost response")
+
+
+def verify_contact_removal(exe,case,provider,requester,client,local,target,w,remote,grant,wire,token,share_url,sender,sourcegrant,tool,request_connection):
+    # 两个话题使用同一个节点授权；移除 Writer 后仍应允许另一个 Agent 收发。
+    other_topic=http(client,"/api/topics",{"name":"独立好友"})[1]["id"]
+    colleague,other_key=new_id(),new_id()*2
+    query(requester,"INSERT INTO windows(id,name,engine,project,topic_id,online,auto_receive,grant_hash) VALUES(?,'Colleague','codex',?,?,1,0,?)",
+          colleague,str(case),other_topic,hashlib.sha256(other_key.encode()).hexdigest().upper())
+    assert http(client,"/api/peers/remotes",{"topicId":other_topic,"link":share_url,"purpose":"独立好友","agentId":colleague})[1]["id"]==remote
+    colleague_contact=wait_rows(provider,"SELECT id FROM fed_return_contact WHERE grant_id=? AND name='Colleague'",grant)[0][0]
+    contact_id,actor=wait_rows(provider,"SELECT id,sender FROM fed_return_contact WHERE grant_id=? AND name='Writer'",grant)[0]
+    accepted={"id":new_id(),"text":"撤权前已经受理","senderKey":actor}
+    assert wire("/api/federation/messages",token,accepted)[0]==200
+    url="/api/peers/windows/"+w+"/contacts/"+contact_id
+    assert http(local,url.replace(w,new_id()),method="DELETE")[0]==404
+    request_connection(False)
+    assert http(local,url,method="DELETE")[0]==204
+    assert http(local,url,method="DELETE")[0]==404
+    request_connection(True)
+    wait_rows(requester,"SELECT 1 FROM fed_remote_denial WHERE remote=? AND agent=?",remote,sender)
+    notices=query(requester,"SELECT topic,target,body,task_id FROM fed_mail WHERE kind='permission'")
+    assert len(notices)==1 and notices[0][:3]==(target,sender,"@Reviewer 已移除 @Writer 的协作请求权限。"),notices
+    assert query(requester,"SELECT target FROM inbox WHERE id=?",notices[0][3])==[(sender,)]
+    assert not query(provider,"SELECT 1 FROM fed_return_contact WHERE id=?",contact_id)
+    assert query(provider,"SELECT 1 FROM fed_return_contact WHERE id=?",colleague_contact)
+    assert not any(r.get("id")==remote for r in json.loads(tool(requester,sourcegrant,"list_windows")))
+    assert mcp(exe,requester,sourcegrant,"send_to_agent",target=remote,message="已撤权").get("isError")
+    namesake=new_id()
+    query(requester,"INSERT INTO windows(id,name,engine,project,topic_id,online,auto_receive) VALUES(?,'Reviewer','codex',?,?,1,0)",namesake,str(case),target)
+    local_id=json.loads(tool(requester,sourcegrant,"send_to_agent",target="@Reviewer",message="发给仍可用的本地同名好友"))["id"]
+    assert query(requester,"SELECT target FROM inbox WHERE id=?",local_id)==[(namesake,)]
+    query(requester,"UPDATE windows SET online=0,closed=1 WHERE id=?",namesake)
+    used=query(provider,"SELECT total FROM fed_grant WHERE id=?",grant)
+    assert wire("/api/federation/messages",token,accepted)[0]==200
+    assert wire("/api/federation/messages",token,dict(accepted,senderKey=new_id()))[0]==409
+    for extra in ({},{"senderKey":actor}):
+        assert wire("/api/federation/messages",token,dict(id=new_id(),text="已撤权",**extra))[0]==403
+    assert query(provider,"SELECT total FROM fed_grant WHERE id=?",grant)==used
+    assert not query(provider,"SELECT 1 FROM fed_request WHERE body='已撤权'")
+    rid=json.loads(tool(requester,other_key,"send_to_agent",target=remote,message="独立好友照常协作"))["id"]
+    wait_rows(provider,"SELECT 1 FROM fed_incoming WHERE request=?",rid)
+    bind="/api/peers/remotes/"+remote+"/contact"
+    assert http(client,bind,{"topicId":target,"agentId":None},"PUT")[0]==204
+    assert http(client,bind,{"topicId":target,"agentId":sender},"PUT")[0]==204
+    # 换回原 Agent 后仍不能经人工入口代发。
+    assert http(client,"/api/peers/remotes/"+remote+"/messages",{"id":new_id(),"topicId":target,"text":"换绑之后"})[0]==403
+    assert not query(provider,"SELECT 1 FROM fed_return_contact WHERE grant_id=? AND sender=?",grant,actor)
+    assert http(client,"/api/peers/remotes/"+remote+"?topic="+other_topic,method="DELETE")[0]==204
+    print("PASS one Agent permission revoked, one inbox notice, other Agent and grant remain usable")

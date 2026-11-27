@@ -120,13 +120,16 @@ function renderPeers(reset = false) {
     return {id:agent.id, terminal, name:agent.name, title:agent.sessionTitle || "", topic, same,
       address:"@" + (same ? "" : topic + "/") + agent.name};
   });
-  const remotes = (snapshot.federation?.remotes ?? []).filter(r => r.topicId === pane.agent.topicId && remoteOnline(r))
+  const remotes = (snapshot.federation?.remotes ?? []).filter(r => r.topicId === pane.agent.topicId && remoteOnline(r) && !r.deniedAgentIds?.includes(pane.agent.id))
     .map(r => ({id:r.id, name:r.agentName, title:r.nodeName, topic:topics.get(r.topicId) ?? "", same:true,
       address:"@" + r.agentName, label:"外部 · " + r.nodeName}));
   const contacts = (snapshot.federation?.contacts ?? []).filter(c=>c.windowId===pane.agent.id && c.online && c.canMention)
     .map(c=>({id:c.id,name:c.name,title:c.nodeName,topic:"",same:true,address:"@"+c.name,label:"回信 · "+c.nodeName}));
   const rows = [...locals, ...remotes, ...contacts].filter(row => [row.name,row.title,row.topic,row.address].some(field => matchesPeer(field, query)))
     .sort((a,b) => Number(b.same) - Number(a.same));
+  if (snapshot.topics.some(topic=>topic.id===pane.agent.topicId && topic.leaderWindowId===pane.agent.id && topic.status==="active")
+      && matchesPeer("全部", query))
+    rows.push({id:"@全部",name:"全部",address:"@全部",label:"群发 · 本话题组员"});
   const signature = JSON.stringify(rows);
   if (!reset && state.signature === signature) return;
   state.signature = signature;

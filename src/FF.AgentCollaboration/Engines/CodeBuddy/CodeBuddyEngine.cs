@@ -87,9 +87,9 @@ internal sealed class CodeBuddyEngine(string cwd) : ConfiguredTerminalEngine
         [new("default", "默认审批"), new("plan", "计划"), new("acceptEdits", "接受编辑")],
         ["new", "resume", "fork", "archive", "restore"], NativeArchive: false, Efforts: false);
 
-    internal override Task<IReadOnlyList<ModelChoice>> ListModels(CancellationToken ct) =>
-        Task.FromResult<IReadOnlyList<ModelChoice>>(new[] { "default-model", "fast-model", "balanced-model", "primary-model", "deep-model" }
-            .Select(id => new ModelChoice(id, id, id == "default-model", [])).ToArray());
+    internal override IReadOnlyList<ModelChoice> KnownModels { get; } =
+        new[] { "default-model", "fast-model", "balanced-model", "primary-model", "deep-model" }
+            .Select(id => new ModelChoice(id, id, id == "default-model", [])).ToArray();
 
     internal override Task<IReadOnlyList<HistorySession>> ListSessions(CancellationToken ct, bool archived)
     {

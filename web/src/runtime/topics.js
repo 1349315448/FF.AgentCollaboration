@@ -13,8 +13,8 @@ let editingTopicId;
 const mobileProjects = matchMedia("(width < 900px)");
 let activeProjectKey;
 let projectSelection = Promise.resolve();
-function selectProject(path) {
-  return changeProject(() => request("/project", {method:"PUT", body:{path}}));
+function selectProject(path, knowledgeMode) {
+  return changeProject(() => request("/project", {method:"PUT", body:{path,knowledgeMode}}));
 }
 
 function queueSelection(action) {

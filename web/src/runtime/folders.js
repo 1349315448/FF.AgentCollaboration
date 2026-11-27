@@ -3,14 +3,22 @@ import { loadCatalogs, setSelectedProject } from "./create.js";
 import { byId, feedback, node, setBusy } from "./dom.js";
 import { selectedProject, snapshot } from "../store/workbenchStore";
 import { selectProject } from "./topics.js";
+import { knowledgeModeFor } from "../services/knowledge";
 
 let folderRequest;
 let folderListing;
 let pickFolder;
-function openFolders(path, onPick) {
+let choosingProject;
+function openFolders(path, onPick, chooseProject = false) {
   pickFolder = onPick;
+  choosingProject = chooseProject;
+  byId("folder-knowledge-mode").value = "disabled";
   byId("folder-dialog").showModal();
   loadFolders(path);
+}
+
+function openProjectFolders(path) {
+  openFolders(path, picked => selectProject(picked, folderListing.canConfigureKnowledge ? byId("folder-knowledge-mode").value : undefined), true);
 }
 
 async function loadFolders(path) {
@@ -18,6 +26,8 @@ async function loadFolders(path) {
   const controller = new AbortController();
   folderRequest = controller;
   folderListing = undefined;
+  byId("folder-knowledge-field").hidden = true;
+  byId("folder-knowledge-notice").hidden = true;
   const list = byId("folder-list");
   byId("folder-path").value = path || "";
   byId("choose-folder").disabled = true;
@@ -30,6 +40,10 @@ async function loadFolders(path) {
     if (controller.signal.aborted) return;
     folderListing = listing;
     byId("folder-path").value = listing.path || "";
+    byId("folder-knowledge-field").hidden = !(choosingProject && listing.path && listing.canConfigureKnowledge);
+    byId("folder-knowledge-notice").hidden = !(choosingProject && listing.path && !listing.canConfigureKnowledge);
+    if (!byId("folder-knowledge-field").hidden)
+      byId("folder-knowledge-mode").value = knowledgeModeFor(snapshot?.knowledgeModes, listing.path);
     byId("folder-up").disabled = !listing.path;
     byId("choose-folder").disabled = !listing.path;
     list.replaceChildren(...listing.folders.map(folder => {
@@ -47,7 +61,7 @@ async function loadFolders(path) {
   }
 }
 
-byId("add-project").addEventListener("click", () => openFolders(snapshot.project, selectProject));
+byId("add-project").addEventListener("click", () => openProjectFolders(snapshot.project));
 byId("agent-project").addEventListener("click", () => {
   if (byId("new-dialog").dataset.busy !== "true")
     openFolders(selectedProject, path => { setSelectedProject(path); loadCatalogs(); });
@@ -72,4 +86,4 @@ byId("choose-folder").addEventListener("click", async () => {
   finally { setBusy(dialog, false); button.disabled = false; }
 });
 
-export { folderListing, openFolders };
+export { folderListing, openFolders, openProjectFolders };

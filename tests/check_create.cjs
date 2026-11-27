@@ -268,6 +268,43 @@ const [base, , root] = process.argv.slice(2);
     await page.unroute("**/api/engines");
     await page.locator("#new-dialog [data-close]").first().click();
     console.log("PASS installed CLI detected while installer is still exiting");
+
+    await page.route("**/api/engines", async route => {
+      const response = await route.fetch();
+      const engines = await response.json();
+      assert(Object.hasOwn(engines,"opencode") && Object.hasOwn(engines,"cursor"));
+      await route.fulfill({json:{...engines,opencode:false,cursor:false}});
+    });
+    await page.locator("#new-agent").click();
+    const create = page.getByRole("dialog",{name:"新建 Agent 窗口"});
+    await create.getByRole("radio",{name:"OpenCode",exact:true}).waitFor();
+    await create.getByRole("radio",{name:"Cursor CLI",exact:true}).waitFor();
+    await create.getByRole("button",{name:"安装指南 OpenCode",exact:true}).waitFor();
+    await create.getByRole("button",{name:"安装指南 Cursor CLI",exact:true}).waitFor();
+    assert.deepEqual(await page.locator("#agent-engine input").evaluateAll(items => items.map(item => item.value)),
+      ["codex", "copilot", "claude", "codebuddy", "traecli", "zcode", "qwen", "qoder", "opencode", "cursor"]);
+    const engineLayout = () => create.evaluate(dialog => {
+      const group = dialog.querySelector("#agent-engine");
+      const session = dialog.querySelector("#session-source");
+      const boxes = [...group.querySelectorAll(".engine-row")].filter(row => !row.hidden)
+        .map(row => row.getBoundingClientRect());
+      return {
+        width:dialog.getBoundingClientRect().width,
+        columns:new Set(boxes.map(box=>box.left)).size,
+        enginesAboveSession:group.getBoundingClientRect().bottom<=session.getBoundingClientRect().top,
+        fits:dialog.scrollWidth<=dialog.clientWidth
+      };
+    });
+    const desktop = await engineLayout();
+    assert(desktop.width>=600 && desktop.columns===2 && desktop.enginesAboveSession && desktop.fits,JSON.stringify(desktop));
+    await page.setViewportSize({width:380,height:760});
+    const narrow = await engineLayout();
+    assert(narrow.columns===1 && narrow.enginesAboveSession && narrow.fits,JSON.stringify(narrow));
+    await create.getByRole("button",{name:"关闭",exact:true}).click();
+    await page.setViewportSize({width:1440,height:900});
+    await page.unroute("**/api/engines");
+    console.log("PASS new Agent engine grid is above sessions and responsive, with OpenCode and Cursor CLI installation guides");
+
     await page.evaluate(() => {
       window.timings = []; window.layoutCalls = 0;
       const original = renderLayout;
@@ -282,8 +319,6 @@ const [base, , root] = process.argv.slice(2);
       },60);
     });
     await page.locator("#new-agent").click();
-    assert.deepEqual(await page.locator("#agent-engine input").evaluateAll(items => items.map(item => item.value)),
-      ["codex", "copilot", "claude", "codebuddy", "traecli", "zcode", "qwen", "qoder"]);
     await page.locator("#agent-name").pressSequentially("create-agent-latency-test",{delay:45});
     const available = await page.locator("#create-agent").isEnabled();
     await page.waitForTimeout(1100);

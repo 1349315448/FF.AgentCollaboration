@@ -1,5 +1,7 @@
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using FF.AgentCollaboration.Application;
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Infrastructure.Storage;
@@ -24,7 +26,9 @@ internal static class WorkbenchMcp
                 type = "object",
                 properties = new
                 {
-                    target = new { type = "string", description = "@name in this topic, @topic/name, or window ID" },
+                    target = new { type = "string", description = "@name, @topic/name, window ID, or @全部 with broadcast=true for the current topic leader." },
+                    broadcast = new { type = "boolean", description = "Set true only when the user explicitly requests notifying the whole current topic. Use target=@全部." },
+                    externalTargets = new { type = "array", items = new { type = "string" }, description = "With @全部 only. Include the specified authorized external team members only when the user explicitly chooses them. Use IDs from kb_team_context." },
                     message = new { type = "string" },
                     document = new { type = "string", description = "Existing .md path in your project or your topic archive, shared in place." },
                     replyTo = new { type = "string", description = "Original MSG_ID when replying to a task. A linked reply is final unless finalReply is false." },
@@ -38,8 +42,8 @@ internal static class WorkbenchMcp
                 additionalProperties = false
             }
         },
-        new { name=CollaborationTools.ReportTask, description="Report starting or completing the specific task received by this window. If a reply was requested send the final result with send_to_agent and replyTo instead of completed.",
-            inputSchema=new { type="object", properties=new { messageId=new {type="string"}, status=new {type="string", @enum=new[]{"working","completed"}} },
+        new { name=CollaborationTools.ReportTask, description="Report starting work, waiting for clarification, or completing a received task. If a reply was requested send the final result with send_to_agent and replyTo instead of completed.",
+            inputSchema=new { type="object", properties=new { messageId=new {type="string"}, status=new {type="string", @enum=new[]{"working","need_info","completed"}} },
                 required=new[]{"messageId","status"}, additionalProperties=false } },
         Mcp.Tool(CollaborationTools.ReadDocument, "Read a Markdown handoff you sent or received. Use its HANDOFF_DOC path, full message ID, or unique 8-hex MSG_ID. Plain MSG messages have no handoff document.", "pathOrId"),
         new
@@ -50,8 +54,57 @@ internal static class WorkbenchMcp
                 channelReceipt = new {type="string",description="Copy the receipt from the native channel notification when present."} }, additionalProperties = false }
         },
         Mcp.Tool(CollaborationTools.FinishTopic, "Finish your current topic with a short completion summary.", "summary"),
-        Mcp.Tool(CollaborationTools.ReadSkill, "Read this FF.CP window's ff-agent-collab skill and examples for delegation, review, and delivering images to the user.")
+        Mcp.Tool(CollaborationTools.ReadSkill, "Read workbench UI instructions for answering user questions, plus collaboration tools and examples for this FF.CP window."),
+        Mcp.Tool(CollaborationTools.ReadKnowledgeSkill, "Read the ff-acp-knowledge skill for finding and preserving knowledge and requesting clarification."),
+        Mcp.Tool(CollaborationTools.ReadTeamSkill, "Read this window's current leader or member guide for team assignments, shared and personal records, and leadership handover."),
+        Mcp.Tool(CollaborationTools.KnowledgeTeam, "Get this topic's leader, roster, shared plan, query for member task records, and your own memory summary."),
+        Mcp.Tool(CollaborationTools.KnowledgeRead, "Read a knowledge Markdown document by its relative path from kb_search or kb_team_context.", "path"),
+        Mcp.Tool(CollaborationTools.AvailableEngines, "List installed local engines and cached account, model and quota status for recommending team members."),
+        new
+        {
+            name = CollaborationTools.ProposeTeam,
+            description = "For the current topic leader only. Discuss roles and suggested identity prompts with the user first, then submit 1 to 8 suggested members for their confirmation. This tool creates a proposal only.",
+            inputSchema = new { type = "object", properties = new {
+                summary = new { type = "string", maxLength = 2000 },
+                members = new { type = "array", minItems = 1, maxItems = 8, items = new {
+                    type = "object", properties = new {
+                        name = new { type = "string", maxLength = 40 }, role = new { type = "string", maxLength = 200 },
+                        taskSummary = new { type = "string", maxLength = 500 },
+                        remoteId = new { type = "string", description = "Invite an existing authorized remote capsule in this topic. Use its exact id from list_windows(detail=true)." },
+                        suggestedEngine = new { type = "string", @enum = EngineNames.All }, suggestedModel = new { type = "string", maxLength = 200 },
+                        suggestedEffort = new { type = "string", maxLength = 200 }
+                    }, required = new[] { "name", "role", "taskSummary" }, additionalProperties = false
+                } }
+            }, required = new[] { "summary", "members" }, additionalProperties = false }
+        },
+        new
+        {
+            name = CollaborationTools.KnowledgeSearch,
+            description = "Search the knowledge library for your project, current topic, and your own Agent memory.",
+            inputSchema = new { type = "object", properties = new {
+                query = new { type = "string" }, scope = new { type = "string", @enum = new[] {"project", "topic", "agent"} },
+                theme = new { type = "string" }, keywords = new { type = "array", items = new { type = "string" } },
+                topicId = new { type = "string" }, limit = new { type = "integer", minimum = 1, maximum = 100 },
+                recordsOnly = new { type = "boolean", description = "List shared task records within the current topic." },
+                offset = new { type = "integer", minimum = 0 }
+            }, additionalProperties = false }
+        },
+        new
+        {
+            name = CollaborationTools.KnowledgeWrite,
+            description = "Write Markdown in an authorized knowledge scope. Use a path relative to the selected scope or a knowledge-relative path returned by a tool.",
+            inputSchema = new { type = "object", properties = new {
+                scope = new { type = "string", @enum = new[] {"project", "topic", "agent"} }, path = new { type = "string" },
+                content = new { type = "string" }, title = new { type = "string" }, theme = new { type = "string" },
+                keywords = new { type = "array", items = new { type = "string" } },
+                status = new { type = "string", @enum = new[] {"planned","working","done","blocked"} },
+                expectedVersion = new { type = "string", description = "Required for existing topic PLAN.md, TEAM.md and records/ documents. Use the version from kb_read." }
+            }, required = new[] { "scope", "path", "content" }, additionalProperties = false }
+        }
     ];
+    private static readonly JsonSerializerOptions KnowledgeJson = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions TeamInputJson = new(JsonSerializerDefaults.Web) { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
+    private const string LeaderInstruction = "你是本话题组长。";
 
     private static readonly HttpClient Notifications = new(new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false })
         { Timeout = TimeSpan.FromMilliseconds(500) };
@@ -59,15 +112,21 @@ internal static class WorkbenchMcp
     internal static Task Serve(string root, int? port)
     {
         string grant = Mcp.WindowGrant();
-        (string Name, string? Role)? known = null;
+        (string Name, string? Role, bool Leader)? known = null;
         string? updatedIdentity = null;
         string? receipt = null, lastHint = null;
         bool supportsChannel = false;
         void ObserveIdentity(AgentWindow window)
         {
-            var identity = (window.Name, window.Role);
+            var identity = (window.Name, window.Role, window.IsLeader);
             if (known.HasValue && known.Value != identity)
-                updatedIdentity = $"当前窗口名称：@{window.Name}。"+(window.Role == null ? "当前未设置身份。" : $"当前窗口身份：{window.Role}。");
+            {
+                updatedIdentity = $"当前窗口名称：@{window.Name}。" + (window.Role == null ? "当前未设置身份。" : $"当前窗口身份：{window.Role}。") +
+                    (window.IsLeader ? LeaderInstruction : known.Value.Leader ? "你已卸任本话题组长。" : "");
+                if (known.Value.Leader != window.IsLeader)
+                    updatedIdentity += window.IsLeader ? "调用 read_team_skill，按接任流程核对计划和在途任务。" :
+                        "调用 read_team_skill，按卸任流程交接未结事项及旧任务回信。";
+            }
             known = identity;
         }
         return Mcp.Serve(Tools, (name, input) =>
@@ -75,6 +134,7 @@ internal static class WorkbenchMcp
             if (name == CollaborationTools.Receive)
             {
                 using var state = new WorkbenchStore(root);
+                ObserveIdentity(McpCaller(state, grant));
                 string? id = (string?)input["messageId"];
                 string? channelReceipt = (string?)input["channelReceipt"];
                 bool channelRead = id != null && channelReceipt == ChannelReceipt(grant,id);
@@ -82,8 +142,8 @@ internal static class WorkbenchMcp
                 receipt = message?.Id;
                 return message == null ? "null" : JsonSerializer.Serialize(new {id=message.Id,message=message.AsText()});
             }
-            string result = Call(root, grant, name, input, ObserveIdentity);
-            if (port.HasValue && name is CollaborationTools.Send or CollaborationTools.FinishTopic or CollaborationTools.ReportTask)
+            string result = Call(root, grant, name, input, ObserveIdentity, port);
+            if (port.HasValue && name is CollaborationTools.Send or CollaborationTools.FinishTopic or CollaborationTools.ReportTask or CollaborationTools.ProposeTeam)
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/api/events/wake");
                 request.Headers.Add("X-FF-Notify", "1");
@@ -95,12 +155,16 @@ internal static class WorkbenchMcp
         }, () =>
         {
             using var state = new WorkbenchStore(root);
-            var caller = state.Caller(grant);
+            var caller = McpCaller(state, grant);
             supportsChannel = caller.Engine is "claude" or "codebuddy";
-            known = (caller.Name, caller.Role);
+            known = (caller.Name, caller.Role, caller.IsLeader);
             updatedIdentity = null;
             return $"FF.Agent 窗口 @{caller.Name}，所属话题「{state.Topic(caller.TopicId).Name}」。" +
                 (caller.Role == null ? "" : $"当前窗口身份：{caller.Role}。") +
+                (caller.IsLeader ? LeaderInstruction : "") +
+                (state.DedicatedReader(caller.Id) ? "当前是专用审阅会话。按来信授权审阅并回信，通过回信交付记录。" : "") +
+                "首次处理本话题团队分工或交接时，调用 read_team_skill 读取当前职责手册。" +
+                "需要查询、记录项目知识或索取澄清时，按需调用 read_knowledge_skill。" +
                 "协作收件通过 receive_message 进入当前会话。收到信件编号时调用该工具领取，空结果表示已由其他调用领取或已撤回。" +
                 "用 @名称 或 @话题/名称 寻址。长文通过 document 传 Markdown 路径，message 用简短摘要。" +
                 "开始收到的任务用 report_task_status(MSG_ID, working)；无须回信用 completed 结案，需回信用 send_to_agent 的 replyTo 关联原 MSG_ID。中途回信加 finalReply=false。更新需求默认 supersedePrevious=true；独立任务设为 false。交接、审核或交付图片时，调用 read_collaboration_skill 读取本窗口的 ff-agent-collab 规范和示例。";
@@ -152,10 +216,16 @@ internal static class WorkbenchMcp
         } while (await timer.WaitForNextTickAsync(ct));
     }
 
-    private static string Call(string root, string grant, string name, JsonNode input, Action<AgentWindow> observeIdentity)
+    private static AgentWindow McpCaller(WorkbenchStore state, string grant)
+    {
+        var window = state.Caller(grant);
+        return window.IsLeader && state.DedicatedReader(window.Id) ? window with { IsLeader = false } : window;
+    }
+
+    private static string Call(string root, string grant, string name, JsonNode input, Action<AgentWindow> observeIdentity, int? port)
     {
         using var state = new WorkbenchStore(root);
-        var caller = state.Caller(grant);
+        var caller = McpCaller(state, grant);
         observeIdentity(caller);
         if (name==CollaborationTools.FinishTopic || name==CollaborationTools.Send && (input["cancel"]!=null || input["resend"]!=null))
             if(state.DedicatedReader(caller.Id)) throw new WorkbenchError("专用审阅会话不支持该操作",WorkbenchFailure.Forbidden);
@@ -166,6 +236,29 @@ internal static class WorkbenchMcp
                 return JsonSerializer.Serialize(new {status});
             case CollaborationTools.ReadSkill:
                 return CollaborationSkill.Read();
+            case CollaborationTools.ReadTeamSkill:
+                return CollaborationSkill.ReadTeam(caller.IsLeader);
+            case CollaborationTools.ReadKnowledgeSkill:
+                return CollaborationSkill.ReadFile("ff-acp-knowledge");
+            case CollaborationTools.KnowledgeSearch:
+                return JsonSerializer.Serialize(WorkbenchKnowledge.Search(state, caller.Project,
+                    input.Deserialize<KnowledgeQuery>(KnowledgeJson)!, caller), KnowledgeJson);
+            case CollaborationTools.KnowledgeRead:
+                return JsonSerializer.Serialize(WorkbenchKnowledge.Read(state, caller.Project,
+                    WorkbenchInput.Text((string?)input["path"], "知识库路径", 512), caller), KnowledgeJson);
+            case CollaborationTools.KnowledgeWrite:
+                return JsonSerializer.Serialize(WorkbenchKnowledge.Write(state, caller.Project,
+                    input.Deserialize<KnowledgeWrite>(KnowledgeJson)!, caller, grant), KnowledgeJson);
+            case CollaborationTools.KnowledgeTeam:
+                return JsonSerializer.Serialize(WorkbenchKnowledge.TeamContext(state, caller), KnowledgeJson);
+            case CollaborationTools.AvailableEngines:
+                if (state.DedicatedReader(caller.Id))
+                    throw new WorkbenchError("专用审阅会话不可查询本机引擎账号与模型", WorkbenchFailure.Forbidden);
+                return JsonSerializer.Serialize(AvailableEngines(caller.Project, grant, port), KnowledgeJson);
+            case CollaborationTools.ProposeTeam:
+                var proposal = state.ProposeTeam(grant, input.Deserialize<TeamProposalInput>(TeamInputJson)
+                    ?? throw new WorkbenchError("请填写团队提案"));
+                return JsonSerializer.Serialize(new { proposalId = proposal.Id, status = "awaiting_user_confirmation", count = proposal.Members.Length });
             case CollaborationTools.FinishTopic:
                 var finished = state.FinishOwnTopic(grant, WorkbenchInput.Text((string?)input["summary"], "完成摘要", 2000));
                 return JsonSerializer.Serialize(new { id = finished.Id, status = finished.Status, summary = finished.FinishSummary });
@@ -184,6 +277,7 @@ internal static class WorkbenchMcp
                         ["online"] = a.Online
                     };
                     if (a.Role != null) item["role"] = a.Role;
+                    if (a.IsLeader) item["leader"] = true;
                     if (all) item["topic"] = topics[a.TopicId];
                     if ((bool?)input["detail"] == true)
                     {
@@ -192,15 +286,26 @@ internal static class WorkbenchMcp
                         item["project"] = a.Project;
                     }
                     return item;
-                }).Concat(state.RemoteRecipients(caller.TopicId).Select(r =>
+                }).Concat(state.RemoteRecipients(caller.TopicId,caller.Id).Select(r =>
                 {
                     var item = new Dictionary<string,object> { ["name"]="@"+r.AgentName, ["online"]=r.Online, ["id"]=r.Id, ["node"]=r.NodeName };
-                    if ((bool?)input["detail"]==true) item["remote"]=true;
+                    if ((bool?)input["detail"]==true) { item["remote"]=true; item["teamMember"]=r.TeamMember; }
                     return item;
                 }).Concat(state.ReturnContacts(caller.Id).Select(c=>new Dictionary<string,object> {
                     ["name"]="@"+c.Name, ["online"]=c.Online, ["id"]=c.Id, ["node"]=c.NodeName, ["returnContact"]=true
                 }))));
             case CollaborationTools.Send:
+                if ((bool?)input["broadcast"] == true)
+                {
+                    if (((string?)input["target"])?.Trim() != HandoffService.AllMembers)
+                        throw new WorkbenchError("群发请指定 target=@全部");
+                    if (input["cancel"] != null || input["resend"] != null || input["replyTo"] != null || input["finalReply"] != null)
+                        throw new WorkbenchError("@全部 只用于发送新消息，请按独立消息编号回信、撤回或重发");
+                    return JsonSerializer.Serialize(HandoffService.Broadcast(state, grant, (string?)input["message"],
+                        (string?)input["document"], input["files"]?.Deserialize<string[]>() ?? [], ReturnHint(input),
+                        input["externalTargets"]?.Deserialize<string[]>() ?? []), KnowledgeJson);
+                }
+                if (input["externalTargets"] != null) throw new WorkbenchError("仅 @全部 支持指定外部组员");
                 if (input.AsObject().ContainsKey("cancel"))
                 {
                     if (input.AsObject().Any(p => p.Key is not ("cancel" or "target")))
@@ -213,10 +318,8 @@ internal static class WorkbenchMcp
                     else throw new WorkbenchError("请用 cancel=消息 ID 或 cancel=true 加 target 撤回");
                     return JsonSerializer.Serialize(new { id = cancelled, status = "cancelled" });
                 }
-                var hint = input["autoReturnHint"] is JsonValue value && value.TryGetValue<bool>(out var reply)
-                    ? reply.ToString() : (string?)input["autoReturnHint"];
                 return Queued(HandoffService.Send(state, grant, (string?)input["target"], (string?)input["message"],
-                    (string?)input["document"], (string?)input["resend"], input["files"]?.Deserialize<string[]>() ?? [], hint,
+                    (string?)input["document"], (string?)input["resend"], input["files"]?.Deserialize<string[]>() ?? [], ReturnHint(input),
                     (bool?)input["supersedePrevious"] ?? true,(string?)input["replyTo"],(bool?)input["finalReply"]));
             case CollaborationTools.ReadDocument:
                 if(state.DedicatedReader(caller.Id))
@@ -226,6 +329,30 @@ internal static class WorkbenchMcp
                 throw new WorkbenchError("未知协作工具");
         }
     }
+
+    private static TeamEngineAvailability[] AvailableEngines(string project, string grant, int? port)
+    {
+        if (port is int localPort)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{localPort}/api/team/engine-catalog");
+            request.Headers.Add("X-FF-Window-Grant", grant);
+            try
+            {
+                using var response = Notifications.Send(request);
+                if (response.StatusCode == HttpStatusCode.Forbidden)
+                    throw new WorkbenchError("Agent 连接已失效或无法查询本机引擎", WorkbenchFailure.Forbidden);
+                if (response.IsSuccessStatusCode && JsonSerializer.Deserialize<TeamEngineAvailability[]>(response.Content.ReadAsStream(), KnowledgeJson) is { } installed)
+                    return installed;
+            }
+            catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException)
+            { /* 宿主尚未提供缓存时仍可检查本机已安装的 CLI。 */ }
+        }
+        return SessionCatalog.TeamEngines(project);
+    }
+
+    private static string? ReturnHint(JsonNode input) =>
+        input["autoReturnHint"] is JsonValue value && value.TryGetValue<bool>(out var reply)
+            ? reply.ToString() : (string?)input["autoReturnHint"];
 
     private static string Queued(InboxItem delivery) =>
         delivery.QueueHint == null ? JsonSerializer.Serialize(new { id = delivery.Id, status = "queued", document = delivery.Document })

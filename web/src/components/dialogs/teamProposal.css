@@ -1,0 +1,38 @@
+.team-proposal-launcher {
+  display:inline-flex; align-items:center; gap:4px; flex:none; padding:2px 5px; height:19px;
+  border:1px solid color-mix(in srgb, var(--amber) 28%, transparent); border-radius:4px;
+  color:var(--amber); background:color-mix(in srgb, var(--amber) 10%, transparent);
+  font-size:11px; white-space:nowrap;
+}
+.team-proposal-launcher:hover { background:color-mix(in srgb, var(--amber) 16%, transparent); }
+.team-proposal-launcher svg { width:12px; height:12px; flex:none; }
+
+#team-proposal-dialog { width:min(780px, calc(100% - 26px)); overflow:hidden; }
+#team-proposal-dialog form {
+  display:grid; grid-template-rows:auto minmax(0,1fr) auto;
+  max-height:calc(100dvh - 26px);
+}
+.team-proposer { display:flex; align-items:center; gap:5px; margin-top:5px; color:var(--muted); }
+.team-proposal-body { overflow:auto; overscroll-behavior:contain; align-content:start; }
+.team-proposal-summary, .team-task-summary { white-space:pre-wrap; overflow-wrap:anywhere; }
+.team-proposal-summary { line-height:1.6; }
+.team-proposal-members { display:grid; gap:10px; }
+.team-member { min-inline-size:0; margin:0; padding:7px 10px 10px; border:1px solid var(--line); border-radius:6px; }
+.team-member legend { padding-inline:4px; font-weight:600; }
+.team-member legend label { display:flex; align-items:center; gap:4px; }
+.team-member legend input { accent-color:var(--accent); }
+.team-task-summary { margin-bottom:8px; }
+.team-member-fields { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.4fr); gap:14px; }
+.team-member-text, .team-engine-fields { display:grid; align-content:start; gap:8px; }
+.team-engine-fields { grid-template-columns:repeat(2, minmax(0,1fr)); }
+.team-field-message { display:block; margin-top:6px; color:var(--muted); line-height:1.5; }
+.team-proposal-result h3 { margin:0; }
+.team-proposal-result ul { display:grid; gap:6px; padding-left:20px; }
+.team-proposal-result li>span { margin-left:8px; color:var(--muted); }
+.team-proposal-result li>p { padding-top:4px; color:var(--danger); }
+#team-proposal-dialog .dialog-footer { flex-wrap:wrap; }
+
+@media (max-width:650px) {
+  .team-proposal-launcher span { display:none; }
+  .team-member-fields { grid-template-columns:minmax(0,1fr); gap:8px; }
+}

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using FF.AgentCollaboration.Application;
@@ -11,6 +12,7 @@ using FF.AgentCollaboration.Infrastructure.Windows;
 namespace FF.AgentCollaboration.Presentation.Http;
 
 internal sealed record LogCleanupRequest(int? Days);
+internal sealed record TopicLeaderRequest([property: JsonRequired] string? WindowId, string? ExpectedLeaderWindowId);
 
 internal static class WorkbenchEndpoints
 {
@@ -20,6 +22,8 @@ internal static class WorkbenchEndpoints
         GitWorkspaceEndpoints.Map(app, startup);
         ManagedMcpEndpoints.Map(app, startup);
         ManagedSkillEndpoints.Map(app, startup);
+        KnowledgeEndpoints.Map(app, startup);
+        TeamEndpoints.Map(app, startup);
         app.MapGet("/api/initialize", startup.Status);
         app.MapPost("/api/initialize", (InitializeWorkbench paths) =>
         {
@@ -60,6 +64,17 @@ internal static class WorkbenchEndpoints
             using var state = new WorkbenchStore(startup.Root);
             return state.SaveTopic(WorkbenchInput.Id(id), input);
         });
+        app.MapPut("/api/topics/{id}/leader", (HttpContext context, string id, TopicLeaderRequest input, Workbench workbench) =>
+        {
+            if (!WorkbenchHost.IsLoopback(context))
+                throw new WorkbenchError("请在本机设置话题组长", WorkbenchFailure.Forbidden);
+            using var state = new WorkbenchStore(startup.Root);
+            string topic = WorkbenchInput.Id(id);
+            state.SetTopicLeader(topic, input.WindowId == null ? null : WorkbenchInput.Id(input.WindowId),
+                string.IsNullOrEmpty(input.ExpectedLeaderWindowId) ? input.ExpectedLeaderWindowId : WorkbenchInput.Id(input.ExpectedLeaderWindowId));
+            workbench.SyncTeamRoster(topic);
+            return Results.NoContent();
+        });
         app.MapPost("/api/topics/{id}/finish", (string id) => { using var state = new WorkbenchStore(startup.Root); return state.SetFinished(WorkbenchInput.Id(id), true); });
         app.MapPost("/api/topics/{id}/reopen", (string id) => { using var state = new WorkbenchStore(startup.Root); return state.SetFinished(WorkbenchInput.Id(id), false); });
         app.MapGet("/api/shortcuts/{engine}", (string engine) =>
@@ -72,13 +87,19 @@ internal static class WorkbenchEndpoints
             using var state = new WorkbenchStore(startup.Root);
             return state.ChangeShortcuts(engine, request);
         });
-        app.MapGet("/api/folders", (string? path) => ProjectFolders.List(path));
-        app.MapPut("/api/project", (SelectProject request) =>
+        app.MapGet("/api/folders", (HttpContext context, string? path) =>
+        {
+            var listing = ProjectFolders.List(path);
+            return new { listing.Path, listing.Parent, listing.Folders, canConfigureKnowledge = WorkbenchHost.IsLoopback(context) };
+        });
+        app.MapPut("/api/project", (HttpContext context, SelectProject request) =>
         {
             var selected = ProjectFolders.Resolve(request.Path);
             using var state = new WorkbenchStore(startup.Root);
-            state.SelectProject(selected);
-            return new { project = selected };
+            if (request.KnowledgeMode != null && !WorkbenchHost.IsLoopback(context))
+                throw new WorkbenchError("请在本机设置项目知识库", WorkbenchFailure.Forbidden);
+            string mode = WorkbenchKnowledge.Configure(state, selected, request.KnowledgeMode, register: true);
+            return new { project = selected, knowledgeMode = mode };
         });
         app.MapDelete("/api/project", (string path) =>
         {
@@ -124,8 +145,8 @@ internal static class WorkbenchEndpoints
             using var adapter = Engine.Create(name, Directory.GetCurrentDirectory());
             return adapter.Capabilities with { StartupApproval = StartupApproval.For(name) };
         }));
-        app.MapGet("/api/engines/{engine}/account", (string engine, string project, CancellationToken ct) =>
-            EngineAuthentication.Check(EngineNames.Require(engine), ProjectFolders.Resolve(project), ct));
+        app.MapGet("/api/engines/{engine}/account", (string engine, string project, SessionCatalog catalog, CancellationToken ct) =>
+            catalog.Account(EngineNames.Require(engine), ProjectFolders.Resolve(project), ct));
         // 登录终端只属于此 WebSocket；离开弹窗即释放，整个过程不创建窗口、会话或 MCP 授权。
         app.MapGet("/api/engines/{engine}/login", async (string engine, string project, string? provider, HttpContext context) =>
         {

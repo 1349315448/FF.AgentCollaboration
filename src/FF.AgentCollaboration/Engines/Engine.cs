@@ -15,6 +15,8 @@ internal abstract class Engine : IDisposable
         "qoder" => new QoderEngine(cwd),
         "traecli" => new CodexEngine(cwd, name),
         "zcode" => new ZCodeEngine(cwd),
+        "cursor" => new CursorEngine(cwd),
+        "opencode" => new OpenCodeEngine(cwd),
         _ => throw new WorkbenchError("请选择受支持的引擎")
     };
 
@@ -27,7 +29,8 @@ internal abstract class Engine : IDisposable
     internal virtual string ApprovalKeys => "/permissions\r";
     internal virtual bool ValidSessionId(string id) => Guid.TryParse(id, out _);
     internal virtual IReadOnlyDictionary<string, string>? TerminalEnvironment(AgentWindow window, EngineMcp mcp) => null;
-    internal abstract Task<IReadOnlyList<ModelChoice>> ListModels(CancellationToken ct);
+    internal virtual IReadOnlyList<ModelChoice> KnownModels => [];
+    internal virtual Task<IReadOnlyList<ModelChoice>> ListModels(CancellationToken ct) => Task.FromResult(KnownModels);
     internal abstract Task<EngineQuota> ReadQuota(CancellationToken ct);
     internal abstract Task<IReadOnlyList<HistorySession>> ListSessions(CancellationToken ct, bool archived);
     internal virtual bool HasNativeWriter(string id) => false;

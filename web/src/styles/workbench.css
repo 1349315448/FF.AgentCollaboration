@@ -435,6 +435,31 @@ button:disabled { cursor: default; opacity: .42; }
 .rename-agent:hover { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 3px; }
 .toggle-collapse { flex: none; min-height: 24px; padding-inline: 4px; }
 .tile-name { color: var(--text); font-size: 12.5px; font-weight: 600; }
+.pane-name, .leader-flag { display:inline-flex; align-items:center; }
+.pane-name { gap:3px; flex: 0 0 auto; max-width: 14em; min-width: 0; }
+.pane-name .rename-agent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.leader-flag { flex:none; width:12px; height:12px; color:#ef4444; }
+.leader-flag svg { width:100%; height:100%; }
+.pane-leader-action { flex:none; min-height:24px; font-size:11px; padding-inline:4px; }
+.pane-leader-action svg { display:none; width:13px; height:13px; }
+.pane-header-more { flex: none; min-height: 24px; font-size: 11px; padding-inline: 5px; }
+.pane-header-more-menu {
+  position: fixed; inset: auto; position-area: bottom span-left; position-try-fallbacks: flip-block, flip-inline;
+  justify-self: end; margin: 4px 0 0; min-width: 196px; padding: 6px; gap: 4px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--elevated); color: var(--text);
+  box-shadow: 0 8px 24px #0007;
+}
+.pane-header-more-menu:popover-open { display: grid; }
+.pane-header-more-menu .pane-leader-action { justify-content: flex-start; width: 100%; padding: 4px 6px; font-size: 12px; }
+.pane-header-more-menu .pane-leader-action svg { display: block; }
+.pane-header-more-menu .fed-controls { flex-wrap: wrap; gap: 4px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
+.pane-header-more-menu .fed-controls:first-child { padding-top: 0; border-top: 0; }
+.pane-header-more-menu .fed-badge { width: 100%; justify-content: flex-start; padding: 3px 6px; font-size: 12px; }
+.pane-header-more-menu .fed-badge svg { display: block; }
+.pane-header-more-menu .fed-controls .fed-feedback:not(:empty) { position: static; width: 100%; margin-top: 2px; }
+.pane[data-collapsed="true"] .pane-header-more,
+.pane[data-collapsed="true"] .pane-header-more-menu { display: none; }
+.topic-leader-setting { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .tile-engine { flex: none; color: var(--muted); font: 11px var(--mono); }
 .terminal-status { display: inline-block; flex: none; min-width: 3.2em; color: var(--faint); font-size: 11px; }
 .pane[data-activity="working"] .terminal-status { color: var(--agent-blue); font-weight: 600; }
@@ -445,14 +470,17 @@ button:disabled { cursor: default; opacity: .42; }
 .pane[data-collapsed="true"] > :not(.pane-header, .receipt-sweep) { display: none; }
 .pane[data-collapsed="true"] .pane-header {
   height: auto;
-  display: grid; grid-template-columns: 18px auto minmax(0, 1fr) auto auto; grid-template-rows: 18px 14px;
-  grid-template-areas: "power lamp name status toggle" "engine engine engine quota quota"; gap: 1px 5px; padding: 4px 8px; border: 0;
+  display: grid; grid-template-columns: 18px auto minmax(0, 1fr) auto auto auto; grid-template-rows: 18px 14px;
+  grid-template-areas: "power lamp name status leader toggle" "engine engine engine quota quota quota"; gap: 1px 5px; padding: 4px 8px; border: 0;
 }
 .pane[data-collapsed="true"] .pane-title-group { display: contents; }
 .pane[data-collapsed="true"] .pane-power { grid-area: power; width: 18px; height: 18px; }
 .pane[data-collapsed="true"] .pane-power[aria-busy="true"]::after { width: 11px; height: 11px; }
 .pane[data-collapsed="true"] .agent-light { grid-area: lamp; }
-.pane[data-collapsed="true"] .tile-name { grid-area: name; }
+.pane[data-collapsed="true"] .pane-name { grid-area: name; max-width: none; }
+.pane[data-collapsed="true"] .pane-leader-action { grid-area:leader; min-height:18px; padding:0 2px; }
+.pane[data-collapsed="true"] .pane-leader-action svg { display:block; }
+.pane[data-collapsed="true"] .pane-leader-action span { display:none; }
 .pane[data-collapsed="true"] .status-label { grid-area: status; }
 .pane[data-collapsed="true"] .toggle-collapse { grid-area: toggle; justify-self: end; font-size: 11px; min-height: 18px; padding: 0 2px; }
 .pane[data-collapsed="true"] .tile-engine { grid-area: engine; }
@@ -549,6 +577,7 @@ button:disabled { cursor: default; opacity: .42; }
 
 dialog { width: min(480px, calc(100% - 26px)); max-height: calc(100dvh - 24px); padding: 0; overflow: auto; border: 1px solid var(--line-hover); border-radius: 8px; background: var(--elevated); box-shadow: 0 12px 32px #0006; }
 dialog::backdrop { background: rgba(4, 4, 7, 0.68); backdrop-filter: blur(6px); }
+#new-dialog { width:min(640px, calc(100% - 26px)); }
 #new-dialog::backdrop, #new-dialog[open] ~ #folder-dialog::backdrop { background: #040407c9; backdrop-filter: none; }
 #files-dialog, #folder-dialog, #preview-dialog { width: min(600px, calc(100% - 26px)); }
 :is(#pane-session-dialog, #settings-dialog) {
@@ -586,12 +615,12 @@ dialog::backdrop { background: rgba(4, 4, 7, 0.68); backdrop-filter: blur(6px); 
 .required { color: var(--danger); margin-right: 3px; font-size: 11px; }
 input:not([type="checkbox"], [type="radio"]), textarea, select, .select-project { width: 100%; min-width: 0; padding: 6px 9px; background: var(--shell); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 12.5px; line-height: 1.45; }
 textarea { resize: vertical; min-height: 68px; }
-#agent-engine { align-content: start; }
+#agent-engine { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px 9px; }
+@media (max-width:560px) { #agent-engine { grid-template-columns:minmax(0,1fr); } }
 .engine-row { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-height: 28px; padding: 0 6px; border: 1px solid var(--line); border-radius: 5px; }
 .engine-row:has(:checked) { background: var(--raised); }
 .engine-row label { flex: 1; display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--text); cursor: pointer; }
 .engine-row input { margin: 0; accent-color: var(--text); }
-.field-pair:has(#agent-engine) { align-items: start; }
 .selected-folder { display: grid; min-width: 0; gap: 2px; }
 .selected-folder span { color: var(--faint); font: 11px var(--mono); }
 .change-label { margin-left: auto; color: var(--muted); flex: none; font-size: 12px; }

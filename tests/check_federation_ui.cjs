@@ -45,6 +45,8 @@ const link=require("node:fs").readFileSync(0,"utf8");
     await approved.waitFor();
     const contact=a.locator('.tree-agent[data-agent="'+windowId+'"] + .tree-return-contacts li').filter({hasText:"@Planner"});
     await contact.waitFor();
+    await contact.getByText("在线",{exact:true}).waitFor();
+    assert.equal(await contact.locator(".nav-dot").evaluate(dot=>getComputedStyle(dot).backgroundColor),"rgb(54, 229, 121)");
     const left=await contact.locator("svg").boundingBox();
     const parent=await a.locator('.tree-agent[data-agent="'+windowId+'"] .tag-power').boundingBox();
     assert(left.x>parent.x+12,"contact is visibly indented below its owning Agent");
@@ -73,7 +75,8 @@ const link=require("node:fs").readFileSync(0,"utf8");
     await incoming.locator("option").filter({hasText:"另一条来信"}).waitFor({state:"attached"});
     assert.equal(await incoming.getByRole("textbox").inputValue(),"浏览器已收到");
     await incoming.getByRole("button",{name:"发送回信"}).click();
-    await b.getByText(/最近回信.*浏览器已收到/).waitFor();
+    await b.locator('.fed-mail-row[data-kind="reply-in"]').filter({hasText:"浏览器已收到"}).waitFor({state:"attached"});
+    assert.equal(await remoteDialog.getByText(/最近回信|浏览器已收到/).count(),0);
     assert.equal(await b.locator(".remote-capsule .terminal-surface").count(),0);
     assert.equal(await a.locator('[data-window="'+windowId+'"]').count(),1);
     console.log("PASS Chromium node settings, remote capsule, approval, message and SSE reply with no remote PTY");
@@ -120,7 +123,7 @@ const link=require("node:fs").readFileSync(0,"utf8");
     await picker.locator("#peer-search").press("Enter");
     await picker.waitFor({state:"hidden"});
     await b.waitForFunction(id=>{const p=panes.get(id);return p && observePrompt(p).editableText?.includes("@Reviewer");},source);
-    try { await a.waitForFunction(()=>snapshot.timeline.some(i=>i.summary.includes("联邦离线唤醒验证") && i.state==="delivered"),undefined,{timeout:30000}); }
+    try { await a.waitForFunction(()=>snapshot.federation.mail.some(m=>m.text==="联邦离线唤醒验证" && m.deliveryState==="delivered"),undefined,{timeout:30000}); }
     catch(e){
       console.error("isolated wake",await a.evaluate(id=>{const p=panes.get(id);return {inbox:p.view.inbox.map(i=>[i.state,i.text]),
         error:p.element.querySelector(".pane-error")?.textContent,prompt:observePrompt(p),
@@ -182,6 +185,14 @@ const link=require("node:fs").readFileSync(0,"utf8");
     await a.locator('[data-window="'+windowId+'"] .insert-agent').click();
     await providerPicker.getByRole("option").filter({hasText:"@联络员"}).click();
     await a.waitForFunction(id=>observePrompt(panes.get(id)).editableText?.includes("@联络员"),windowId);
+    const friend=a.locator(".tree-return-contacts button").filter({hasText:"@联络员"});
+    await friend.click();
+    assert.equal(await dialog.isVisible(),false);
+    await friend.dblclick();
+    await dialog.getByRole("button",{name:"移除协作",exact:true}).click();
+    await friend.waitFor({state:"detached"});
+    await tree.getByText("无权限",{exact:true}).waitFor();
+    await b.locator('.fed-mail-row[data-kind="permission"]').filter({hasText:"@Reviewer 已移除 @联络员 的协作请求权限"}).waitFor();
     await manage.click();
     console.log("PASS provider can mention the bound requesting Agent in its own terminal");
     console.log("PASS sharing mode is staged, offline stays offline, online restarts the same session, stale confirmation rejected, permission-only changes keep the PTY");

@@ -1,3 +1,5 @@
+import { KnowledgeModeOptions } from "./ProjectKnowledgeDialog";
+
 export function FolderDialog() {
   return (
     <dialog id="folder-dialog" aria-labelledby="folder-title">
@@ -7,6 +9,10 @@ export function FolderDialog() {
         <div className="folder-navigation"><button className="text-button" id="folder-disks" type="button">磁盘</button><button className="text-button" id="folder-up" type="button">↑ 上一级</button></div>
         <p className="form-error" id="folder-error" role="alert" hidden></p>
         <div className="selection-list" id="folder-list" aria-label="子文件夹"></div>
+        <label className="field" id="folder-knowledge-field" hidden>项目知识库（.ff-acp-knowledge）
+          <select id="folder-knowledge-mode" defaultValue="disabled"><KnowledgeModeOptions/></select>
+        </label>
+        <small className="file-notice" id="folder-knowledge-notice" hidden>请在运行工作台的电脑上设置项目知识库。</small>
       </div>
       <footer className="dialog-footer"><button className="button" type="button" data-close="">取消</button><button className="button primary" type="button" id="choose-folder" disabled>选用此文件夹</button></footer>
     </dialog>

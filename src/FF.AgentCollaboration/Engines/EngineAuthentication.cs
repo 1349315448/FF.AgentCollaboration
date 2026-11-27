@@ -19,7 +19,7 @@ internal static class EngineAuthentication
     internal static async Task<EngineAccount> Check(string engine, string project, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        timeout.CancelAfter(TimeSpan.FromSeconds(engine == "opencode" ? 45 : 15));
         try
         {
             using var adapter = Engine.Create(engine, project);

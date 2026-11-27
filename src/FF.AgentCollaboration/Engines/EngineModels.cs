@@ -6,13 +6,14 @@ internal sealed record EngineMode(string Id, string Label);
 // 原生启动模式与工具审批在 Copilot 中相互独立。其他引擎通过其模式参数选择策略。
 internal sealed record StartupApproval(string Ask, string Auto, string Description)
 {
-    internal static StartupApproval For(string engine) => engine switch
+    internal static StartupApproval? For(string engine) => engine switch
     {
         "codex" or "traecli" => new("on-request", "never", "在已有沙箱权限内执行，超出权限的操作会被拒绝。"),
         "copilot" => new("default", "--allow-all-tools", "允许工具自动运行，保留路径、URL 和组织策略的限制。"),
         "claude" or "codebuddy" or "qoder" => new("default", "auto", "使用 CLI 的自动审批策略，高风险操作仍可能被阻止或要求确认。"),
         "qwen" => new("default", "auto", "使用千问自动审批策略；仅支持旧模式的版本会自动接受编辑，其他操作仍需确认。"),
         "zcode" => new("build", "yolo", "YOLO 模式自动批准工具操作，包括写文件和执行命令。"),
+        "cursor" or "opencode" => null,
         _ => throw new ArgumentOutOfRangeException(nameof(engine))
     };
 }

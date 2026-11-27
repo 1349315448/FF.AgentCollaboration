@@ -35,6 +35,8 @@ internal sealed partial class WorkbenchStore
                 key TEXT NOT NULL UNIQUE,PRIMARY KEY(remote,topic));
             CREATE TABLE IF NOT EXISTS fed_return_contact(id TEXT PRIMARY KEY,grant_id TEXT NOT NULL,key TEXT NOT NULL,
                 name TEXT NOT NULL,online INTEGER NOT NULL, UNIQUE(grant_id,key));
+            CREATE TABLE IF NOT EXISTS fed_denied_sender(grant_id TEXT NOT NULL,sender TEXT NOT NULL,PRIMARY KEY(grant_id,sender));
+            CREATE TABLE IF NOT EXISTS fed_remote_denial(remote TEXT NOT NULL,agent TEXT NOT NULL,PRIMARY KEY(remote,agent));
             CREATE TABLE IF NOT EXISTS fed_received(remote TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL,
                 request_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(remote,seq));
             CREATE TABLE IF NOT EXISTS fed_file(id TEXT PRIMARY KEY,owner TEXT NOT NULL,node TEXT NOT NULL,retry TEXT NOT NULL,
@@ -69,6 +71,10 @@ internal sealed partial class WorkbenchStore
             """);
         if (!Read("PRAGMA table_info(fed_incoming)", r => r.GetString(1)).Contains("contact_key"))
             Exec("ALTER TABLE fed_incoming ADD COLUMN contact_key TEXT");
+        if (!Read("PRAGMA table_info(fed_return_contact)", r => r.GetString(1)).Contains("sender"))
+            Exec("ALTER TABLE fed_return_contact ADD COLUMN sender TEXT");
+        if (!Read("PRAGMA table_info(fed_request)", r => r.GetString(1)).Contains("sender"))
+            Exec("ALTER TABLE fed_request ADD COLUMN sender TEXT");
         if (!Read("PRAGMA table_info(fed_remote)",r=>r.GetString(1)).Contains("contacts_published"))
             Exec("ALTER TABLE fed_remote ADD COLUMN contacts_published INTEGER NOT NULL DEFAULT 0");
         if (!Read("PRAGMA table_info(fed_remote)", r => r.GetString(1)).Contains("quota_snapshot"))
@@ -269,6 +275,7 @@ internal sealed partial class WorkbenchStore
     internal object AcceptPeerMessage(string token, string node, string name, PeerMessage input, Action changed)
     {
         string id = WorkbenchInput.Id(input.Id), body = WorkbenchInput.Text(input.Text, "消息", 8000);
+        string? sender = input.SenderKey == null ? null : WorkbenchInput.Id(input.SenderKey);
         input = input with { Id = id, UploadId = input.UploadId == null ? null : WorkbenchInput.Id(input.UploadId) };
         FederationException? denied = null;
         string permission = "";
@@ -280,14 +287,20 @@ internal sealed partial class WorkbenchStore
             if (grant.Paused) denied = new(403, "peer_paused");
             if (denied == null)
             {
-                var prior = Read("SELECT body,permission,expects_reply FROM fed_request WHERE grant_id=$p0 AND id=$p1", r => (r.GetString(0), r.GetString(1),r.GetBoolean(2)), grant.Id, id);
+                var prior = Read("SELECT body,permission,expects_reply,sender FROM fed_request WHERE grant_id=$p0 AND id=$p1",
+                    r => (Body:r.GetString(0),Permission:r.GetString(1),ExpectsReply:r.GetBoolean(2),Sender:Optional(r,3)), grant.Id, id);
                 if (prior.Count != 0)
                 {
                     var upload = Read("SELECT upload FROM fed_incoming WHERE grant_id=$p0 AND request=$p1", r => Optional(r, 0), grant.Id, id).SingleOrDefault();
-                    if (prior[0].Item1 != body || upload != input.UploadId || prior[0].Item3!=input.ExpectsReply) throw new FederationException(409, "message_id_conflict");
-                    permission = prior[0].Item2;
+                    var original = prior[0];
+                    if (original.Body != body || upload != input.UploadId || original.ExpectsReply!=input.ExpectsReply ||
+                        (original.Sender != null && original.Sender != sender)) throw new FederationException(409, "message_id_conflict");
+                    permission = original.Permission;
                     return;
                 }
+                // 撤权仅拦截新请求。已受理且内容相符的重试可取回原确认，不重复扣额或投递。
+                if (Read("SELECT 1 FROM fed_denied_sender WHERE grant_id=$p0 AND ($p1 IS NULL OR sender=$p1) LIMIT 1",
+                    r=>true,grant.Id,sender).Any()) throw new FederationException(403,"agent_permission_removed");
                 if (grant.QuotaLimit is int limit && grant.Used >= limit)
                     denied = new(429, "quota_exceeded", new { error = "quota_exceeded", quotaMode = grant.QuotaMode, used = grant.Used, limit, resetAt = grant.ResetAt });
             }
@@ -302,7 +315,7 @@ internal sealed partial class WorkbenchStore
                 UPDATE fed_grant SET total=total+1,hourly=CASE WHEN hour=$p1 THEN hourly+1 ELSE 1 END,hour=$p1,
                 daily=CASE WHEN day=$p2 THEN daily+1 ELSE 1 END,day=$p2,last_received=$p3,name=$p4 WHERE id=$p0
                 """, grant.Id, FederationPolicy.Period("hourly", now).Start, FederationPolicy.Period("daily", now).Start, now, name);
-            Exec("INSERT INTO fed_request(grant_id,id,body,permission,expects_reply) VALUES($p0,$p1,$p2,$p3,$p4)", grant.Id, id, body, permission,input.ExpectsReply);
+            Exec("INSERT INTO fed_request(grant_id,id,body,permission,expects_reply,sender) VALUES($p0,$p1,$p2,$p3,$p4,$p5)", grant.Id, id, body, permission,input.ExpectsReply,sender);
             if (input.UploadId != null && !grant.AllowUpload) throw new FederationException(403, "upload_disabled");
             QueuePeerRequest(grant, input, body);
             Exec("INSERT INTO fed_event(grant_id,id,kind,request_id,body) VALUES($p0,$p1,'receipt',$p1,'accepted')", grant.Id, id);
@@ -359,9 +372,9 @@ internal sealed partial class WorkbenchStore
             """, r => new { id = r.GetString(0), text = r.GetString(1), permissionMode = r.GetString(2) }, grant);
     }
 
-    internal List<PeerEvent> PeerEvents(string grant, long after, bool acceptsContacts) => Read("""
+    internal List<PeerEvent> PeerEvents(string grant, long after, bool acceptsContacts, bool acceptsRemoval) => Read("""
         SELECT e.seq,e.kind,e.request_id,e.body,d.file_id,f.name,e.final_reply FROM fed_event e
         LEFT JOIN fed_reply_doc d ON e.kind='reply' AND d.grant_id=e.grant_id AND d.event_id=e.id LEFT JOIN fed_file f ON f.id=d.file_id
-        WHERE e.grant_id=$p0 AND e.seq>$p1 AND ($p2 OR e.kind!='contact') ORDER BY e.seq LIMIT 32
-        """, r => new PeerEvent(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), Optional(r, 4), Optional(r, 5), r.IsDBNull(6) ? null : r.GetBoolean(6)), grant, after, acceptsContacts);
+        WHERE e.grant_id=$p0 AND e.seq>$p1 AND ($p2 OR e.kind!='contact') AND ($p3 OR e.kind!='contact-removed') ORDER BY e.seq LIMIT 32
+        """, r => new PeerEvent(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), Optional(r, 4), Optional(r, 5), r.IsDBNull(6) ? null : r.GetBoolean(6)), grant, after, acceptsContacts, acceptsRemoval);
 }

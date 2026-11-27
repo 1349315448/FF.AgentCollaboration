@@ -1,7 +1,7 @@
 namespace FF.AgentCollaboration.Domain;
 
 internal sealed record WorkbenchTopic(string Id, string Name, string Project, string? Goal, string Status,
-    string? Folder, string CreatedAt, string? FinishedAt, string? FinishSummary)
+    string? Folder, string CreatedAt, string? FinishedAt, string? FinishSummary, string? LeaderWindowId = null)
 {
     public string? Activity { get; init; }
 }

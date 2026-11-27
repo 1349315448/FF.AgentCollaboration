@@ -81,6 +81,13 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
         local.MapGet("/grants/{id}/requests", (string id) => { using var db = Store(); return db.RecentPeerRequests(id); });
         local.MapPost("/grants/{id}/replies", (string id, PeerMessage input) => { using var db = Store(); db.PeerReply(id, input); return Results.Ok(); });
         local.MapPost("/remotes", (RemoteApplication input) => { using var db = Store(); return new { id = FederationNetwork.AddRemote(db, input) }; });
+        local.MapDelete("/windows/{window}/contacts/{id}", (string window,string id) =>
+        {
+            using var db = Store();
+            db.RemoveReturnContact(WorkbenchInput.Id(window),WorkbenchInput.Id(id));
+            events.RefreshPages();
+            return Results.NoContent();
+        });
         local.MapPut("/remotes/{id}/contact", (string id, ContactBinding input) =>
         {
             using var db = Store();
@@ -88,7 +95,13 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
             events.RefreshPages();
             return Results.NoContent();
         });
-        local.MapDelete("/remotes/{id}", (string id, string topic) => { using var db = Store(); db.RemoveRemote(id, WorkbenchInput.Id(topic)); return Results.NoContent(); });
+        local.MapDelete("/remotes/{id}", (string id, string topic, Workbench workbench) =>
+        {
+            using var db = Store();
+            if (db.RemoveRemote(id, WorkbenchInput.Id(topic))) workbench.SyncTeamRoster(topic);
+            events.Changed();
+            return Results.NoContent();
+        });
         local.MapPost("/remotes/{id}/messages", (string id, PeerMessage input, FederationClient client, CancellationToken ct) => client.Send(id, input, ct));
 
         var wire = app.MapGroup("/api/federation").WithMetadata(this);
@@ -159,6 +172,7 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
             c.Response.ContentType = "text/event-stream";
             c.Response.Headers.CacheControl = "no-store";
             bool acceptsContacts = c.Request.Headers["X-FF-Return-Contacts"] == "1";
+            bool acceptsRemoval = c.Request.Headers["X-FF-Contact-Removal"] == "1";
             if (acceptsContacts) c.Response.Headers["X-FF-Return-Contacts"] = "1";
             using var stop = CancellationTokenSource.CreateLinkedTokenSource(c.RequestAborted,
                 c.RequestServices.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>().ApplicationStopping);
@@ -172,7 +186,7 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
                     // 吊销、关闭共享、移除窗口对已连接的 SSE 同样生效。
                     try { state = db.PeerStatus(Token(c), Node(c)); }
                     catch (Exception e) when (e is FederationException or WorkbenchError) { return; }
-                    items = db.PeerEvents(state.Id, cursor, acceptsContacts);
+                    items = db.PeerEvents(state.Id, cursor, acceptsContacts,acceptsRemoval);
                 }
                 await c.Response.WriteAsync("data: " + JsonSerializer.Serialize(new { state }, Json) + "\n\n", ct);
                 foreach (var item in items)

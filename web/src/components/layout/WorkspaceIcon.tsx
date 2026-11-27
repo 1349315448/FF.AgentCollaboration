@@ -8,6 +8,7 @@ const paths = {
   envelope: "M2.5 4.5h15v11h-15z M3 5l7 5 7-5",
   mailbox: "M2 14V9a4 4 0 0 1 4-4h7a4 4 0 0 1 4 4v5H2z M6 5a4 4 0 0 1 4 4v5 M13 10V3h4",
   network: "M8 12l4-4 M6.8 8.4 5.1 10a3 3 0 0 0 4.3 4.3l2-2 M13.2 11.6l1.7-1.6a3 3 0 0 0-4.3-4.3l-2 2",
+  flag: "M4 17V3m0 2c4-3 8 3 12 0v8c-4 3-8-3-12 0",
   terminal: "M3 4h14v12H3z M6 8l2 2-2 2m4 0h3",
   code: "M7 6l-4 4 4 4m6-8 4 4-4 4m-2-11-2 14",
   panel: "M2.5 4h15v12h-15z M11.5 4v12",

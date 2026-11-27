@@ -12,7 +12,7 @@ using FF.AgentCollaboration.Infrastructure.Terminal;
 namespace FF.AgentCollaboration.Application;
 
 // [01、04] 工作台持有原生终端实例。SQLite 中的消息在写入管道之前认领。
-internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog, ILogger<Workbench> logger, WorkbenchEvents events) : BackgroundService
+internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog catalog, ILogger<Workbench> logger, WorkbenchEvents events) : BackgroundService
 {
     private string Root => startup.Root;
     private readonly ConcurrentDictionary<string, TerminalSession> terminals = new();
@@ -44,7 +44,9 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         }).ToArray();
         var (current, projects) = state.ProjectList(topics.Select(t => t.Project).Concat(windows.Select(w => w.Agent.Project)));
         return new(current, projects, topics, windows, topicId, topicId == null ? [] : state.Timeline(topicId, recent),
-            state.MentionShortcut(), state.RecentHandoffs(), state.FederationSummary());
+            state.MentionShortcut(), state.RecentHandoffs(), state.FederationSummary(),
+            projects.Distinct(StringComparer.OrdinalIgnoreCase).ToDictionary(path => path, state.KnowledgeMode, StringComparer.OrdinalIgnoreCase),
+            state.PendingTeamProposals());
     }
 
     internal TerminalSession Terminal(string id) => terminals.TryGetValue(id, out var terminal)
@@ -113,27 +115,17 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
 
     internal async Task<AgentWindow> Create(CreateAgent request, CancellationToken ct)
     {
-        string name = WorkbenchInput.AgentName(request.Name);
-        string engineName = EngineNames.Require(request.Engine);
         using var state = new WorkbenchStore(Root);
         var topic = state.Topic(WorkbenchInput.Id(request.Topic));
-        string project = ProjectFolders.Resolve(request.Project ?? topic.Project);
+        var window = CreateCandidate(request, topic);
         string? session = EmptyToNull(request.Session);
-        if (request.NewSession && session != null) throw new WorkbenchError("请选择新建或一个历史会话");
-        if (request.ForkSession && session == null) throw new WorkbenchError("请选择用于创建分支的历史会话");
-        string? model = Option(request.Model, "模型");
-        string? effort = Option(request.Effort, "推理档位");
-        string? mode = EmptyToNull(request.Mode);
-
-        var window = new AgentWindow(Guid.NewGuid().ToString("N"), name, engineName, project, model, request.ForkSession ? null : session, effort, mode,
-            AutoReceive: true, Online: false, TopicId: topic.Id) { Approval = ValidateApproval(request.Approval), Role = WorkbenchInput.AgentRole(request.Role) };
-        await EngineAuthentication.Require(engineName, project, ct);
+        await EngineAuthentication.Require(window.Engine, window.Project, ct);
         await lifecycle.WaitAsync(ct);
         try
         {
             if (session != null)
             {
-                var history = await catalog.Sessions(engineName, project, ct, includeBound: request.ForkSession);
+                var history = await catalog.Sessions(window.Engine, window.Project, ct, includeBound: request.ForkSession);
                 var source = history.FirstOrDefault(item => item.Id == session)
                     ?? throw new WorkbenchError("这个历史会话不属于所选项目，或已在工作台打开", WorkbenchFailure.Conflict);
                 window = window with { SessionTitle = source.Name };
@@ -156,6 +148,22 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             throw new WorkbenchError("这个 Agent 名称或原生会话已经使用", WorkbenchFailure.Conflict);
         }
         finally { lifecycle.Release(); }
+    }
+
+    private static AgentWindow CreateCandidate(CreateAgent request, WorkbenchTopic topic)
+    {
+        string name = WorkbenchInput.AgentName(request.Name);
+        string engine = EngineNames.Require(request.Engine);
+        string project = ProjectFolders.Resolve(request.Project ?? topic.Project);
+        string? session = EmptyToNull(request.Session);
+        if (request.NewSession && session != null) throw new WorkbenchError("请选择新建或一个历史会话");
+        if (request.ForkSession && session == null) throw new WorkbenchError("请选择用于创建分支的历史会话");
+        return new AgentWindow(Guid.NewGuid().ToString("N"), name, engine, project, Option(request.Model, "模型"),
+            request.ForkSession ? null : session, Option(request.Effort, "推理档位"), EmptyToNull(request.Mode),
+            AutoReceive: true, Online: false, TopicId: topic.Id)
+        {
+            Approval = ValidateApproval(request.Approval), Role = WorkbenchInput.AgentRole(request.Role)
+        };
     }
 
     internal async Task Start(string id, CancellationToken ct, bool fromInbox = false)
@@ -216,6 +224,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             var updated = current with {Name = name, Role = role};
             if (changingEngine)
             {
+                if (engine == "opencode" && state.DedicatedReader(id)) throw new WorkbenchError("请先关闭专用审阅再切换到 OpenCode CLI");
                 if (EngineExecutable.TryFindExecutable(engine) == null) throw new WorkbenchError("请先安装所选引擎", WorkbenchFailure.Unavailable);
                 using var adapter = Engine.Create(engine, current.Project);
                 var mode = EmptyToNull(input.Mode);
@@ -223,6 +232,8 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
                 updated = updated with { Engine = engine, Model = Option(input.Model,"模型"), Effort = Option(input.Effort,"推理档位"),
                     Mode = mode, Approval = ValidateApproval(input.Approval), Session = null, SessionTitle = null, NewSessionPending = true };
             }
+            else if (input.UpdateModel)
+                updated = updated with { Model = Option(input.Model, "模型"), Effort = Option(input.Effort, "推理档位") };
             if (input.SessionMode is not (null or "new" or "resume") || (input.SessionMode == "resume") != !string.IsNullOrWhiteSpace(input.SessionId))
                 throw new WorkbenchError("请选择新建或一个历史会话");
             bool switchSession = input.SessionMode == "new" || input.SessionMode == "resume" && input.SessionId != updated.Session;
@@ -287,10 +298,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
     {
         if (updatingEngines.ContainsKey(window.Engine)) throw new WorkbenchError("此引擎正在更新，请稍后打开", WorkbenchFailure.Conflict);
         using var engine = Engine.Create(window.Engine, window.Project);
-        if (!engine.Capabilities.Allows(forkSource != null ? "fork" : window.Session == null ? "new" : "resume"))
-            throw new WorkbenchError("这个引擎不支持所选的会话操作");
-        if (window.Mode != null && !engine.Capabilities.Modes.Any(mode => mode.Id == window.Mode))
-            throw new WorkbenchError("这个引擎不支持所选的初始模式");
+        RequireSessionOperation(window, engine.Capabilities, forkSource != null ? "fork" : window.Session == null ? "new" : "resume");
         string? newTitle = null;
         if (window.Session == null)
         {
@@ -319,9 +327,8 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         var mcp = new EngineMcp(Root, "workbench-mcp", grant, CollaborationTools.Names, events.NotifyPort);
         using var launchTimeout = SessionCatalog.Deadline(ct);
         var forLaunch = window;
-        if (window.Approval != null && window.Engine != "copilot")
+        if (window.Approval != null && window.Engine != "copilot" && StartupApproval.For(window.Engine) is { } policy)
         {
-            var policy = StartupApproval.For(window.Engine);
             forLaunch = window with { Mode = window.Approval == "ask" ? policy.Ask : policy.Auto };
         }
         terminals.TryGetValue(window.Id, out var previous);
@@ -340,6 +347,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         }
         bool reader=state.DedicatedReader(window.Id);
         if (shareOnRestart != null) reader=shareOnRestart.RestrictedTerminal(reader);
+        if (reader && window.Engine == "opencode") throw new WorkbenchError("OpenCode CLI 暂不支持专用审阅终端");
         long revision = state.McpRevisions().GetValueOrDefault(window.Id);
         if (!reader)
         {
@@ -362,7 +370,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             }
         }
         if(reader) forLaunch=forLaunch with {Approval=null, Mode=window.Engine switch
-            { "codex" or "traecli"=>"on-request","copilot"=>null,_=>"plan" }};
+            { "codex" or "traecli"=>"on-request","copilot"=>null,"cursor"=>"ask",_=>"plan" }};
         var launch = await engine.PrepareTerminal(forLaunch, mcp, newTitle, forkSource, reopening, launchTimeout.Token);
         if(reader && window.Engine is "codex" or "traecli") launch.Arguments.AddRange(["--sandbox","read-only"]);
         if(reader && window.Engine=="copilot") launch.Arguments.AddRange(["--mode=plan","--available-tools","view","grep","glob","lx_collab"]);
@@ -406,6 +414,14 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         }
     }
 
+    private static void RequireSessionOperation(AgentWindow window, EngineCapabilities capabilities, string operation)
+    {
+        if (!capabilities.Allows(operation))
+            throw new WorkbenchError("这个引擎不支持所选的会话操作");
+        if (window.Mode != null && !capabilities.Modes.Any(mode => mode.Id == window.Mode))
+            throw new WorkbenchError("这个引擎不支持所选的初始模式");
+    }
+
     private static string? EmptyToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     private static string? ValidateApproval(string? value) => value is null or "ask" or "auto" ? value : throw new WorkbenchError("请选择需要审批或自动审批");
 
@@ -417,6 +433,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         {
             using var state = new WorkbenchStore(Root);
             var window = state.Window(id);
+            if (StartupApproval.For(window.Engine) == null) throw new WorkbenchError("请使用此引擎的原生审批设置");
             terminals.TryGetValue(id, out var current);
             if ((current?.Online == true ? current.Generation : null) != request.Terminal)
                 throw new WorkbenchError("终端状态已变化，请重新选择", WorkbenchFailure.Conflict);
@@ -434,6 +451,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             using var state = new WorkbenchStore(Root);
             var window = state.Window(id);
             bool current = state.DedicatedReader(id);
+            if (input.RestrictedTerminal(current) && window.Engine == "opencode") throw new WorkbenchError("OpenCode CLI 暂不支持专用审阅终端");
             if (input.RestrictedTerminal(current) != current)
             {
                 terminals.TryGetValue(id, out var terminal);
@@ -467,12 +485,16 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         try
         {
             using var state = new WorkbenchStore(Root);
-            state.Window(id);
+            var window = state.Window(id);
             state.StopWindow(id);
             wakeErrors.TryRemove(id, out _);
             waking.TryRemove(id, out _);
             if (terminals.TryGetValue(id, out var terminal)) await Task.Run(terminal.Dispose);
-            if (removeWindow) state.Close(id);
+            if (removeWindow)
+            {
+                state.Close(id);
+                if (window.IsLeader) SyncTeamRoster(window.TopicId);
+            }
             terminals.TryRemove(id, out _);
         }
         finally { lifecycle.Release(); }
@@ -501,18 +523,25 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         try
         {
             var source = Terminal(id);
-            string targetId = WorkbenchInput.Id(selection.TargetId);
-            if (id == targetId || !source.Online || source.Generation != selection.SourceTerminal)
+            if (!source.Online || source.Generation != selection.SourceTerminal)
                 throw new WorkbenchError("窗口已离线或切换会话，请重新选择", WorkbenchFailure.Conflict);
             using var store = new WorkbenchStore(Root);
+            if (selection.TargetId == HandoffService.AllMembers)
+            {
+                store.RequireBroadcastLeader(store.Window(id));
+                await source.Input(Encoding.UTF8.GetBytes(HandoffService.AllMembers + " "), ct);
+                return;
+            }
+            string targetId = WorkbenchInput.Id(selection.TargetId);
+            if (id == targetId) throw new WorkbenchError("请选择另一个 Agent");
             string topic = store.Window(id).TopicId;
-            var remotes = store.RemoteRecipients(topic).ToList();
+            var remotes = store.RemoteRecipients(topic,id).ToList();
             var contacts = store.ReturnContacts(id);
             string address;
             if (selection.TargetTerminal == null && contacts.FirstOrDefault(c=>c.Id==targetId) is { } contact)
             {
                 if (!contact.Online || !contact.CanMention) throw new WorkbenchError("该回信联系人当前不可提及",WorkbenchFailure.Conflict);
-                address = store.ContactNameCollides(store.Window(id),contact) ? contact.Id : contact.Name;
+                address = contact.Name == "全部" || store.ContactNameCollides(store.Window(id),contact) ? contact.Id : contact.Name;
             }
             else if (selection.TargetTerminal == null)
             {
@@ -521,7 +550,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
                 bool sameName = remotes.Any(r => r.Id != peer.Id && r.AgentName.Equals(peer.AgentName, StringComparison.OrdinalIgnoreCase))
                     || contacts.Any(c => c.Name.Equals(peer.AgentName,StringComparison.OrdinalIgnoreCase))
                     || store.Windows().Any(w => w.TopicId == topic && w.Name.Equals(peer.AgentName, StringComparison.OrdinalIgnoreCase));
-                address = sameName || peer.AgentName != WorkbenchInput.AgentName(peer.AgentName) || peer.AgentName.StartsWith("reply-", StringComparison.Ordinal)
+                address = sameName || peer.AgentName == "全部" || peer.AgentName != WorkbenchInput.AgentName(peer.AgentName) || peer.AgentName.StartsWith("reply-", StringComparison.Ordinal)
                     ? peer.Id : peer.AgentName;
             }
             else
@@ -530,7 +559,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
                 if (!target.Online || target.Generation != selection.TargetTerminal)
                     throw new WorkbenchError("窗口已离线或切换会话，请重新选择", WorkbenchFailure.Conflict);
                 var peer = store.Window(targetId);
-                bool qualify = topic != peer.TopicId || remotes.Any(r => r.AgentName.Equals(peer.Name, StringComparison.OrdinalIgnoreCase))
+                bool qualify = topic != peer.TopicId || peer.Name == "全部" || remotes.Any(r => r.AgentName.Equals(peer.Name, StringComparison.OrdinalIgnoreCase))
                     || contacts.Any(c=>c.Name.Equals(peer.Name,StringComparison.OrdinalIgnoreCase));
                 address = qualify ? store.Topic(peer.TopicId).Name + "/" + peer.Name : peer.Name;
             }
@@ -566,6 +595,7 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             using var store = new WorkbenchStore(Root);
             var window = store.Window(id);
             using var engine = Engine.Create(window.Engine, window.Project);
+            if (string.IsNullOrEmpty(engine.ApprovalKeys)) throw new WorkbenchError("请使用此引擎的原生审批设置");
             await terminal.OpenApprovalMenu(engine.ApprovalKeys, ct);
         }
         finally { lifecycle.Release(); }
@@ -616,6 +646,8 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
         using var state = new WorkbenchStore(Root);
         long version = state.DataVersion;
         using var fallback = new Timer(_ => events.Wake(), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+        using var reviewStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        var reviewing = ReviewUncertainDeliveries(reviewStop.Token);
         events.Wake();
         try
         {
@@ -627,13 +659,6 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
                 var windows = state.Windows().ToDictionary(w => w.Id);
                 if (state.ReconcileNativeClaims() > 0) events.RefreshPages();
                 await state.CheckPeerAudits(id=>terminals.TryGetValue(id,out var t)?t.ViewState().Activity:"offline",stoppingToken);
-                foreach (var terminal in terminals.Values)
-                    foreach (string message in terminal.ReconcileReceipts())
-                        if (state.ConfirmLateReceipt(message))
-                        {
-                            terminal.RemoveReceipt(message);
-                            events.RefreshPages();
-                        }
                 foreach (var window in windows.Values)
                     if (window.Online && terminals.TryGetValue(window.Id, out var terminal) && !terminal.Online)
                         await ReleaseExited(state, window.Id, terminal, stoppingToken);
@@ -665,6 +690,33 @@ internal sealed class Workbench(WorkbenchStartup startup, SessionCatalog catalog
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
+        finally
+        {
+            reviewStop.Cancel();
+            try { await reviewing; }
+            catch (OperationCanceledException) when (reviewStop.IsCancellationRequested) { }
+        }
+    }
+
+    private async Task ReviewUncertainDeliveries(CancellationToken ct)
+    {
+        // 独立于投递循环，其他窗格的长粘贴不会拖住待核对消息。
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+        using var state = new WorkbenchStore(Root);
+        while (await timer.WaitForNextTickAsync(ct))
+            foreach (var terminal in terminals.Values)
+                try
+                {
+                    foreach (string message in await terminal.ReconcileReceipts(state.NeedsDeliveryReview, ct))
+                    {
+                        if (state.ConfirmLateReceipt(message)) events.RefreshPages();
+                        terminal.RemoveReceipt(message);
+                    }
+                }
+                catch (Exception error) when (error is IOException or ObjectDisposedException or SqliteException)
+                {
+                    logger.LogDebug("Delivery review deferred: {Type}", error.GetType().Name);
+                }
     }
 
     private async Task ReleaseExited(WorkbenchStore state, string id, TerminalSession expected, CancellationToken ct)

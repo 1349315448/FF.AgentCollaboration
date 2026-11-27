@@ -7,9 +7,12 @@ internal static class CollaborationSkill
 {
     internal const string Id = "collab_skill";
     private const string Marker = "<!-- Managed by FF.AgentCollaboration -->";
-    internal static string Read()
+    internal static string Read() => ReadFile("ff-agent-collab");
+    internal static string ReadTeam(bool leader) => ReadFile(leader ? "ff-team-leader" : "ff-team-member");
+
+    internal static string ReadFile(string folder)
     {
-        string path = Path.Combine(AppContext.BaseDirectory, "ff-agent-collab", "SKILL.md");
+        string path = Path.Combine(AppContext.BaseDirectory, folder, "SKILL.md");
         try { return File.ReadAllText(path); }
         catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
         {

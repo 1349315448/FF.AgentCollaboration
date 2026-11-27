@@ -18,9 +18,9 @@ internal sealed class ClaudeEngine(string cwd) : Engine
         [new("default", "默认审批"), new("acceptEdits", "自动接受编辑"), new("plan", "计划"), new("bypassPermissions", "跳过权限确认")],
         ["new", "resume", "fork", "archive", "restore", "delete"], NativeArchive: false);
 
-    internal override Task<IReadOnlyList<ModelChoice>> ListModels(CancellationToken ct) =>
-        Task.FromResult<IReadOnlyList<ModelChoice>>(new[] { "sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5" }
-            .Select(id => new ModelChoice(id, id, id == "sonnet", ["low", "medium", "high", "max"])).ToArray());
+    internal override IReadOnlyList<ModelChoice> KnownModels { get; } =
+        new[] { "sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5" }
+            .Select(id => new ModelChoice(id, id, id == "sonnet", ["low", "medium", "high", "max"])).ToArray();
 
     internal override Task<EngineQuota> ReadQuota(CancellationToken ct) => Task.FromResult(
         new EngineQuota(false, "请在 Claude Code 终端输入 /usage 查看订阅用量与限额。", CheckedAt: DateTimeOffset.UtcNow) { Status = "unsupported" });

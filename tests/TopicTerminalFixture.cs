@@ -77,6 +77,8 @@ class TopicTerminalFixture
         bool newline = false;
         bool approval = false;
         bool swallowed = false;
+        int reviewEnters = 0;
+        int reviewRedrawn = 0;
         bool folded = false, collectingFold = false;
         bool truncatedPaste = false;
         bool collectingRepair = false;
@@ -170,7 +172,7 @@ class TopicTerminalFixture
                 if (seq.ToString() == "200~" && File.Exists("mode.txt"))
                 {
                     var mode = File.ReadAllText("mode.txt").Trim();
-                    collectingFold = mode.StartsWith("folded-");
+                    collectingFold = mode.StartsWith("folded-") || mode == "review-retry";
                     collectingRepair = mode == "repair-paste";
                 }
                 if (seq.ToString() == "201~" && collectingFold)
@@ -225,6 +227,17 @@ class TopicTerminalFixture
                 if (mode == "folded-retry" && !swallowed) { swallowed = true; continue; }
                 if (mode == "folded-changed") { draft += "!"; draw(); continue; }
                 if (mode == "ticker-retry" && !swallowed) { swallowed = true; draw(); continue; }
+                if (mode == "review-retry")
+                {
+                    if (++reviewEnters == 2)
+                        statusTicker = new System.Threading.Timer(_ =>
+                        {
+                            if (!File.Exists("review-redraw.txt") || System.Threading.Interlocked.CompareExchange(ref reviewRedrawn, 1, 0) != 0) return;
+                            draw();
+                            System.Threading.Interlocked.Exchange(ref reviewRedrawn, 2);
+                        }, null, 25, 100);
+                    if (reviewEnters <= 2 || System.Threading.Volatile.Read(ref reviewRedrawn) != 2) continue;
+                }
                 swallowed = false;
                 if (statusTicker != null) { statusTicker.Dispose(); statusTicker = null; }
                 if (mode == "running") { draft = ""; Console.Write("\x1b[H\x1b[2JWorking (esc to interrupt)"); continue; }

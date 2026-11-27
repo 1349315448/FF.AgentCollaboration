@@ -30,19 +30,21 @@ internal sealed partial class WorkbenchStore
         ), receipts AS MATERIALIZED (
             SELECT m.*, i.work_state, i.acknowledged, i.state AS local_delivery, o.state AS dispatch,
                    (SELECT substr(e.body,6) FROM fed_received e WHERE e.remote=m.target AND e.request_id=m.task_id
-                    AND e.kind='receipt' AND e.body IN ('work:queued','work:working','work:completed','work:replied')
+                    AND e.kind='receipt' AND e.body IN ('work:queued','work:working','work:need_info','work:completed','work:replied')
                     ORDER BY e.seq DESC LIMIT 1) AS remote_work,
                    (SELECT substr(e.body,10) FROM fed_received e WHERE e.remote=m.target AND e.request_id=m.task_id
                     AND e.kind='receipt' AND e.body IN ('delivery:pending','delivery:writing','delivery:delivered','delivery:delivery_uncertain','delivery:ignored')
                     ORDER BY e.seq DESC LIMIT 1) AS remote_delivery
-            FROM recent m LEFT JOIN inbox i ON m.kind IN ('incoming','reply-in') AND i.id=m.task_id
+            FROM recent m LEFT JOIN inbox i ON m.kind IN ('incoming','reply-in','permission') AND i.id=m.task_id
             LEFT JOIN fed_outbox o ON m.kind='outgoing' AND o.remote=m.target AND o.id=m.task_id
         )
         SELECT seq,topic,kind,source,target,label,substr(body,1,200),strftime('%Y-%m-%dT%H:%M:%SZ',created),
                EXISTS(SELECT 1 FROM fed_mail_file l JOIN fed_file f ON f.id=l.file_id WHERE l.seq=m.seq),
-               CASE WHEN acknowledged=0 THEN work_state
+               CASE WHEN acknowledged=0 THEN
+                    CASE WHEN local_delivery='delivered' AND work_state='queued' THEN 'received' ELSE work_state END
                     WHEN kind='outgoing' AND remote_delivery IS NOT 'ignored' AND (dispatch IS NULL OR dispatch IN ('accepted','pending','sending'))
-                    THEN coalesce(remote_work,CASE WHEN dispatch IN ('pending','sending') THEN 'queued' END) END,
+                    THEN CASE WHEN remote_delivery='delivered' AND (remote_work IS NULL OR remote_work='queued') THEN 'received'
+                              ELSE coalesce(remote_work,CASE WHEN dispatch IN ('pending','sending') THEN 'queued' END) END END,
                CASE WHEN acknowledged=1 THEN 'ignored' WHEN local_delivery IS NOT NULL THEN local_delivery
                     WHEN kind='outgoing' AND task_id IS NOT NULL THEN coalesce(remote_delivery,dispatch,'accepted')
                     WHEN kind='reply-in' THEN 'accepted' WHEN kind='reply-out' THEN 'sent'
@@ -69,8 +71,8 @@ internal sealed partial class WorkbenchStore
         var grant = Grant(owner);
         Mail(Window(grant.WindowId).TopicId, "blocked", "peer-mailbox", grant.WindowId, grant.NodeName, reason);
     }
-    internal IEnumerable<RemoteCapsule> RemoteRecipients(string topic) =>
-        RemoteCapsules().Where(r => r.TopicId == topic && r.Status == "approved");
+    internal IEnumerable<RemoteCapsule> RemoteRecipients(string topic,string caller) =>
+        RemoteCapsules().Where(r => r.TopicId == topic && r.Status == "approved" && !r.DeniedAgentIds.Contains(caller));
 
     private void QueueIncoming(string id, AgentWindow w, string source, string label, string body, string? path, string? hint)
     {
@@ -90,7 +92,7 @@ internal sealed partial class WorkbenchStore
         string header = grant.PermissionMode == "read_only"
             ? "[EXTERNAL_COLLAB_POLICY: READ_ONLY | DO NOT EDIT/WRITE/COMMIT/PUSH ANY FILES] " : "[EXTERNAL_COLLAB_POLICY: READ_WRITE] ";
         string? contactKey = input.ContactKey == null ? null : WorkbenchInput.Id(input.ContactKey);
-        if (contactKey != null) header += "[RETURN_CONTACT: " + ReturnContactId(grant.Id,contactKey) + "] ";
+        if (contactKey != null) header += "[RETURN_CONTACT: " + ScopedContactId(grant.Id,contactKey) + "] ";
         Exec("INSERT INTO fed_incoming(local,grant_id,request,upload,contact_key) VALUES($p0,$p1,$p2,$p3,$p4)", id, grant.Id, input.Id, input.UploadId, contactKey);
         QueueIncoming(id, window, "peer-mailbox", label, header + body, path, input.ExpectsReply ? "请用 send_to_agent 向 @reply-" + id + " 回信，replyTo 填本条 MSG_ID，可附 Markdown 文档。" : null);
         Exec("UPDATE inbox SET work_state='queued' WHERE id=$p0",id);
@@ -159,12 +161,12 @@ internal sealed partial class WorkbenchStore
         }
     }
 
-    internal InboxItem? SendFederated(string callerGrant, string address, string body, string[] files, string? document, string? hint, bool supersede, string? replyTo, bool? finalReply)
+    internal InboxItem? SendFederated(string callerGrant, string address, string body, string[] files, string? document, string? hint, bool supersede, string? replyTo, bool? finalReply, bool topicBroadcast = false)
     {
         var caller = Caller(callerGrant);
         string name = address.TrimStart('@');
         bool replying = name.StartsWith("reply-", StringComparison.Ordinal) && Guid.TryParseExact(name[6..], "N", out _);
-        if (!replying)
+        if (!replying && !topicBroadcast)
         {
             var contacts = ReturnContacts(caller.Id);
             var contact = ReservedContactName(name) ? contacts.FirstOrDefault(c=>c.Id==name)
@@ -228,8 +230,14 @@ internal sealed partial class WorkbenchStore
         if (remote == null) throw new WorkbenchError("找不到远程 Agent");
         Atomic(() =>
         {
-            Caller(callerGrant);
-            if (!RemoteRecipients(caller.TopicId).Any(r => r.Id == remote.Id)) throw new WorkbenchError("外部授权已失效");
+            var current = Caller(callerGrant);
+            if (topicBroadcast)
+            {
+                RequireBroadcastLeader(current);
+                if (!ExternalTeamMembers(current.TopicId, current.Id).Any(member => member.Id == remote.Id && member.Authorized))
+                    throw new WorkbenchError("该外部组员的授权已变更", WorkbenchFailure.Forbidden);
+            }
+            if (!RemoteRecipients(caller.TopicId,caller.Id).Any(r => r.Id == remote.Id)) throw new WorkbenchError("外部授权已失效");
             if (supersede) SupersedePeer(caller.Id, remote.Id);
             Exec("INSERT INTO fed_outbox(id,remote,window_id,body,name,content,expects_reply) VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6)",
                 id, remote.Id, caller.Id, body, filename, bytes,hint!=null);
@@ -251,10 +259,17 @@ internal sealed partial class WorkbenchStore
     private RemoteCapsule? RemoteAddress(AgentWindow caller, string address)
     {
         string name = address.TrimStart('@');
-        var matches = RemoteRecipients(caller.TopicId).Where(r => r.Id == name || r.AgentName.Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
-        if (matches.Length > 1 || matches.Length == 1 && matches[0].Id != name && Windows().Any(w => w.TopicId == caller.TopicId && w.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        var matches = RemoteCapsules().Where(r => r.Status=="approved" && r.TopicId==caller.TopicId && (r.Id==name || r.AgentName.Equals(name,StringComparison.OrdinalIgnoreCase))).ToArray();
+        if (matches.Length==0) return null;
+        var permitted = matches.Where(r=>!r.DeniedAgentIds.Contains(caller.Id)).ToArray();
+        var exact = matches.FirstOrDefault(r=>r.Id==name);
+        if (exact!=null && permitted.Contains(exact)) return exact;
+        bool local = Windows().Any(w => w.TopicId == caller.TopicId && w.Name.Equals(name,StringComparison.OrdinalIgnoreCase));
+        if (exact!=null || (permitted.Length==0 && !local))
+            throw new WorkbenchError("当前 Agent 无权限向此好友请求协作",WorkbenchFailure.Forbidden);
+        if (permitted.Length > 1 || permitted.Length == 1 && local)
             throw new WorkbenchError("收件名称重复，请使用远程胶囊 ID");
-        return matches.FirstOrDefault();
+        return permitted.FirstOrDefault();
     }
     private string? CancelPeer(string grant, string? id, string? address)
     {

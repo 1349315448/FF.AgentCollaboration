@@ -27,6 +27,10 @@ internal static class WorkspacePreviewFormat
                         if (xml.MoveToContent()==XmlNodeType.Element && xml.LocalName=="svg" && xml.NamespaceURI=="http://www.w3.org/2000/svg") return ("image","image/svg+xml");
                     break;
                 case ".pdf" when head.StartsWith("%PDF-"u8): return ("pdf","application/pdf");
+                case ".mp4" when head.Length >= 12 && head[4..].StartsWith("ftyp"u8):
+                    return ("video", "video/mp4");
+                case ".webm" when head.StartsWith((ReadOnlySpan<byte>)[0x1a, 0x45, 0xdf, 0xa3]) && head.IndexOf("webm"u8) >= 0:
+                    return ("video", "video/webm");
                 case ".xls" or ".ppt" when head.StartsWith((ReadOnlySpan<byte>)[208,207,17,224,161,177,26,225]):
                     return ext==".xls" ? ("excel","application/vnd.ms-excel") : ("legacy-ppt","application/vnd.ms-powerpoint");
                 case ".csv" when head.IndexOf((byte)0)<0 || head.StartsWith(Encoding.Unicode.Preamble) || head.StartsWith(Encoding.BigEndianUnicode.Preamble):

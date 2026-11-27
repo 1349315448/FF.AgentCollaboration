@@ -3,10 +3,11 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { WorkspaceIcon } from "../layout/WorkspaceIcon";
 import "../../styles/inspector.css";
 import "../../styles/git.css";
-import { selectedProject, useWorkbench } from "../../store/workbenchStore";
+import { useWorkbench } from "../../store/workbenchStore";
+import { knowledgeModeFor } from "../../services/knowledge";
 import type { GitChange } from "./gitWorkspace";
 const CodeViewer = lazy(()=>import("./CodeViewer"));
-const DocPreview = lazy(()=>import("./DocPreview"));
+const CollaborationDocuments = lazy(()=>import("./CollaborationDocuments"));
 const GitPanel = lazy(()=>import("./GitPanel"));
 
 const primarySections = [
@@ -18,20 +19,29 @@ type SectionId = (typeof primarySections)[number]["id"] | "changes";
 
 export function InspectorShell({toolbarHost}:{toolbarHost:HTMLDivElement | null}) {
   const [current, select] = useState<SectionId>("files");
+  const [showKnowledge,setShowKnowledge]=useState(false);
   const [diffFile,setDiffFile]=useState<{project:string;change:GitChange}>();
   const {snapshot,topic}=useWorkbench();
-  const project=topic?.project ?? selectedProject ?? snapshot?.project;
+  const project=topic?.project ?? snapshot?.project;
   const [documentLink,setDocumentLink]=useState({topic:"",id:"",sequence:0});
   useEffect(()=>{
     const open=(e:Event)=>{
       const {topic:owner,id}=(e as CustomEvent<{topic:string;id:string}>).detail;
       if (owner!==topic?.id) return;
       if(document.getElementById("inspector-shell")?.hidden) document.getElementById("toggle-inspector")?.click();
-      select("docs"); setDocumentLink(v=>({topic:owner,id,sequence:v.sequence+1}));
+      select("docs");setShowKnowledge(false);setDocumentLink(v=>({topic:owner,id,sequence:v.sequence+1}));
     };
     window.addEventListener("ff:open-document",open);
     return ()=>window.removeEventListener("ff:open-document",open);
   },[topic?.id]);
+  useEffect(()=>{
+    const open=()=>{
+      if(document.getElementById("inspector-shell")?.hidden) document.getElementById("toggle-inspector")?.click();
+      select("docs");setShowKnowledge(true);
+    };
+    window.addEventListener("ff:open-knowledge",open);
+    return ()=>window.removeEventListener("ff:open-knowledge",open);
+  },[]);
   const allIds: SectionId[] = ["files", "docs", "changes"];
   const handleKeyDown = (id: SectionId, event: React.KeyboardEvent) => {
     const i = allIds.indexOf(id);
@@ -61,8 +71,9 @@ export function InspectorShell({toolbarHost}:{toolbarHost:HTMLDivElement | null}
       {!project?<p className="inspector-empty">请先选择项目</p>:
         <Suspense fallback={<p className="inspector-empty">正在打开…</p>}>
           {current==="changes"?<GitPanel key={project} initial={diffFile?.project===project?diffFile.change:undefined}/>:current==="files"?<CodeViewer key={project} project={project}
-            openDiff={change=>{setDiffFile({project,change});select("changes");}}/>:<DocPreview key={(topic?.id??project)+documentLink.sequence}
+            openDiff={change=>{setDiffFile({project,change});select("changes");}}/>:<CollaborationDocuments key={(topic?.id??project)+documentLink.sequence}
             project={project} topic={topic?.id} revision={snapshot?.timelineTopic===topic?.id?snapshot?.timeline?.[0]?.id:undefined}
+            mode={knowledgeModeFor(snapshot?.knowledgeModes,project)} showKnowledge={showKnowledge} setShowKnowledge={setShowKnowledge}
             initial={documentLink.topic===topic?.id?documentLink.id:""}/>}
         </Suspense>}
     </section>

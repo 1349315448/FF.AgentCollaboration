@@ -13,13 +13,13 @@ export interface Grant {
   permissionMode:string; quotaMode:Mode; quotaLimit:number|null; used:number; blocked:number; paused:boolean;
   allowUpload:boolean; connected:boolean; lastReceived:number|null;
 }
-interface Capsule {quota?:{mode:Mode;limit:number|null;remaining:number|null;paused:boolean;resetsAt:number|null}; id:string; topicId:string; agentName:string; nodeName:string; nodeId:string; status:string; connected:boolean; online:boolean; lastReply?:string; error?:string; contactAgentId?:string|null}
+interface Capsule {quota?:{mode:Mode;limit:number|null;remaining:number|null;paused:boolean;resetsAt:number|null}; id:string; topicId:string; agentName:string; nodeName:string; nodeId:string; status:string; connected:boolean; online:boolean; error?:string; contactAgentId?:string|null; deniedAgentIds?:string[]; teamMember?:boolean}
 export interface PeerMail {seq:number;topicId:string;kind:string;source:string;target:string;label:string;text:string;createdAt:string;hasDocument:boolean;workState?:string|null;deliveryState?:string|null}
-export interface ReturnContact {id:string; windowId:string; name:string; nodeName:string; online:boolean; canMention:boolean}
+export interface ReturnContact {id:string; windowId:string; name:string; nodeName:string; online:boolean; canMention:boolean; canRemove:boolean}
 export interface Federation {grants:Grant[]; remotes:Capsule[]; sharedWindows:string[]; mail:PeerMail[]; contacts?:ReturnContact[]}
 interface Share {enabled:boolean; permissionMode:string; dedicatedReadOnly:boolean; link:string|null; restarted:boolean}
 interface NodeInfo {nodeId:string; nodeName:string; selectedIp:string|null; activeIp:string|null; addresses:string[]; publicEndpoint:string|null; restartRequired:boolean}
-type Selection = {windowId:string} | {remoteId:string;topicId:string} | {grantId:string};
+type Selection = {windowId:string} | {remoteId:string;topicId:string} | {grantId:string} | {contactId:string};
 
 const quotaLabels = {daily:"每日", hourly:"每小时", total:"总次数", unlimited:"无限制"};
 const states:Record<string,string> = {applying:"正在申请",pending:"待审批",approved:"已授权",revoked:"已吊销",rejected:"已拒绝"};
@@ -28,6 +28,7 @@ const put = <T,>(path:string,body:unknown)=>request<T>("/peers/"+path,{method:"P
 const errorText = (error:unknown)=>error instanceof Error ? error.message : "操作失败";
 
 export const viewApplication=(grantId:string)=>open({grantId});
+export const viewReturnContact=(contactId:string)=>open({contactId});
 
 export function NodePreferences() {
   const [node,setNode]=useState<NodeInfo>(),[name,setName]=useState(""),[ip,setIp]=useState(""),[note,setNote]=useState("");
@@ -114,7 +115,7 @@ function confirmDisable(restart:boolean) {
 }
 function quotaText(remote:Capsule, detail=false) {
   const q=remote.quota;
-  if (remote.status !== "approved") return "";
+  if (remote.status !== "approved" || bindingDenied(remote)) return "";
   if (!q || !Object.hasOwn(quotaLabels,q.mode)) return detail ? "对端未提供协作次数" : "";
   const prefix=remote.connected ? "" : "上次同步 · ";
   const balance=q.mode==="unlimited" ? "不限次数" : (detail ? quotaLabels[q.mode]+" · 剩余 "+q.remaining+" / "+q.limit+" 次" : "余 "+q.remaining+" 次");
@@ -122,14 +123,19 @@ function quotaText(remote:Capsule, detail=false) {
   return prefix+(q.paused?"已暂停 · ":"")+balance+reset;
 }
 
+function bindingDenied(remote:Capsule) {
+  return !!remote.contactAgentId && !!remote.deniedAgentIds?.includes(remote.contactAgentId);
+}
+
 export function RemoteCapsule({remote:r,tree=false}:{remote:Capsule;tree?:boolean}) {
-  const online=remoteOnline(r), status=r.status==="approved" ? (online?"在线":"离线") : states[r.status];
+  const denied=bindingDenied(r), online=remoteOnline(r), status=denied?"无权限":r.status==="approved" ? (online?"在线":"离线") : states[r.status];
   const details=()=>open({remoteId:r.id,topicId:r.topicId});
   return <button type="button" data-remote-id={r.id} data-activity={online?"idle":"offline"} className={tree?"tree-remote":"remote-capsule"}
         onClick={event=>{event.stopPropagation();if(event.detail===0) details();else if(tree) void navigation.switchTopic(r.topicId);}}
         onDoubleClick={details} title={`${r.nodeName || "申请中"} · ${status} · 双击查看详情`}>
         <WorkspaceIcon name="network"/><span className="nav-dot" aria-hidden="true"/><b>@{r.agentName}</b>
         {quotaText(r) && <span className="remote-quota">{quotaText(r)}</span>}
+        {denied && !tree && <span className="remote-quota">无权限</span>}
         <small>{tree?status:(r.nodeName || states[r.status])+" · "+r.nodeId.slice(0,8)}</small>
       </button>;
 }
@@ -269,18 +275,26 @@ export function FederationDialog() {
   const remote=selection && "remoteId" in selection && snapshot?.federation?.remotes.find(r=>r.id===selection.remoteId && r.topicId===selection.topicId);
   const grantId=selection && "grantId" in selection ? selection.grantId : undefined;
   const grant=snapshot?.federation?.grants.find(g=>g.id===grantId && g.status==="pending");
+  const contact=selection && "contactId" in selection ? snapshot?.federation?.contacts?.find(c=>c.id===selection.contactId) : undefined;
+  const owner=contact && snapshot?.windows.find(w=>w.agent.id===contact.windowId)?.agent.name;
   useEffect(()=>{if(grantId && !grant) ref.current?.close();},[grantId,grant]);
   const title=grantId ? "外部协作申请" : selection && "windowId" in selection ? "@"+(snapshot?.windows.find(w=>w.agent.id===selection.windowId)?.agent.name||"Agent")+" · 外部协作" :
-    remote?"@"+remote.agentName:"添加外部协作 Agent";
+    contact?"@"+contact.name+" · 协作好友":remote?"@"+remote.agentName:"外部协作";
   return <dialog ref={ref} id="federation-dialog" closedby="any" aria-labelledby="fed-title" onClose={()=>select(undefined)}>
     <header className="dialog-header"><h2 id="fed-title">{title}</h2><button type="button" className="icon-button" aria-label="关闭" onClick={()=>ref.current?.close()}>×</button></header>
     <fieldset disabled={busy} className="dialog-body fed-fields">
     {grant && <MailApproval key={grant.id} grant={grant} run={run}/>}
     {selection && "windowId" in selection && <Provider key={selection.windowId} id={selection.windowId} run={run}/>}
-    {remote && <><b>{remote.nodeName} · {remote.nodeId.slice(0,8)}</b><span>{states[remote.status]} · {remote.connected?(remote.online?"Agent 在线":"Agent 离线"):"未连接"}</span>
-      {remote.status==="approved" && <span className="remote-quota-detail">{quotaText(remote,true)}</span>}
+    {contact && <><b>{contact.nodeName} · {contact.online?"在线":"离线"}</b>
+      <p>移除后，@{contact.name} 将收到通知，并失去向 @{owner} 请求协作的权限。</p>
+      {contact.canRemove ? <button className="button danger" onClick={()=>run(async()=>{
+        await request("/peers/windows/"+contact.windowId+"/contacts/"+contact.id,{method:"DELETE"});
+        ref.current?.close();
+      })}>移除协作</button> : <small>请先将申请方工作台更新到支持按 Agent 移除权限的版本。</small>}</>}
+    {remote && <><b>{remote.nodeName} · {remote.nodeId.slice(0,8)}</b><span>{bindingDenied(remote)?"无权限":states[remote.status]} · {remote.connected?(remote.online?"Agent 在线":"Agent 离线"):"未连接"}</span>
+      {remote.status==="approved" && !bindingDenied(remote) && <span className="remote-quota-detail">{quotaText(remote,true)}</span>}
       {remote.status==="approved" && <ReturnAgentSelect topicId={remote.topicId} value={remote.contactAgentId??""} onChange={agentId=>run(()=>put("remotes/"+remote.id+"/contact",{topicId:remote.topicId,agentId:agentId||null}))}/>}
-      {remote.error && <small>{remote.error}</small>}{remote.lastReply && <p className="fed-text">最近回信　{remote.lastReply}</p>}
+      {remote.error && <small>{remote.error}</small>}
       <button className="button" onClick={()=>run(async()=>{await request("/peers/remotes/"+remote.id+"?topic="+remote.topicId,{method:"DELETE"});ref.current?.close();})}>移除本地胶囊</button></>}
     </fieldset>{note && <p role="alert" className="form-error">{note}</p>}
   </dialog>;

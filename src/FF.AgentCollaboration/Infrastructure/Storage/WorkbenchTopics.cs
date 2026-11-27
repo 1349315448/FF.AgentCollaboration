@@ -6,7 +6,7 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 
 internal sealed partial class WorkbenchStore
 {
-    private const string TopicColumns = "id,name,project,goal,status,folder,created_at,finished_at,finish_summary";
+    private const string TopicColumns = "id,name,project,goal,status,folder,created_at,finished_at,finish_summary,leader_window_id";
 
     // [T07] 复用启动事务；仅为旧数据创建默认话题，空库留给用户创建第一个话题。
     private void InitializeTopics()
@@ -20,6 +20,8 @@ internal sealed partial class WorkbenchStore
             """);
         if (!Read("PRAGMA table_info(topics)", row => row.GetString(1)).Contains("finish_summary"))
             Exec("ALTER TABLE topics ADD COLUMN finish_summary TEXT");
+        if (!Read("PRAGMA table_info(topics)", row => row.GetString(1)).Contains("leader_window_id"))
+            Exec("ALTER TABLE topics ADD COLUMN leader_window_id TEXT");
         if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("topic_id"))
         {
             Exec("ALTER TABLE windows ADD COLUMN topic_id TEXT NOT NULL DEFAULT ''");
@@ -44,11 +46,24 @@ internal sealed partial class WorkbenchStore
     }
 
     private static WorkbenchTopic ReadTopic(SqliteDataReader row) => new(row.GetString(0), row.GetString(1), row.GetString(2),
-        Optional(row, 3), row.GetString(4), Optional(row, 5), row.GetString(6), Optional(row, 7), Optional(row, 8));
+        Optional(row, 3), row.GetString(4), Optional(row, 5), row.GetString(6), Optional(row, 7), Optional(row, 8), Optional(row, 9));
 
     internal List<WorkbenchTopic> Topics() => Read($"SELECT {TopicColumns} FROM topics ORDER BY rowid", ReadTopic);
     internal WorkbenchTopic Topic(string id) => Read($"SELECT {TopicColumns} FROM topics WHERE id=$p0", ReadTopic, id)
         .SingleOrDefault() ?? throw new WorkbenchError("找不到这个话题", WorkbenchFailure.NotFound);
+
+    // 仅本机人工入口调用。确认时的快照已过期则需重新查看当前组长。
+    internal void SetTopicLeader(string topicId, string? windowId, string? expectedLeaderWindowId = null) => Atomic(() =>
+    {
+        var topic = Topic(topicId);
+        if (topic.Status != "active")
+            throw new WorkbenchError("请先重新打开这个话题", WorkbenchFailure.Conflict);
+        if (expectedLeaderWindowId != null && expectedLeaderWindowId != (topic.LeaderWindowId ?? ""))
+            throw new WorkbenchError("话题组长已变更，请重新确认", WorkbenchFailure.Conflict);
+        if (windowId != null && Window(windowId).TopicId != topicId)
+            throw new WorkbenchError("组长必须是当前话题的 Agent");
+        Exec("UPDATE topics SET leader_window_id=$p1 WHERE id=$p0", topicId, windowId);
+    });
 
     internal WorkbenchTopic SaveTopic(string? id, TopicInput input)
     {

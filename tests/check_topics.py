@@ -36,11 +36,12 @@ def verify(exe, case):
         git_test = "--git" in sys.argv
         mcp_test = "--mcps" in sys.argv
         skills_test = "--skills" in sys.argv
+        knowledge_test = "--knowledge" in sys.argv
         expanded_test = "--expanded" in sys.argv
         if expanded_test: os.environ["CODEX_HOME"]=str(case / "receipt-home")
-        scoped = buddy_inbox_test or expanded_test or create_test or delivery_test or inspector_test or git_test or mcp_test or skills_test
+        scoped = buddy_inbox_test or expanded_test or create_test or delivery_test or inspector_test or git_test or mcp_test or skills_test or knowledge_test
         with host(exe, state, case / "one" if scoped else None, knowledge=knowledge, initialize=scoped) as url:
-            script = Path(__file__).with_name("check_managed_skills_ui.cjs" if skills_test else "check_managed_mcps.cjs" if mcp_test else "check_git_panel.cjs" if git_test else
+            script = Path(__file__).with_name("check_knowledge_ui.cjs" if knowledge_test else "check_managed_skills_ui.cjs" if skills_test else "check_managed_mcps.cjs" if mcp_test else "check_git_panel.cjs" if git_test else
                 "check_inspector.cjs" if inspector_test else "check_create.cjs" if create_test else "check_topics.cjs")
             # Individual assertions retain their deadlines. The full suite runs eight engines sequentially,
             # including 16 native restarts and five authenticated round trips between terminals.

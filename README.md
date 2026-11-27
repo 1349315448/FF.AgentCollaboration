@@ -2,6 +2,8 @@
 
 在一个浏览器窗口里，同时使用 Codex、Claude Code、GitHub Copilot 等原生 AI 终端。你可以让一个 Agent 写代码、另一个 Agent 审查，在同一页查看改动和回复。工作台运行在 Windows 上，各 CLI 沿用自己的账号、模型和审批方式。
 
+[![工作台演示，开发与审查 Agent 并排，下方显示协作信箱](docs/images/workbench.png)](docs/usage.md)
+
 ## 快速开始
 
 | 你拿到的是 | 如何启动 |
@@ -21,10 +23,11 @@
 | --- | --- |
 | 多终端协作 | 在「Agent 模式」平铺终端，继续使用各 CLI 的斜杠命令、快捷键和审批。点左侧话题或 Agent 切换，后台终端继续运行。 |
 | Agent 交接 | 在终端里提及同事并附上文件，让接收方处理后回信。「协作信箱」分别显示投递是否送达，以及任务是否已处理或回复。 |
-| 文件与 Git 审查 | 切到「代码模式」，搜索和编辑项目文本，并排对照终端输出。可预览图片、Markdown、PDF、Excel 和 PowerPoint，也可查看 Git 差异、暂存、提交和推送。 |
-| 会话与身份 | 双击 Agent 名称，可修改名称和职责描述、切换引擎或管理历史会话。改名和改职责即时保存；切换在线引擎会重启该终端。 |
+| 文件与 Git 审查 | 切到「代码模式」，搜索和编辑项目文本，并排对照终端输出。可预览图片、视频、Markdown、PDF、Excel 和 PowerPoint，也可查看 Git 差异、暂存、提交和推送。 |
+| 会话与身份 | 双击 Agent 名称，可修改名称和职责描述、保存启动模型、切换引擎或管理会话。启动模型在下次打开终端时生效。 |
 | MCP 与 Skills | 在右上角打开「MCP 管理」或「Skills 管理」，查看各 CLI 的原生配置，在「平台配置」里导入工具和技能，选择使用它们的引擎。 |
 | 跨电脑协作 | 分享一个 Agent，另一台工作台经你批准后即可发任务、收回复。可以按协作者设置权限和请求次数，也可以让内网电脑主动连接云端 Agent。 |
+| 组队与知识库 | 组长在本话题用 `@全部` 通知成员。成员独立维护任务记录，组长从总计划查看。 |
 
 ## 试一次代码审查
 
@@ -42,9 +45,10 @@
 | GitHub Copilot CLI | `copilot` | 千问 Qwen Code | `qwen` |
 | Claude Code | `claude` | 智谱 ZCode | `zcode` |
 | TRAE CLI 2 | `traecli` | Qoder CLI | `qodercli` |
+| OpenCode | `opencode` / `opencode2` | Cursor CLI | `agent` / `cursor-agent` |
 
 在「工作台配置 → CLI 引擎」检测安装状态、查看版本和更新方式。会话分支、额度查询等选项按各引擎的支持情况显示。
 
-[使用指南：收件、会话与跨电脑连接](docs/usage.md) · [开发与架构](docs/architecture.md) · [Agent 协作协议与调用示例](src/FF.AgentCollaboration/Skills/ff-agent-collab/SKILL.md)
+[图文使用指南](docs/usage.md) · [开发与架构](docs/architecture.md) · [Agent 协作手册](src/FF.AgentCollaboration/Skills/ff-agent-collab/SKILL.md)
 
 项目自有代码采用 [Apache License 2.0](LICENSE)，第三方组件保留各自许可。

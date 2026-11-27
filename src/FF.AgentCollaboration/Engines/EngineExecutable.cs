@@ -50,6 +50,8 @@ internal static class EngineExecutable
             string? configured = Environment.GetEnvironmentVariable(prefix + name.ToUpperInvariant() + "_EXE");
             if (File.Exists(configured)) return Path.GetFullPath(configured);
         }
+        if (name == "cursor") return CursorEngine.FindExecutable();
+        if (name == "opencode") return OpenCodeEngine.FindExecutable();
         if (name == "zcode")
         {
             string archName = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? "arm64" : "x64";

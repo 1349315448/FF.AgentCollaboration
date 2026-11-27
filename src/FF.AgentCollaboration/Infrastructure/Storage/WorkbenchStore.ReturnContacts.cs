@@ -27,16 +27,16 @@ internal sealed partial class WorkbenchStore
     }
 
     internal List<AdvertisedContact> AdvertisedContacts(string remote) => Read("""
-        SELECT b.key,w.name,w.online FROM fed_contact_binding b JOIN windows w ON w.id=b.agent AND w.topic_id=b.topic
+        SELECT b.key,w.name,w.online,w.id FROM fed_contact_binding b JOIN windows w ON w.id=b.agent AND w.topic_id=b.topic
         JOIN topics t ON t.id=b.topic WHERE b.remote=$p0 AND w.closed=0 AND t.status='active' ORDER BY b.key
-        """,r=>new AdvertisedContact(r.GetString(0),r.GetString(1),r.GetBoolean(2)),remote);
+        """,r=>new AdvertisedContact(r.GetString(0),r.GetString(1),r.GetBoolean(2),ScopedContactId(remote,r.GetString(3))),remote);
 
     internal string? SenderContactKey(string remote,string agent) =>
         Read("SELECT key FROM fed_contact_binding WHERE remote=$p0 AND agent=$p1",r=>r.GetString(0),remote,agent).SingleOrDefault();
 
     // 来信和联系人列表可能先后到达，用同一授权和绑定计算稳定的收件地址。
-    private static string ReturnContactId(string grant, string key) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.ASCII.GetBytes(grant + ":" + key)).AsSpan(0, 16));
+    internal static string ScopedContactId(string scope, string key) =>
+        Convert.ToHexStringLower(SHA256.HashData(Encoding.ASCII.GetBytes(scope + ":" + key)).AsSpan(0, 16));
 
     internal void SyncContacts(string token, string node, IReadOnlyList<AdvertisedContact> contacts) => Atomic(() =>
     {
@@ -48,19 +48,52 @@ internal sealed partial class WorkbenchStore
             string key = WorkbenchInput.Id(contact.Key);
             stale.Remove(key);
             Exec("""
-                INSERT INTO fed_return_contact(id,grant_id,key,name,online) VALUES($p4,$p0,$p1,$p2,$p3)
-                ON CONFLICT(grant_id,key) DO UPDATE SET name=excluded.name,online=excluded.online
-                """,grant,key,WorkbenchInput.AgentName(contact.Name),contact.Online,ReturnContactId(grant,key));
+                INSERT INTO fed_return_contact(id,grant_id,key,name,online,sender)
+                SELECT $p4,$p0,$p1,$p2,$p3,$p5 WHERE NOT EXISTS(SELECT 1 FROM fed_denied_sender WHERE grant_id=$p0 AND sender=$p5)
+                ON CONFLICT(grant_id,key) DO UPDATE SET name=excluded.name,online=excluded.online,sender=excluded.sender
+                """,grant,key,WorkbenchInput.AgentName(contact.Name),contact.Online,ScopedContactId(grant,key),
+                contact.SenderKey == null ? null : WorkbenchInput.Id(contact.SenderKey));
         }
         foreach (string key in stale) Exec("DELETE FROM fed_return_contact WHERE grant_id=$p0 AND key=$p1",grant,key);
     });
 
     internal List<ReturnContact> ReturnContacts(string? window=null) => Read("""
-        SELECT c.id,g.window_id,c.name,g.name,c.online AND g.streams>0 AND g.paused=0,
-               NOT EXISTS(SELECT 1 FROM settings WHERE key='peer_reader.'||g.window_id AND value='1')
+        SELECT c.id,g.window_id,c.name,g.name,c.online AND g.streams>0,
+               g.paused=0 AND NOT EXISTS(SELECT 1 FROM settings WHERE key='peer_reader.'||g.window_id AND value='1'),c.sender IS NOT NULL
         FROM fed_return_contact c JOIN fed_grant g ON g.id=c.grant_id JOIN fed_share s ON s.window_id=g.window_id
         WHERE g.status='approved' AND ($p0 IS NULL OR g.window_id=$p0) ORDER BY c.name,c.id
-        """,r=>new ReturnContact(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetBoolean(4),r.GetBoolean(5)),window);
+        """,r=>new ReturnContact(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetBoolean(4),r.GetBoolean(5),r.GetBoolean(6)),window);
+
+    internal void RemoveReturnContact(string window, string contactId) => Atomic(() =>
+    {
+        var contact = Read("""
+            SELECT c.grant_id,c.sender,c.name,w.name FROM fed_return_contact c JOIN fed_grant g ON g.id=c.grant_id
+            JOIN windows w ON w.id=g.window_id WHERE c.id=$p0 AND w.id=$p1 AND g.status='approved'
+            """, r=>(Grant:r.GetString(0), Sender:Optional(r,1), Name:r.GetString(2), Provider:r.GetString(3)),contactId,window).SingleOrDefault();
+        if (contact.Grant == null) throw new WorkbenchError("联系人已不存在",WorkbenchFailure.NotFound);
+        if (contact.Sender == null) throw new WorkbenchError("请先更新申请方工作台，以便按 Agent 移除权限",WorkbenchFailure.Conflict);
+        Exec("INSERT INTO fed_denied_sender VALUES($p0,$p1)",contact.Grant,contact.Sender);
+        Exec("DELETE FROM fed_return_contact WHERE grant_id=$p0 AND sender=$p1",contact.Grant,contact.Sender);
+        string notice = $"@{contact.Provider} 已移除 @{contact.Name} 的协作请求权限。";
+        Exec("INSERT INTO fed_event(grant_id,id,kind,request_id,body) VALUES($p0,lower(hex(randomblob(16))),'contact-removed',$p1,$p2)",
+            contact.Grant,contact.Sender,notice);
+    });
+
+    private void ReceiveContactRemoval(string remote, PeerEvent item)
+    {
+        // 即使已换绑，权限通知仍属于原 Agent。仅在收到撤权事件时解析节点范围内的发件人编号。
+        var agent = Read("SELECT id,topic_id,closed FROM windows",r=>(Id:r.GetString(0),Topic:r.GetString(1),Closed:r.GetBoolean(2)))
+            .FirstOrDefault(w=>ScopedContactId(remote,w.Id)==item.RequestId);
+        if (agent.Id == null || Exec("INSERT OR IGNORE INTO fed_remote_denial VALUES($p0,$p1)",remote,agent.Id)==0) return;
+        string label = Read("SELECT agent||' · '||name FROM fed_remote WHERE id=$p0",r=>r.GetString(0),remote).Single();
+        string? id = null;
+        if (!agent.Closed && Topic(agent.Topic).Status=="active")
+        {
+            id = Guid.NewGuid().ToString("N");
+            QueueIncoming(id,Window(agent.Id),remote,label,"[协作权限通知] "+item.Text,null,null);
+        }
+        Mail(agent.Topic,"permission",remote,agent.Id,label,item.Text,taskId:id);
+    }
 
     internal void ContactsPublished(string remote,bool published) =>
         Exec("UPDATE fed_remote SET contacts_published=$p1 WHERE id=$p0 AND contacts_published!=$p1",remote,published);
@@ -70,7 +103,7 @@ internal sealed partial class WorkbenchStore
 
     internal bool ContactNameCollides(AgentWindow caller, ReturnContact contact) =>
         ReservedContactName(contact.Name) || Windows().Any(w=>w.TopicId==caller.TopicId && w.Name.Equals(contact.Name,StringComparison.OrdinalIgnoreCase))
-        || RemoteRecipients(caller.TopicId).Any(r=>r.AgentName.Equals(contact.Name,StringComparison.OrdinalIgnoreCase))
+        || RemoteRecipients(caller.TopicId,caller.Id).Any(r=>r.AgentName.Equals(contact.Name,StringComparison.OrdinalIgnoreCase))
         || ReturnContacts(caller.Id).Any(c=>c.Id!=contact.Id && c.Name.Equals(contact.Name,StringComparison.OrdinalIgnoreCase));
 
     private InboxItem SendContactNotice(string grant, AgentWindow caller, ReturnContact contact, string body, string? document,string[] files,string? hint)

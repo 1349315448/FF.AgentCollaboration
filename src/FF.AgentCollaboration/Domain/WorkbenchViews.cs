@@ -5,4 +5,5 @@ internal sealed record TimelineEntry(string Id, string Source, string Target, st
 internal sealed record HandoffRoute(string Id, string Source, string Target, string State, bool Acknowledged);
 internal sealed record WorkbenchView(string? Project, IReadOnlyList<string> Projects, IReadOnlyList<WorkbenchTopic> Topics, IReadOnlyList<WindowView> Windows,
     string? TimelineTopic, IReadOnlyList<TimelineEntry> Timeline, string MentionShortcut, IReadOnlyList<HandoffRoute> RecentHandoffs,
-    FederationSummary Federation);
+    FederationSummary Federation, IReadOnlyDictionary<string, string> KnowledgeModes,
+    IReadOnlyList<TeamProposal> TeamProposals);

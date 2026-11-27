@@ -1,4 +1,5 @@
 import { ResourceManager } from "../dialogs/ResourceManager";
+import { TeamProposalControl } from "../dialogs/TeamProposalDialog";
 import { TopicNavigation } from "./TopicNavigation";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import { useGitWorkspace } from "../inspector/gitWorkspace";
@@ -26,6 +27,7 @@ export function TopBar({toolbarRef}:{toolbarRef: React.RefCallback<HTMLDivElemen
       </div>
         <div className="top-tool-row">
           <div id="inspector-toolbar-host" ref={toolbarRef} hidden />
+          <TeamProposalControl />
           <ResourceManager />
         </div>
       </div>

@@ -26,7 +26,7 @@ internal sealed partial class WorkbenchStore
 
     internal string ReportTask(string grant, string reference, string status)
     {
-        if (status is not ("working" or "completed")) throw new WorkbenchError("协作状态应为 working 或 completed");
+        if (status is not ("working" or "need_info" or "completed")) throw new WorkbenchError("协作状态应为 working、need_info 或 completed");
         Atomic(() =>
         {
             var task = ReceivedTaskFor(Caller(grant).Id,reference);
@@ -59,6 +59,7 @@ internal sealed partial class WorkbenchStore
     private void RecordTaskReply(ReceivedTask task, bool final)
     {
         if (task.State is "completed" or "replied") throw new WorkbenchError("该任务已结案",WorkbenchFailure.Conflict);
-        SetTaskState(task.Id,final ? (task.ExpectsReply ? "replied" : "completed") : "working");
+        if (final) SetTaskState(task.Id,task.ExpectsReply ? "replied" : "completed");
+        else if (task.State != "need_info") SetTaskState(task.Id,"working");
     }
 }

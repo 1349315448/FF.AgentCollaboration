@@ -37,7 +37,7 @@ def verify(exe, case):
     project.mkdir()
     subprocess.run(["git","init","-q",project],check=True)
     cloud = "--cloud" in sys.argv
-    with host(exe, provider, project) as local, host(exe, requester, case) as client, ExitStack() as forwarding:
+    with host(exe, provider, project, federation=True) as local, host(exe, requester, case, federation=True) as client, ExitStack() as forwarding:
         def identity(url, name):
             assert http(url, "/api/peers/node", {"nodeName": name}, "PUT")[0] == 200
             return http(url, "/api/peers/node")[1]
@@ -133,6 +133,10 @@ def verify(exe, case):
         contacts = lambda: view(local)["contacts"]
         contact = until(contacts,lambda rows:len(rows)==1 and rows[0]["online"])[0]
         assert contact["windowId"] == w and contact["name"] == "Planner" and not view(local)["remotes"]
+        configure = lambda paused: http(local,grant_url+g["id"],dict(action="configure",quotaMode="total",quotaLimit=2,paused=paused),"PUT")
+        assert configure(True)[0]==200
+        assert contacts()[0]["online"] and not contacts()[0]["canMention"], "暂停权限不能把在线好友显示为离线"
+        assert configure(False)[0]==200
         key = new_id()
         with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
             db.execute("UPDATE windows SET online=1,grant_hash=? WHERE id=?",(hashlib.sha256(key.encode()).hexdigest().upper(),w))
@@ -250,7 +254,11 @@ def verify(exe, case):
         assert new_link != link
         assert wire("/api/federation/applications",token,{"claim":new_id()*2,"purpose":"过期链接"})[0] == 403
         assert send(new_id())[1]["permissionMode"] == "read_only"
-        verify_documents(exe,case,provider,requester,client,local,topic,target,w,remote,g["id"],wire,credential,token,b["nodeId"],policy)
+        def request_connection(connected):
+            if cloud:
+                assert advertise(origin if connected else "")[0] == 200
+                until(rem,lambda row:row["connected"]==connected)
+        verify_documents(exe,case,provider,requester,client,local,topic,target,w,remote,g["id"],wire,credential,token,b["nodeId"],policy,request_connection)
         assert http(local,grant_url+g["id"],{"action":"revoke"},"PUT")[0] == 200
         until(rem,lambda r:r["status"]=="revoked" and not r["connected"])
         assert rem().get("quota") is None
@@ -262,7 +270,7 @@ def verify(exe, case):
         selected=a["addresses"][-1]
         code, saved=http(local,"/api/peers/node",{"nodeName":a["nodeName"],"selectedIp":selected},"PUT")
         assert code==200 and saved["activeIp"]==a["activeIp"] and saved["selectedIp"]==selected
-    with host(exe, provider, case) as reopened:
+    with host(exe, provider, case, federation=True) as reopened:
         same = http(reopened,"/api/peers/node")[1]
         assert same["nodeId"] == a["nodeId"] and same["nodeName"] == a["nodeName"] and same["activeIp"]==selected
         if cloud:
@@ -271,7 +279,7 @@ def verify(exe, case):
     with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
         db.execute("DELETE FROM settings WHERE key='node_name'")
         db.commit()
-    with host(exe, provider, case) as upgraded:
+    with host(exe, provider, case, federation=True) as upgraded:
         assert not http(upgraded,"/api/initialize")[1]["needsNodeName"]
         assert http(upgraded,"/api/peers/node")[1]["nodeName"] == __import__("socket").gethostname()
         assert http(upgraded,share)[1]["link"]

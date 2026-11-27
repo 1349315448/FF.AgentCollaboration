@@ -17,6 +17,7 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
     private readonly object certificateLock = new();
     private readonly object settingsLock = new();
     private volatile Uri? publicEndpoint;
+    private bool localOnly;
     internal IPAddress? ActiveIp { get; private set; }
     internal int Port { get; set; }
     internal static bool PrivateIp(IPAddress ip)
@@ -70,14 +71,16 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
         return addresses.FirstOrDefault(PrivateIp) ?? (advertised != null ? addresses.FirstOrDefault() : null);
     }
 
-    internal void SelectListener(int requested)
+    internal void SelectListener(int requested, bool loopbackOnly)
     {
+        Port = requested;
+        localOnly = loopbackOnly;
+        if (loopbackOnly) return;
         using var store = startup.Ready.IsCompletedSuccessfully ? new WorkbenchStore(startup.Root) : null;
         var addresses = Addresses();
         var node = store?.FederationNode();
         publicEndpoint = PublicOrigin(node?.PublicEndpoint, requested);
         ActiveIp = ListenerAddress(addresses, node?.SelectedIp, publicEndpoint);
-        Port = requested;
         if (requested == 0 && ActiveIp != null)
         {
             using var probe = new TcpListener(IPAddress.Loopback, 0);
@@ -111,7 +114,7 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
         var node = store.FederationNode();
         var addresses = Addresses();
         return new { node.NodeId, node.NodeName, node.SelectedIp, node.PublicEndpoint, activeIp = ActiveIp?.ToString(),
-            addresses = addresses.Select(a => a.ToString()), restartRequired = !Equals(ActiveIp, ListenerAddress(addresses, node.SelectedIp, publicEndpoint)) };
+            addresses = addresses.Select(a => a.ToString()), restartRequired = !localOnly && !Equals(ActiveIp, ListenerAddress(addresses, node.SelectedIp, publicEndpoint)) };
     }
     internal object Configure(WorkbenchStore store, NodeSettings input)
     {

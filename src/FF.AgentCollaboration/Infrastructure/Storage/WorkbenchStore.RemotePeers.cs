@@ -38,11 +38,19 @@ internal sealed partial class WorkbenchStore
         Optional(r, 5), r.GetString(6), Optional(r, 7), r.GetString(8), r.GetString(9), r.GetInt64(10),r.GetBoolean(11)), id,includeWithdrawal).SingleOrDefault();
 
     private List<RemoteCapsule> RemoteCapsules() => Read("""
-        SELECT r.id,t.topic,r.provider,r.name,r.agent,r.status,r.online,r.connected,r.last_reply,r.error,r.quota_snapshot,b.agent
+        SELECT r.id,t.topic,r.provider,r.name,r.agent,r.status,r.online,r.connected,r.last_reply,r.error,r.quota_snapshot,b.agent,
+            (SELECT json_group_array(d.agent) FROM fed_remote_denial d WHERE d.remote=r.id),
+            EXISTS(SELECT 1 FROM team_remote_members m WHERE m.remote_id=r.id AND m.topic_id=t.topic)
         FROM fed_remote r JOIN fed_remote_topic t ON t.remote=r.id LEFT JOIN fed_contact_binding b ON b.remote=r.id AND b.topic=t.topic ORDER BY r.rowid
         """, r => new RemoteCapsule(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5),
         r.GetBoolean(6), r.GetBoolean(7), Optional(r, 8), Optional(r, 9),
-        r.GetString(5) == "approved" && !r.IsDBNull(10) ? JsonSerializer.Deserialize<PeerQuota>(r.GetString(10)) : null, Optional(r,11)));
+        r.GetString(5) == "approved" && !r.IsDBNull(10) ? JsonSerializer.Deserialize<PeerQuota>(r.GetString(10)) : null, Optional(r,11),
+        JsonSerializer.Deserialize<string[]>(r.GetString(12))!,r.GetBoolean(13)));
+
+    internal string? ManualContactAgent(string remote, string? topic) => Read("""
+        SELECT b.agent FROM fed_remote_topic t LEFT JOIN fed_contact_binding b ON b.remote=t.remote AND b.topic=t.topic
+        WHERE t.remote=$p0 AND ($p1 IS NULL OR t.topic=$p1) ORDER BY t.rowid LIMIT 1
+        """, r=>Optional(r,0),remote,topic).SingleOrDefault();
 
     internal bool RemoteStatus(string id, PeerSession peer, bool connected) => Exec("""
         UPDATE fed_remote SET name=$p1,agent=$p2,status=$p3,online=$p4,connected=$p5,token=coalesce($p6,token),
@@ -56,12 +64,18 @@ internal sealed partial class WorkbenchStore
         WHERE id=$p0 AND (online OR connected OR error IS NOT $p1 OR ($p2 IS NOT NULL AND status!=$p2))
         """, id, reason, status) > 0;
 
-    internal void RemoveRemote(string id, string topic) => Atomic(() =>
+    internal bool RemoveRemote(string id, string topic)
     {
-        Exec("DELETE FROM fed_contact_binding WHERE remote=$p0 AND topic=$p1",id,topic);
-        Exec("DELETE FROM fed_remote_topic WHERE remote=$p0 AND topic=$p1", id, topic);
-        Exec("UPDATE fed_remote SET online=0,connected=0 WHERE id=$p0 AND NOT EXISTS(SELECT 1 FROM fed_remote_topic WHERE remote=$p0)", id);
-    });
+        bool teamChanged = false;
+        Atomic(() =>
+        {
+            Exec("DELETE FROM fed_contact_binding WHERE remote=$p0 AND topic=$p1",id,topic);
+            teamChanged = Exec("DELETE FROM team_remote_members WHERE remote_id=$p0 AND topic_id=$p1",id,topic) > 0;
+            Exec("DELETE FROM fed_remote_topic WHERE remote=$p0 AND topic=$p1", id, topic);
+            Exec("UPDATE fed_remote SET online=0,connected=0 WHERE id=$p0 AND NOT EXISTS(SELECT 1 FROM fed_remote_topic WHERE remote=$p0)", id);
+        });
+        return teamChanged;
+    }
 
     internal void TrackManual(string remote, PeerMessage input)
     {
@@ -86,6 +100,7 @@ internal sealed partial class WorkbenchStore
             """, remote, item.Id, item.Kind, item.Text) == 0) return;
         Exec("INSERT INTO fed_received(remote,seq,kind,request_id,body,final_reply) VALUES($p0,$p1,$p2,$p3,$p4,$p5)", remote, item.Id, item.Kind, item.RequestId, item.Text, item.FinalReply);
         if (item.Kind == "contact") ReceiveContactNotice(remote,item);
+        if (item.Kind == "contact-removed") ReceiveContactRemoval(remote,item);
         if (item.Kind != "reply") return;
         if (item.DocumentId != null)
         {

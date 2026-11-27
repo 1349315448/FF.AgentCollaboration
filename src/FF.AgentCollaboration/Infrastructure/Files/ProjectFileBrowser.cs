@@ -11,6 +11,7 @@ internal sealed record WorkspaceEdit(string Project, string Path, string Content
 internal sealed class ProjectFileBrowser(string root)
 {
     internal const int PreviewLimit = 20 * 1024 * 1024;
+    private const int VideoPreviewLimit = 100 * 1024 * 1024;
     internal const int Limit = 512 * 1024;
     private static readonly UTF8Encoding Utf8 = new(false, true);
     private static readonly object SaveGate = new();
@@ -98,7 +99,7 @@ internal sealed class ProjectFileBrowser(string root)
     {
         using var stream = OpenVerified(fullPath);
         var file = new WorkspaceFile(label, "large", File.GetLastWriteTimeUtc(stream.SafeFileHandle), stream.Length);
-        if (file.Size > PreviewLimit) return (file, Utf8, 0, [], null);
+        if (file.Size > PreviewLimitFor(label)) return (file, Utf8, 0, [], null);
         var format = WorkspacePreviewFormat.Detect(stream, label);
         if (format != null) return (file with { Kind = format.Value.Kind }, Utf8, 0, [], format.Value.Mime);
         if (file.Size > Limit) return (file, Utf8, 0, [], null);
@@ -127,12 +128,16 @@ internal sealed class ProjectFileBrowser(string root)
 
     internal WorkspaceFile Read(string path) => Inspect(Resolve(path), path).File;
     internal static WorkspaceFile ReadDocument(string authorizedPath) => Inspect(authorizedPath, Path.GetFileName(authorizedPath)).File;
+    private static int PreviewLimitFor(string path) => Path.GetExtension(path).ToLowerInvariant() is ".mp4" or ".webm"
+        ? VideoPreviewLimit : PreviewLimit;
+
     internal (FileStream Stream, string Mime) OpenPreview(string path, bool imagesOnly)
     {
         var stream = OpenVerified(Resolve(path));
         try
         {
-            if (stream.Length > PreviewLimit) throw new WorkbenchError("只读预览上限为 20 MiB");
+            int limit = PreviewLimitFor(path);
+            if (stream.Length > limit) throw new WorkbenchError($"只读预览上限为 {limit / (1024 * 1024)} MiB");
             var format = WorkspacePreviewFormat.Detect(stream, path);
             if (format == null || (imagesOnly && format.Value.Kind != "image") || format.Value.Kind == "legacy-ppt")
                 throw new WorkbenchError("格式与文件内容不匹配或不支持预览");

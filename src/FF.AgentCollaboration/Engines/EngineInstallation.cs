@@ -23,7 +23,7 @@ internal static class EngineInstallation
         try
         {
             if (EngineExecutable.TryFindExecutable(name) != null) return;
-            if (name is "traecli" or "zcode")
+            if (name is "traecli" or "zcode" or "cursor" or "opencode")
                 throw new WorkbenchError("请按此引擎的官方安装指南安装 Windows 交互式 CLI，再重新检测");
             if (name is "codebuddy" or "qwen" or "qoder")
             {

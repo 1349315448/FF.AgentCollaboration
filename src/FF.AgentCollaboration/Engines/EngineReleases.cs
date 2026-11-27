@@ -21,6 +21,7 @@ internal static class EngineReleases
 
     internal static async Task<string?> Latest(string engine, bool refresh, CancellationToken ct)
     {
+        if (engine == "cursor") return null; // Cursor's own `agent update` checks its release channel.
         if (!refresh && Cache.TryGetValue(engine, out var cached) && cached.Expires > DateTimeOffset.UtcNow)
             return cached.Version;
         try
@@ -32,8 +33,10 @@ internal static class EngineReleases
                 string tag = release.GetProperty("tag_name").GetString()!;
                 url = $"https://raw.githubusercontent.com/zai-org/ZCode/{Uri.EscapeDataString(tag)}/apps/zcode-cli/package.json";
             }
-            else url = engine == "traecli" ? "https://lf-cdn.trae.com.cn/obj/trae-com-cn/trae-cli/v2/public/stable/latest.json" :
-                $"https://registry.npmjs.org/{NpmPackage(engine)}/latest";
+            else if (engine == "opencode") url = "https://registry.npmjs.org/@opencode/cli/latest";
+            else if (engine == "traecli") url = "https://lf-cdn.trae.com.cn/obj/trae-com-cn/trae-cli/v2/public/stable/latest.json";
+            else if (NpmPackage(engine) is { } module) url = $"https://registry.npmjs.org/{module}/latest";
+            else return null;
             var package = await Client.GetFromJsonAsync<JsonElement>(url, ct);
             var version = package.GetProperty("version").GetString();
             if (!Version.TryParse(version, out var stable) || stable.Build < 0 || stable.ToString() != version) return null;

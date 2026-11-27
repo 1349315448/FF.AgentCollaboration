@@ -1,11 +1,11 @@
 import { request } from "../services/api";
 import { byId, feedback, folderName, setBusy } from "./dom.js";
-import { openFolders } from "./folders.js";
+import { openProjectFolders } from "./folders.js";
 import { focusAgent } from "./layout.js";
-import { engineNames, installEngine, installGuides } from "../services/engines";
+import { engineCapabilities, engineNames, installEngine, installGuides } from "../services/engines";
 import { loadQuota, quotas } from "./quota.js";
 import { isDialogOpen, selectedProject, selectedTopicId, setSelectedProjectPath, snapshot } from "../store/workbenchStore";
-import { openTopicDialog, selectProject, selectedTopic } from "./topics.js";
+import { openTopicDialog, selectedTopic } from "./topics.js";
 import { normalizeActivities, refresh, render } from "./workbench.js";
 import { accountReady, checkAccount, openEngineLogin } from "./engine-login.js";
 
@@ -21,7 +21,7 @@ function setSelectedProject(path) {
 }
 
 function openCreate() {
-  if (!snapshot.project) { openFolders(null, selectProject); return; }
+  if (!snapshot.project) { openProjectFolders(null); return; }
   if (!selectedTopic()) { openTopicDialog(); return; }
   byId("new-dialog").dataset.topic = selectedTopicId;
   byId("new-form").reset();
@@ -30,18 +30,6 @@ function openCreate() {
   feedback("create-error");
   byId("new-dialog").showModal();
   loadCatalogs();
-}
-
-let capabilityRequest;
-function engineCapabilities() {
-  if (!capabilityRequest) {
-    capabilityRequest = fetch("/api/engines/capabilities").then(response => {
-      if (response.status === 404) return {}; // 更新静态资源后，旧宿主仍可用默认启动选项。
-      if (!response.ok) throw new Error("无法读取引擎能力");
-      return response.json();
-    }).catch(error => { capabilityRequest = undefined; throw error; });
-  }
-  return capabilityRequest;
 }
 
 // 仅用于静态文件先更新、宿主仍是上一版本的过渡阶段。

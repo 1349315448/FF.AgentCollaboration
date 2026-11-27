@@ -97,7 +97,23 @@ async function run() {
       assert.equal(sql("SELECT state FROM inbox WHERE id=?",msg)[0][0],"writing");
       fs.appendFileSync(rollout,JSON.stringify({type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:accepted[0]}]}})+"\n");
       await until(()=>sql("SELECT state FROM inbox WHERE id=?",msg)[0][0]==="delivered","native session confirms exact body");
-      console.log("PASS Codex native receipt awaiting, complete expanded draft, zero new frames, two Enters, one accepted message");return;
+      console.log("PASS Codex native receipt awaiting, complete expanded draft, zero new frames, two Enters, one accepted message");
+      await page.waitForFunction(id=>panes.get(id)?.view.inputReady,target.id);
+      fs.writeFileSync(path.join(project,"mode.txt"),"review-retry");
+      const review=mcp("send_to_agent",{target:target.id,message:"待核对后复检保留的原草稿 "+ "B".repeat(24)}).id;
+      const reviewState=()=>sql("SELECT state FROM inbox WHERE id=?",review)[0][0];
+      await until(()=>reviewState()==="delivery_uncertain","two Enters lost and outcome uncertain",22000);
+      await page.waitForFunction(({target,id})=>panes.get(target)?.view.inbox.some(item=>item.id===id && item.state==="delivery_uncertain"),{target:target.id,id:review});
+      fs.writeFileSync(path.join(project,"review-redraw.txt"),"");
+      await until(()=>logLines("one","accepted.txt").some(l=>l.includes(review.slice(0,8))),"periodic check submits the same owned draft",12000);
+      const acceptedReview=logLines("one","accepted.txt").filter(l=>l.includes(review.slice(0,8)));
+      assert.equal(acceptedReview.length,1);
+      const reviewAttempts=logLines("one","enters.txt").filter(l=>l==="review-retry").length;
+      assert(reviewAttempts>=3 && reviewAttempts<=7);
+      fs.appendFileSync(rollout,JSON.stringify({type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:acceptedReview[0]}]}})+"\n");
+      await until(()=>reviewState()==="delivered","periodic check recognizes late native receipt",12000);
+      assert.equal(logLines("one","enters.txt").filter(l=>l==="review-retry").length,reviewAttempts);
+      console.log("PASS uncertain delivery rechecks a redrawn folded draft and consumes exactly one native receipt");return;
     }
     if (process.argv.includes("--buddy-inbox")) {
       const project = path.join(root,"one");
@@ -213,7 +229,7 @@ async function run() {
       sql("UPDATE windows SET session=? WHERE id=?",session,late.id);
       assert((await page.request.post(lateUrl+"/start")).ok());
       await page.waitForFunction(id=>panes.get(id)?.view.inputReady,late.id);
-      fs.writeFileSync(path.join(root,"third","mode.txt"),"hold");
+      fs.writeFileSync(path.join(root,"third","mode.txt"),"foreign");
       const lateText="终端回执稍晚才落盘";
       const lateId=mcp("send_to_agent",{target:late.id,message:lateText,supersedePrevious:false}).id;
       const isState=state=>sql("SELECT state FROM inbox WHERE id=?",lateId)[0][0]===state;
@@ -523,7 +539,7 @@ async function run() {
     for (const [source,target] of [[localPeer,first],[first,localPeer]]) {
       await page.evaluate(({source,target}) => {
         window.effects = [];
-        const from = messageAnchor(source,true).getBoundingClientRect();
+        const from = messageAnchor(source).getBoundingClientRect();
         window.flightOrigin = [from.left+from.width/2,from.top+from.height/2];
         const before = {...snapshot, timelineTopic:selectedTopicId, timeline:[]};
         animateMessages(before, {...before, timeline:[{id:"already-delivered", source, target, state:"delivered"}]});
@@ -539,7 +555,7 @@ async function run() {
       await page.waitForFunction(() => window.effects.some(e=>e.classes==="mailbox-flag") &&
         window.effects.some(e=>e.duration===320 && /topic-agent-tag|tree-agent|topic-choice/.test(e.classes)));
       const matched = await page.evaluate(({source,target,first}) => {
-        const to = messageAnchor(target,true).getBoundingClientRect();
+        const to = messageAnchor(target).getBoundingClientRect();
         const coords = window.effects.find(e=>e.classes==="message-flight").path.match(/-?\d+(?:\.\d+)?/g).map(Number);
         const landed = document.querySelector(".message-flight")?.style.offsetPath.match(/-?\d+(?:\.\d+)?/g)?.map(Number) || coords;
         return {tag:!!messageAnchor(first,true).closest("#project-tabs"), startDelta:coords[0]-window.flightOrigin[0],
@@ -1051,7 +1067,7 @@ async function run() {
     await page.waitForFunction(()=>window.effects.some(e=>e.classes==="message-flight" && e.path.includes(" Q ")));
     assert(await page.evaluate(({helper,b})=>{
       const flight=window.effects.find(e=>e.classes==="message-flight"), coords=flight.path.match(/-?\d+(?:\.\d+)?/g).map(Number);
-      const from=messageAnchor(helper,true).getBoundingClientRect(), to=messageAnchor(snapshot.windows.find(w=>w.agent.topicId===b).agent.id,true).getBoundingClientRect();
+      const from=messageAnchor(helper).getBoundingClientRect(), to=messageAnchor(snapshot.windows.find(w=>w.agent.topicId===b).agent.id).getBoundingClientRect();
       return Math.abs(flight.center[0]-from.x-from.width/2)<2 && Math.abs(flight.center[1]-from.y-from.height/2)<2 &&
         Math.abs(coords.at(-2)-to.x-to.width/2)<2 && Math.abs(coords.at(-1)-to.y-to.height/2)<2;
     },{helper,b}));

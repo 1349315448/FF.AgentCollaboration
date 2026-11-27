@@ -281,7 +281,11 @@ def verify_receipts(exe, case):
         # ConPTY confirmation and task work are independent signals.
         db.execute("UPDATE inbox SET state='delivered' WHERE id IN (?,?)",(first,second))
         db.commit()
-        assert timeline()[first] == ("delivered","queued")
+        assert timeline()[first] == ("delivered","received")
+        call(peer, "report_task_status", messageId=first, status="need_info")
+        assert timeline()[first] == ("delivered","need_info")
+        call(peer, "send_to_agent", target=sender, replyTo=first, finalReply=False, message="请补充目标位置")
+        assert timeline()[first] == ("delivered","need_info")
         call(other, "report_task_status", True, messageId=first, status="working")
         for _ in range(2):
             call(peer, "report_task_status", messageId=first[:8].upper(), status="working")
@@ -290,7 +294,7 @@ def verify_receipts(exe, case):
         interim=call(peer, "send_to_agent", target=sender, replyTo=first, finalReply=False, message="received")["id"]
         assert timeline()[first] == ("delivered","working") and timeline()[interim][1] is None
         assert db.execute("SELECT reply_to,final_reply FROM inbox WHERE id=?",(interim,)).fetchone()==(first,0)
-        assert timeline()[second][1] == "queued"
+        assert timeline()[second][1] == "received"
         call(peer, "report_task_status", messageId=second, status="completed")
         final=call(peer, "send_to_agent", target=sender, replyTo=first[:8], message="result")["id"]
         call(peer, "send_to_agent", True, target=sender, replyTo=first, message="duplicate")

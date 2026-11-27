@@ -9,5 +9,15 @@ internal static class CollaborationTools
     internal const string ReadDocument = "read_handoff_doc";
     internal const string FinishTopic = "finish_topic";
     internal const string ReadSkill = "read_collaboration_skill";
-    internal static readonly string[] Names = [ListWindows, Send, Receive, ReportTask, ReadDocument, FinishTopic, ReadSkill];
+    internal const string ReadTeamSkill = "read_team_skill";
+    internal const string KnowledgeSearch = "kb_search";
+    internal const string KnowledgeRead = "kb_read";
+    internal const string KnowledgeWrite = "kb_write";
+    internal const string KnowledgeTeam = "kb_team_context";
+    internal const string ReadKnowledgeSkill = "read_knowledge_skill";
+    internal const string AvailableEngines = "list_available_engines";
+    internal const string ProposeTeam = "propose_team_agents";
+    internal static readonly string[] Names =
+        [ListWindows, Send, Receive, ReportTask, ReadDocument, FinishTopic, ReadSkill,
+         KnowledgeSearch, KnowledgeRead, KnowledgeWrite, KnowledgeTeam, ReadKnowledgeSkill, ReadTeamSkill, AvailableEngines, ProposeTeam];
 }

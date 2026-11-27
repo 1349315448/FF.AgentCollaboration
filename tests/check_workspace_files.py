@@ -92,6 +92,17 @@ def verify(exe, case):
             with media.open("ab") as fp: fp.write(b"x")
             assert get("file",path=media.name)[1]["kind"]=="large"
             assert get("file",path=media.name,raw="true")[0]==400
+            video = project / "preview.mp4"
+            with video.open("wb") as fp:
+                fp.write(b"\x00\x00\x00\x18ftypisom")
+                fp.truncate(24 * 1024 * 1024)
+            assert get("file",path=video.name)[1]["kind"]=="video"
+            raw = url+"/api/workspace/file?"+urlencode({"project":str(project),"path":video.name,"raw":"true"})
+            with urlopen(Request(raw,headers={"Range":"bytes=4-11"})) as response:
+                assert response.status==206 and response.read()==b"ftypisom"
+                assert response.headers["Content-Type"]=="video/mp4"
+            with video.open("r+b") as fp: fp.truncate(100 * 1024 * 1024 + 1)
+            assert get("file",path=video.name)[1]["kind"]=="large"
             assert get("file",path="linked/outside.txt",raw="true")[0] in (403,404)
             assert http(url, "/api/project?" + urlencode(dict(path=str(project))), method="DELETE")[0] == 204
             assert get("tree")[0] == 403

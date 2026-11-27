@@ -1,12 +1,8 @@
-import { request } from "../services/api";
 import { pageSocketUrl } from "../services/workbenchPage";
-import { engineNames } from "../services/engines";
+import { accountReady, checkAccount, engineNames } from "../services/engines";
 import { byId } from "./dom.js";
 
-export function checkAccount(engine, project, signal) {
-  return request("/engines/" + engine + "/account?" + new URLSearchParams({project}), {signal});
-}
-export const accountReady = account => account.status === "authenticated" || account.status === "configured";
+export { accountReady, checkAccount };
 
 // 连接仅属于本次登录。退出弹窗时释放 ConPTY，调用方自行展示会话选择。
 export function openEngineLogin(engine, project) {

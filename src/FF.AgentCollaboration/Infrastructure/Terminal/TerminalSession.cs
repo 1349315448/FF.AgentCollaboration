@@ -41,6 +41,7 @@ internal sealed class TerminalSession : IDisposable
     private long clearedAtRevision = -1;
     private long keyboardVersion;
     private long keyboardIntent;
+    private long deliveryEpoch;
     private readonly long launchedAt = Stopwatch.GetTimestamp();
     private readonly Dictionary<int, (long Revision, string Screen, string? Draft, bool Idle, string? ApprovalDraft, bool BusyInput, string? QueuedId)> screens = new();
     private long lastKeyboardInput;
@@ -60,7 +61,17 @@ internal sealed class TerminalSession : IDisposable
     private readonly bool workingWithoutPrompt;
     private readonly bool codexEditor;
     private readonly ISubmissionReceiptSource? submissionReceipts;
-    private readonly ConcurrentDictionary<string, (ISubmissionReceipt Receipt, long Since)> recentReceipts = new();
+    private sealed class DeliveryReview(string tail, int expectedChars, ISubmissionReceipt? receipt)
+    {
+        internal readonly string Tail = tail;
+        internal readonly int ExpectedChars = expectedChars;
+        internal readonly ISubmissionReceipt? Receipt = receipt;
+        internal long BeforePaste, BeforeSubmit = -1, KeyboardVersion, KeyboardIntent, Epoch, Since, LastCheck;
+        internal bool BusyAtStart;
+        internal int Checks;
+    }
+
+    private readonly ConcurrentDictionary<string, DeliveryReview> recentReceipts = new();
     private readonly Timer? quietTimer;
     private (bool Online, bool InputReady, string Activity)? lastReported;
     private bool lastBusyReady;
@@ -527,31 +538,34 @@ internal sealed class TerminalSession : IDisposable
         // 下一条外部投递须等本条确认或转为待核对，不能借用另一条消息的清空信号。
         await deliveryLock.WaitAsync(ct);
         ISubmissionReceipt? receipt = null;
+        DeliveryReview? review = null;
         bool claimed = false;
         try
         {
             string text = item.AsText();
-            string? tail = null;
-            if (codexEditor || immediate)
-            {
-                var compact = string.Concat(text.Where(c => !char.IsWhiteSpace(c)));
-                tail = compact.Length <= 48 ? compact : compact[^48..];
-            }
+            var compact = string.Concat(text.Where(c => !char.IsWhiteSpace(c)));
+            string fullTail = compact.Length <= 48 ? compact : compact[^48..];
+            string? tail = codexEditor || immediate ? fullTail : null;
             if (!CanDeliver(automatic, immediate)) return false;
             receipt = submissionReceipts?.Begin(item.Id, text);
             int expectedChars = text.EnumerateRunes().Count();
+            review = new(fullTail, expectedChars, receipt);
             bool Claim()
             {
                 return claimed = claim();
             }
-            var written = await PasteAndSubmit(item.Id, text, tail, expectedChars, automatic, Claim, ct, immediate);
+            var written = await PasteAndSubmit(item.Id, text, tail, expectedChars, automatic, Claim, ct, immediate, review);
             if (written == null) return false;
-            await WaitForSubmitConfirmation(item.Id, tail, expectedChars, written.Value, receipt, ct);
+            await WaitForSubmitConfirmation(item.Id, tail, expectedChars, written.Value, receipt, review, ct);
             return true;
         }
         catch
         {
-            if (claimed && receipt != null) recentReceipts[item.Id] = (receipt, Stopwatch.GetTimestamp());
+            if (claimed && review != null)
+            {
+                review.LastCheck = review.Since = Stopwatch.GetTimestamp();
+                recentReceipts[item.Id] = review;
+            }
             throw;
         }
         finally
@@ -570,7 +584,7 @@ internal sealed class TerminalSession : IDisposable
     }
 
     private async Task<(long BeforePaste, long BeforeSubmit, long KeyboardVersion, long KeyboardIntent, bool BusyAtStart, bool Folded)?> PasteAndSubmit(string messageId, string text, string? tail, int expectedChars, bool automatic,
-        Func<bool> claim, CancellationToken ct, bool immediate)
+        Func<bool> claim, CancellationToken ct, bool immediate, DeliveryReview review)
     {
         await inputLock.WaitAsync(ct);
         try
@@ -587,6 +601,11 @@ internal sealed class TerminalSession : IDisposable
                 busyAtStart = automatic && immediate && !CanDeliver(true);
                 useBracketedPaste = bracketedPasteEnabled;
                 beforePaste = revision;
+                review.BeforePaste = beforePaste;
+                review.Epoch = ++deliveryEpoch;
+                review.KeyboardIntent = keyboardAtPaste;
+                review.KeyboardVersion = keyboardVersion;
+                review.BusyAtStart = busyAtStart;
                 automaticDeliveryInProgress = automatic;
                 MarkInput();
                 draftMayContainText = false;
@@ -611,7 +630,7 @@ internal sealed class TerminalSession : IDisposable
             {
                 if (!automatic || !useBracketedPaste || !await ClearOwnedDraft(messageId, tail!, beforePaste, keyboardAtPaste, ct))
                     throw new IOException("终端草稿与本次投递不一致，请核对终端");
-                lock (outputLock) beforePaste = revision;
+                lock (outputLock) review.BeforePaste = beforePaste = revision;
                 await Paste();
                 lock (outputLock) afterPaste = revision;
                 if (!await WaitForPasteRedraw(beforePaste, afterPaste, messageId, tail, expectedChars, ct, busyAtStart, requireComplete:true))
@@ -629,6 +648,7 @@ internal sealed class TerminalSession : IDisposable
                 if ((busyAtStart || folded) && !CompleteDraftStable(messageId, tail, expectedChars, beforePaste))
                     throw new IOException("原生编辑器已切换，未向新界面发送回车");
                 beforeSubmit = revision;
+                review.BeforeSubmit = beforeSubmit;
                 unsubmittedNewSession = false;
             }
             await input.WriteAsync(new byte[] { 13 }, ct);
@@ -717,21 +737,68 @@ internal sealed class TerminalSession : IDisposable
         return false;
     }
 
-    internal IEnumerable<string> ReconcileReceipts()
+    internal async Task<IReadOnlyList<string>> ReconcileReceipts(Func<string, bool> stillUncertain, CancellationToken ct)
     {
-        foreach (var (id, pending) in recentReceipts)
+        var confirmed = new List<string>();
+        if (recentReceipts.IsEmpty || !await deliveryLock.WaitAsync(0, ct)) return confirmed;
+        try
         {
-            if (Stopwatch.GetElapsedTime(pending.Since).TotalMinutes > 2)
-                recentReceipts.TryRemove(id, out _);
-            else if (pending.Receipt.Check() == SubmissionStatus.Confirmed)
-                yield return id;
+            foreach (var (id, saved) in recentReceipts)
+            {
+                if (Stopwatch.GetElapsedTime(saved.LastCheck).TotalSeconds < 5) continue;
+                if (!Online || !stillUncertain(id) || Stopwatch.GetElapsedTime(saved.Since).TotalMinutes > 2)
+                {
+                    recentReceipts.TryRemove(id, out _);
+                    continue;
+                }
+                saved.LastCheck = Stopwatch.GetTimestamp();
+                if (saved.Checks <= 5)
+                {
+                    saved.Checks++;
+                    if (await ReviewSubmission(id, saved, stillUncertain, ct)) confirmed.Add(id);
+                    else if (saved.Checks > 5 && saved.Receipt == null) recentReceipts.TryRemove(id, out _);
+                }
+                else if (saved.Receipt?.Check() == SubmissionStatus.Confirmed) confirmed.Add(id);
+            }
         }
+        finally { deliveryLock.Release(); }
+        return confirmed;
+    }
+
+    private async Task<bool> ReviewSubmission(string id, DeliveryReview review, Func<string, bool> stillUncertain, CancellationToken ct)
+    {
+        // 后续核对先查原生回执。只有当前屏幕仍有本条完整草稿时才能补交，绝不重贴正文。
+        var receipt = review.Receipt?.Check(force: true) ?? SubmissionStatus.Unavailable;
+        if (receipt == SubmissionStatus.Confirmed) return true;
+        if (!await inputLock.WaitAsync(0, ct)) return false;
+        try
+        {
+            if (!stillUncertain(id)) return false;
+            lock (outputLock)
+            {
+                if (review.BeforeSubmit >= 0 && NativeQueuedSince(id, review.BeforeSubmit)) return true;
+                // 后续自动投递不会改变键盘计数，仍须禁止用后一条消息的清空帧确认本条。
+                if (!Online || review.Epoch != deliveryEpoch || Volatile.Read(ref keyboardIntent) != review.KeyboardIntent || keyboardVersion != review.KeyboardVersion)
+                    return false;
+                if (receipt == SubmissionStatus.Unavailable && review.BeforeSubmit >= 0 && !review.BusyAtStart &&
+                    clearedDraftRevision > review.BeforePaste && clearedAtRevision > review.BeforeSubmit) return true;
+                // 第五次补交之后，再保留一次只读机会确认最后回车的结果。
+                if (review.Checks > 5 || screens.Values.Any(s => s.Revision == revision && s.Screen is "blocked" or "running" or "active") ||
+                    !CompleteDraftStable(id, review.Tail, review.ExpectedChars, review.BeforePaste))
+                    return false;
+                review.BeforeSubmit = revision;
+            }
+            await input.WriteAsync(new byte[] { 13 }, ct);
+            await input.FlushAsync(ct);
+            return false;
+        }
+        finally { inputLock.Release(); }
     }
 
     internal void RemoveReceipt(string id) => recentReceipts.TryRemove(id, out _);
 
     private async Task WaitForSubmitConfirmation(string messageId, string? tail, int expectedChars,
-        (long BeforePaste, long BeforeSubmit, long KeyboardVersion, long KeyboardIntent, bool BusyAtStart, bool Folded) sent, ISubmissionReceipt? receipt, CancellationToken ct)
+        (long BeforePaste, long BeforeSubmit, long KeyboardVersion, long KeyboardIntent, bool BusyAtStart, bool Folded) sent, ISubmissionReceipt? receipt, DeliveryReview review, CancellationToken ct)
     {
         long started = Stopwatch.GetTimestamp();
         bool retried = false;
@@ -780,7 +847,7 @@ internal sealed class TerminalSession : IDisposable
                         if (!StillEditing(native)) continue;
                         // 同一写锁内复核最新草稿与键盘版本，然后只补回车，不重写正文或再次认领。
                         retried = true;
-                        sent.BeforeSubmit = revision;
+                        review.BeforeSubmit = sent.BeforeSubmit = revision;
                     }
                     await input.WriteAsync(new byte[] { 13 }, ct);
                     await input.FlushAsync(ct);

@@ -23,6 +23,7 @@ test("only a claimed Codex message can own a single folded editor block", () => 
   const parse = (value, state="writing") => foldedCodexChars("codex",{state},value);
   assert.equal(parse(" [Pasted Content 1400 chars] "),1400);
   assert.equal(parse("[PastedContent1400chars]"),1400);
+  assert.equal(parse("[Pasted Content 1400 chars]","delivery_uncertain"),1400);
   assert.equal(parse("[Pasted Content 1400 chars]","pending"),undefined);
   assert.equal(parse("[Pasted Content 1400 chars] #2"),0);
   assert.equal(parse("人工草稿 [Pasted Content 1400 chars]"),0);

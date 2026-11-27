@@ -56,6 +56,7 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
             if (Exec("INSERT OR IGNORE INTO settings VALUES('native_inbox_v2','1')") == 1)
                 Exec("UPDATE windows SET auto_receive=1 WHERE closed=0 AND engine IN ('qwen','codebuddy','zcode')");
             InitializeTopics();
+            InitializeTeamProposals();
             if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("role"))
                 Exec("ALTER TABLE windows ADD COLUMN role TEXT; ALTER TABLE windows ADD COLUMN new_session_pending INTEGER NOT NULL DEFAULT 0");
             InitializeManagedMcps();

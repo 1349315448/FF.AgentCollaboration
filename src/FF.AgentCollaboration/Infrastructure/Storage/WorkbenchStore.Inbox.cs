@@ -52,7 +52,7 @@ internal sealed partial class WorkbenchStore
         string? returnHint, string? document, bool supersedePrevious, string? replyTo = null, bool finalReply = true)
     {
         InboxItem? record = null;
-        string? createdDocument = null;
+        var createdDocuments = new List<string>();
         try
         {
             Atomic(() =>
@@ -67,45 +67,80 @@ internal sealed partial class WorkbenchStore
                     RecordTaskReply(task, finalReply);
                     parent = task.Id;
                 }
-                string? reference = document == null ? null : ProjectMarkdown(source.Project, Topic(source.TopicId).Folder, document);
-                string[] attachments = files.Select(file => ProjectFolders.Attachment(source.Project, file)).ToArray();
-                string id = Guid.NewGuid().ToString("N");
-                string summary = message;
-                bool longMessage = reference == null && Encoding.UTF8.GetByteCount(message) > 2048;
-                string? managedReference = null;
-                if (longMessage)
-                {
-                    string folder = Topic(target.TopicId).Folder!;
-                    bool global = CustomPaths || Read("SELECT value FROM settings WHERE key='standalone_handoffs'", r => r.GetString(0)).SingleOrDefault() == "1";
-                    string path = DocumentPath(global ? Handoffs : Path.Combine(folder, "handoffs"), id);
-                    managedReference = global ? id : path;
-                    TopicArchive.CheckPath(path);
-                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-                    using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
-                    {
-                        createdDocument = path;
-                        using var writer = new StreamWriter(stream, new UTF8Encoding(false));
-                        writer.Write(message);
-                    }
-                    summary = string.Join(' ', message.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
-                    summary = summary.Length > 220 ? summary[..220] + "…" : summary;
-                }
-                if (supersedePrevious && replyTo == null) Supersede(source.Id, target.Id);
-                Exec("""
-                    INSERT INTO inbox(id,source,target,sender,text,files,document,return_hint,state,document_ref,topic_id,created_at,wake_requested,work_state,reply_to,final_reply)
-                    VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6,$p7,'pending',$p8,$p9,CURRENT_TIMESTAMP,$p10,$p11,$p12,$p13)
-                    """, id, source.Id, target.Id, source.Name, summary, JsonSerializer.Serialize(attachments), longMessage, returnHint,
-                    managedReference ?? reference, target.TopicId, target.AutoReceive && Topic(target.TopicId).Status == "active", parent == null ? "queued" : null, parent, parent == null ? null : (bool?)finalReply);
-                record = new(id, target.Id, source.Name, summary, attachments, createdDocument ?? reference, returnHint, "pending")
-                { ProjectDocument = reference != null, QueueHint = QueueHint(target), ReplyTo = parent, FinalReply = parent == null ? null : finalReply };
+                record = EnqueueLocal(source, target, message, files, returnHint, document, supersedePrevious, parent, finalReply, createdDocuments);
             });
             return record!;
         }
         catch
         {
-            if (createdDocument != null) File.Delete(createdDocument);
+            foreach (string path in createdDocuments) File.Delete(path);
             throw;
         }
+    }
+
+    internal void RequireBroadcastLeader(AgentWindow source)
+    {
+        var topic = Topic(source.TopicId);
+        if (topic.LeaderWindowId != source.Id || topic.Status != "active" || DedicatedReader(source.Id))
+            throw new WorkbenchError("只有进行中话题的组长可以 @全部", WorkbenchFailure.Forbidden);
+    }
+
+    internal InboxItem[] BroadcastLocal(string grant, string message, IReadOnlyList<string> files, string? returnHint, string? document)
+    {
+        var records = new List<InboxItem>();
+        var createdDocuments = new List<string>();
+        try
+        {
+            Atomic(() =>
+            {
+                var source = Caller(grant);
+                RequireBroadcastLeader(source);
+                foreach (var target in Windows().Where(window => window.TopicId == source.TopicId && window.Id != source.Id))
+                    records.Add(EnqueueLocal(source, target, message, files, returnHint, document, false, null, true, createdDocuments));
+            });
+            return records.ToArray();
+        }
+        catch
+        {
+            foreach (string path in createdDocuments) File.Delete(path);
+            throw;
+        }
+    }
+
+    private InboxItem EnqueueLocal(AgentWindow source, AgentWindow target, string message, IReadOnlyList<string> files,
+        string? returnHint, string? document, bool supersedePrevious, string? parent, bool finalReply, List<string> createdDocuments)
+    {
+        string? reference = document == null ? null : ProjectMarkdown(source.Project, Topic(source.TopicId).Folder, document);
+        string[] attachments = files.Select(file => ProjectFolders.Attachment(source.Project, file)).ToArray();
+        string id = Guid.NewGuid().ToString("N");
+        string summary = message;
+        bool longMessage = reference == null && Encoding.UTF8.GetByteCount(message) > 2048;
+        string? managedReference = null;
+        if (longMessage)
+        {
+            string folder = Topic(target.TopicId).Folder!;
+            bool global = CustomPaths || Read("SELECT value FROM settings WHERE key='standalone_handoffs'", r => r.GetString(0)).SingleOrDefault() == "1";
+            string path = DocumentPath(global ? Handoffs : Path.Combine(folder, "handoffs"), id);
+            managedReference = global ? id : path;
+            TopicArchive.CheckPath(path);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+            {
+                createdDocuments.Add(path);
+                using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+                writer.Write(message);
+            }
+            summary = string.Join(' ', message.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            summary = summary.Length > 220 ? summary[..220] + "…" : summary;
+        }
+        if (supersedePrevious && parent == null) Supersede(source.Id, target.Id);
+        Exec("""
+            INSERT INTO inbox(id,source,target,sender,text,files,document,return_hint,state,document_ref,topic_id,created_at,wake_requested,work_state,reply_to,final_reply)
+            VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6,$p7,'pending',$p8,$p9,CURRENT_TIMESTAMP,$p10,$p11,$p12,$p13)
+            """, id, source.Id, target.Id, source.Name, summary, JsonSerializer.Serialize(attachments), longMessage, returnHint,
+            managedReference ?? reference, target.TopicId, target.AutoReceive && Topic(target.TopicId).Status == "active", parent == null ? "queued" : null, parent, parent == null ? null : (bool?)finalReply);
+        return new(id, target.Id, source.Name, summary, attachments, longMessage ? createdDocuments[^1] : reference, returnHint, "pending")
+        { ProjectDocument = reference != null, QueueHint = QueueHint(target), ReplyTo = parent, FinalReply = parent == null ? null : finalReply };
     }
 
     private static string DocumentPath(string directory, string reference) =>
@@ -261,7 +296,10 @@ internal sealed partial class WorkbenchStore
         )
         SELECT i.id,i.source,i.target,CASE WHEN s.topic_id<>$p0 THEN st.name||'/'||i.sender ELSE i.sender END,
                CASE WHEN i.topic_id<>$p0 THEN tt.name||'/'||t.name ELSE t.name END,substr(i.text,1,96),i.state,strftime('%Y-%m-%dT%H:%M:%SZ',i.created_at),i.acknowledged,
-               i.document=1 OR i.document_ref IS NOT NULL,CASE WHEN i.acknowledged=0 THEN i.work_state END
+               i.document=1 OR i.document_ref IS NOT NULL,
+               CASE WHEN i.acknowledged=0 THEN
+                   CASE WHEN i.state='delivered' AND i.work_state='queued' THEN 'received' ELSE i.work_state END
+               END
         FROM recent r JOIN inbox i ON i.rowid=r.seq JOIN windows t ON t.id=i.target JOIN topics tt ON tt.id=i.topic_id
         LEFT JOIN windows s ON s.id=i.source LEFT JOIN topics st ON st.id=s.topic_id ORDER BY r.seq DESC LIMIT $p1
         """, row => new TimelineEntry(row.GetString(0), row.GetString(1), row.GetString(2), row.GetString(3),
@@ -377,4 +415,7 @@ internal sealed partial class WorkbenchStore
 
     internal bool ConfirmLateReceipt(string id) =>
         Exec("UPDATE inbox SET state='delivered' WHERE id=$p0 AND state='delivery_uncertain' AND acknowledged=0", id) == 1;
+
+    internal bool NeedsDeliveryReview(string id) =>
+        Read("SELECT 1 FROM inbox WHERE id=$p0 AND state='delivery_uncertain' AND acknowledged=0", _=>true,id).Any();
 }
