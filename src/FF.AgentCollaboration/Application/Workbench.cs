@@ -665,7 +665,8 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
                 version = current;
                 var windows = state.Windows().ToDictionary(w => w.Id);
                 if (state.ReconcileNativeClaims() > 0) events.RefreshPages();
-                await state.CheckPeerAudits(id=>terminals.TryGetValue(id,out var t)?t.ViewState().Activity:"offline",stoppingToken);
+                if (await state.CheckPeerAudits(id=>terminals.TryGetValue(id,out var t)?t.ViewState().Activity:"offline",stoppingToken))
+                    events.RefreshPages();
                 foreach (var window in windows.Values)
                     if (window.Online && terminals.TryGetValue(window.Id, out var terminal) && !terminal.Online)
                         await ReleaseExited(state, window.Id, terminal, stoppingToken);

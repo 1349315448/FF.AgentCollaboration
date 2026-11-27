@@ -127,8 +127,9 @@ internal sealed partial class WorkbenchStore
             id, baseline == null ? null : JsonSerializer.Serialize(baseline), baseline == null ? 2 : 0);
     }
 
-    internal async Task CheckPeerAudits(Func<string, string> activity, CancellationToken ct)
+    internal async Task<bool> CheckPeerAudits(Func<string, string> activity, CancellationToken ct)
     {
+        bool published = false;
         foreach (var current in Read("SELECT f.local,i.target,f.active FROM fed_incoming f JOIN inbox i ON i.id=f.local WHERE f.active>0 AND i.acknowledged=0 AND i.work_state IS NOT 'working'",
             r => (Id: r.GetString(0), Target: r.GetString(1), Phase: r.GetInt32(2))))
         {
@@ -155,10 +156,12 @@ internal sealed partial class WorkbenchStore
             {
                 if (Exec("UPDATE fed_incoming SET audit_done=2 WHERE local=$p0 AND audit_done<2", row.Id) != 1) return;
                 bool unavailable = after == null || after.Contains("<audit-unavailable>") || before.Contains("<audit-unavailable>");
-                if (unavailable || added.Length > 0)
-                    Mail(row.Topic, "audit", row.Target, "peer-mailbox", "只读任务变更核对", unavailable ? "无法核实 Git 状态，请检查工作区" : string.Join(" · ", added));
+                if (!unavailable && added.Length == 0) return;
+                Mail(row.Topic, "audit", row.Target, "peer-mailbox", "只读任务变更核对", unavailable ? "无法核实 Git 状态，请检查工作区" : string.Join(" · ", added));
+                published = true;
             });
         }
+        return published;
     }
 
     internal InboxItem? SendFederated(string callerGrant, string address, string body, string[] files, string? document, string? hint, bool supersede, string? replyTo, bool? finalReply, bool topicBroadcast = false)
