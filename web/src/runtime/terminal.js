@@ -1,7 +1,7 @@
 import { readFramedPrompt } from "./framedPrompt.js";
 import { foldedCodexChars } from "./codexPaste.js";
 import { isLayoutAnimating } from "./layout.js";
-import { isCopilotPlaceholder } from "./copilotPrompt.js";
+import { isCopilotPlaceholder, matchesCopilotHint } from "./copilotPrompt.js";
 import { isClaudePlaceholder } from "./claudePrompt.js";
 import { forgetTraeSuggestion, invalidateTraeDraft, readTraePrompt } from "./traePrompt.js";
 import { request } from "../services/api";
@@ -108,10 +108,10 @@ document.addEventListener("visibilitychange", () => {
 
 function reportPrompt(pane, prompt = observePrompt(pane)) {
   const revision = pane.revision;
-  if (prompt.draft) pane.draftRevision = revision;
-  const clearedDraft = prompt.clear ? pane.draftRevision : undefined;
+  if (prompt.draft && !prompt.placeholderCandidate) pane.draftRevision = revision;
+  const clearedDraft = prompt.clear || prompt.placeholderCandidate ? pane.draftRevision : undefined;
   if (prompt.clear) pane.draftRevision = undefined;
-  if (clearedDraft != null) clearSubmitError(pane);
+  if (prompt.clear && clearedDraft != null) clearSubmitError(pane);
   const reviewing = pane.view.inbox.filter(item => item.state === "delivery_uncertain");
   const writing = pane.view.inbox.find(item => item.state === "writing") ||
     (reviewing.length === 1 && reviewing[0]) ||
@@ -131,7 +131,7 @@ function reportPrompt(pane, prompt = observePrompt(pane)) {
   const approvalDraft = prompt.screen === "draft" && /^\/(?:permissions|approval-mode)$/.test(prompt.draftText) ? prompt.draftText : undefined;
   sendControl(pane, { type: "prompt", revision, empty: prompt.empty, clearedDraft, screen: prompt.screen, draftId,
     approvalDraft, retryDraft: sameDraft || undefined, draftTail, foldedChars, busyInput:prompt.busyInput, queuedId:prompt.queuedId,
-    bracketedPaste: pane.term.modes.bracketedPasteMode });
+    placeholderCandidate: prompt.placeholderCandidate || undefined, bracketedPaste: pane.term.modes.bracketedPasteMode });
   clearTimeout(pane.runningTimer);
   const remaining = pane.runningUntil - Date.now();
   if (remaining > 0) {
@@ -232,6 +232,11 @@ function readNativePrompt(pane) {
     const below = lines.slice(/^\s*›/.test(lines[first]) ? row + 1 : first, row + 4);
     const codexSpinner = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|^\s*◦\s|\((?:\d+h\s*)?(?:\d+m\s*)?\d+s\s*[•·]|^\s*└\s*Tip:/m.test([...above, ...below].join("\n"));
     const codexScreen = blocked ? screen : codexSpinner ? "running" : draft ? "draft" : clear ? "clear" : "unknown";
+    // Some themes paint the stock hint in the same style as typed text at Home.
+    // Only the PTY owner can distinguish an untouched editor from recent keyboard input.
+    const placeholderCandidate = codexScreen === "draft" && prompt && buffer.cursorX === prompt[1].length + 2 &&
+      /^(?:Ask Codex to do anything|Ask a follow-up question)$/.test(prompt[2]) &&
+      /^\s*(?:GPT-[\w.-]+\b|model:)/i.test(lines.slice(row + 1, row + 4).find(line => line.trim()) || "");
     // While a native turn is running, Enter steers the turn. Only the actual editor and
     // its working/queue controls qualify; a spinner or a matching line in output is insufficient.
     const turnControls = [];
@@ -253,7 +258,7 @@ function readNativePrompt(pane) {
     const queueStart = afterWorking.findLastIndex(line => queueTitle.test(line));
     const queuedId = nativeTurn && queueStart >= 0
       ? afterWorking.slice(queueStart + 1).findLast(line => queueEntry.test(line))?.match(queueEntry)?.[1]?.toLowerCase() : undefined;
-    return { clear: clear && !codexSpinner, draft, draftText, editableText: blocked || codexSpinner ? null : draftText,
+    return { clear: clear && !codexSpinner, draft, draftText, placeholderCandidate, editableText: blocked || codexSpinner ? null : draftText,
       busyInput:nativeTurn && clear, busyEditable:nativeTurn && draft && lines.slice(row + 1, row + 5).some(line => /tab to queue message/i.test(line)), queuedId,
       empty: clear && !blocked && !codexSpinner, screen: codexScreen };
   }
@@ -280,8 +285,10 @@ function readNativePrompt(pane) {
     ? /^\s*[✻✢✳✶✽⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*(?:…|\.{3})/.test(lines.slice(0, row - 1).findLast(line => line.trim()) || "")
     : /\bworking\b|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏◎◉○]/i.test(lines.slice(Math.max(0, row - 3), separator + 2).join("\n"));
   const copilotScreen = blocked ? screen : activeRun ? "running" : draft ? "draft" : clear ? "clear" : "unknown";
+  const placeholderCandidate = pane.agent.engine === "copilot" && copilotScreen === "draft" && interactive &&
+    buffer.cursorY === row && buffer.cursorX === (lines[row].match(/^[>❯│┃]\s?/)?.[0].length ?? -1) && matchesCopilotHint(prompt);
   return { clear: clear && !activeRun, draft, draftText: draft ? prompt : null, editableText: draft && interactive && !activeRun ? prompt : null,
-    empty: clear && interactive && !activeRun, screen: copilotScreen };
+    empty: clear && interactive && !activeRun, screen: copilotScreen, placeholderCandidate };
 }
 
 function syncTerminal(pane, view) {

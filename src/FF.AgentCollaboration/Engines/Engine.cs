@@ -66,4 +66,5 @@ internal abstract class Engine : IDisposable
 internal sealed record TerminalLaunch(List<string> Arguments, IReadOnlyDictionary<string, string>? Environment)
 {
     internal bool NativeInbox { get; init; }
+    internal Func<string, CancellationToken, Task>? Enqueue { get; init; }
 }

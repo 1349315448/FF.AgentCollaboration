@@ -567,6 +567,9 @@ button:disabled { cursor: default; opacity: .42; }
 .shortcut-menu .selection-item small { text-align: right; }
 #shortcuts-reset { margin-right: auto; }
 .pane-error { padding: 4px 8px 6px; }
+.saved-editor-draft { padding: 4px 8px; font-size: 12px; }
+.saved-editor-draft summary { cursor: pointer; }
+.saved-editor-draft textarea { display: block; width: 100%; margin: 5px 0; }
 
 .empty-workspace { display: grid; min-height: 0; flex: 1; place-items: safe center; overflow: auto; padding: 24px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--terminal); }
 .empty-content { display: grid; justify-items: center; text-align: center; gap: 6px; }

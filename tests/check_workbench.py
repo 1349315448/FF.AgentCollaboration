@@ -181,9 +181,12 @@ def verify(executable, directory):
         assert files == ["interface notes.md"], files
         assert http(base, "/api/handoffs", {}, "POST")[0] == 404
         capabilities = http(base, "/api/engines/capabilities")[1]
-        assert set(capabilities) == {"codex", "copilot", "claude", "codebuddy", "traecli", "qwen", "zcode", "qoder"}
+        assert set(capabilities) == {"codex", "copilot", "claude", "codebuddy", "traecli", "qwen", "zcode", "qoder", "cursor", "opencode", "antigravity"}
         for engine, profile in capabilities.items():
-            assert {"new","resume","archive","restore"} <= set(profile["sessionActions"])
+            if engine in {"cursor", "antigravity"}:
+                assert set(profile["sessionActions"]) == ({"new", "resume"} if engine == "cursor" else {"new"})
+            else:
+                assert {"new","resume","archive","restore"} <= set(profile["sessionActions"])
             assert ("delete" in profile["sessionActions"]) == (engine in {"codex","copilot","claude","traecli"})
             assert ("fork" in profile["sessionActions"]) == (engine in {"codex","copilot","claude","traecli","codebuddy","qoder"})
             assert ("latest" in profile["sessionActions"]) == (engine == "copilot")

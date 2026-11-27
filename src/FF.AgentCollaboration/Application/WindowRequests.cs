@@ -2,7 +2,7 @@ namespace FF.AgentCollaboration.Application;
 
 internal sealed record CreateAgent(string? Name, string? Project, string? Engine, string? Model,
     string? Session, string? Effort, string? Mode, bool NewSession, string? Topic, bool ForkSession = false, string? Approval = null, string? Role = null);
-internal sealed record TerminalInput(string? Text, string? MessageId);
+internal sealed record TerminalInput(string? Text, string? MessageId, Domain.ManualEditorDraft? Draft = null);
 internal sealed record AgentConfiguration(string? Name, string? Role, string? Engine, string? SessionMode, string? SessionId,
     string? Model, string? Effort, string? Mode, string? Approval, bool UpdateModel = false);
 internal sealed record ChangeSession(bool NewSession, string? Session);

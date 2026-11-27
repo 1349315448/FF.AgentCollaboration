@@ -55,8 +55,19 @@ class TopicTerminalFixture
 
     static void Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "queue")
+        {
+            if (!File.Exists("queue.fixture")) { Environment.ExitCode = 2; return; }
+            if (args.Contains("--help")) { Console.WriteLine("queue --thread <THREAD> --message <TEXT>"); return; }
+            if (args.Length != 5 || args[1] != "--thread" || args[3] != "--message" ||
+                !File.ReadAllLines("terminal-launch.txt").Contains(args[2])) { Environment.ExitCode = 2; return; }
+            File.AppendAllLines("queued.txt", new[] {args[4]});
+            if (File.Exists("lost-receipt.fixture")) Environment.ExitCode = 1;
+            return;
+        }
         if (args.Length > 0 && (args[0] == "login" || args[0] == "auth" || args[0] == "status")) { Environment.ExitCode = WorkbenchEngineFixture.Main(args); return; }
         if (args.Contains("--version")) { Console.WriteLine("fixture 2.1"); return; }
+        if (args.Contains("--help") && File.Exists("queue.fixture")) { Console.WriteLine("  queue   Queue a message"); return; }
         if (args.Contains("--help") && File.Exists("channel.fixture")) { Console.WriteLine("--channels <value>"); return; }
         if (args.Contains("--help") || args.Contains("--stdio")) { WorkbenchEngineFixture.Main(args); return; }
         if (args.Contains("app-server")) { WorkbenchEngineFixture.AppServer(); return; }
@@ -85,9 +96,15 @@ class TopicTerminalFixture
         System.Threading.Timer statusTicker = null;
         bool replaceOnKey = false;
         Action draw = () => {
-            if (File.Exists("channel.fixture")) File.WriteAllText("draft-observed.txt", draft);
+            if (File.Exists("channel.fixture") || File.Exists("queue.fixture")) File.WriteAllText("draft-observed.txt", draft);
             string cursor = newline ? "4;2" : "1;" + Math.Min(40, 3 + draft.Length);
             string content = "› " + (draft.Length == 0 ? "\x1b[2mAsk Codex to do anything\x1b[22m" : draft);
+            const string plainHint = "Ask Codex to do anything";
+            if (native == "plain-hint" && !newline)
+            {
+                content = "› " + (draft.Length == 0 ? plainHint : draft) + "\r\n\r\nGPT-fixture high · project";
+                if (draft == plainHint) cursor = "1;3"; // Identical pixels after typing the hint and pressing Home.
+            }
             if (newline)
             {
                 // 原生第一次回车只增加换行。把同一份草稿跨空行重绘，保持正文与初次粘贴逐字一致。
@@ -253,6 +270,13 @@ class TopicTerminalFixture
                         File.Move("audit-marker.fixture", "audit-marker.txt");
                     draft = ""; newline = approval = folded = false;
                     if (mode == "folded-retry") busy = false;
+                    if (mode == "busy-after-submit")
+                    {
+                        busy = true;
+                        draw();
+                        System.Threading.Thread.Sleep(6000);
+                        busy = false;
+                    }
                     ReplyToPeer(draw);
                 }
             }

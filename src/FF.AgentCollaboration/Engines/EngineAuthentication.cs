@@ -43,9 +43,12 @@ internal static class EngineAuthentication
             "暂时无法确认登录状态，请重新检测", WorkbenchFailure.LoginRequired);
     }
 
-    internal static async Task<(int Code, string Output)> Command(string engine, string project, string[] args, CancellationToken ct)
+    internal static Task<(int Code, string Output)> Command(string engine, string project, string[] args, CancellationToken ct) =>
+        RunCommand(EngineExecutable.FindExecutable(engine), project, args, ct);
+
+    internal static async Task<(int Code, string Output)> RunCommand(string executable, string project, string[] args, CancellationToken ct)
     {
-        var start = WindowsCommand.Resolve(EngineExecutable.FindExecutable(engine), args);
+        var start = WindowsCommand.Resolve(executable, args);
         start.WorkingDirectory = project;
         start.RedirectStandardInput = start.RedirectStandardOutput = start.RedirectStandardError = true;
         using var process = Process.Start(start)!;

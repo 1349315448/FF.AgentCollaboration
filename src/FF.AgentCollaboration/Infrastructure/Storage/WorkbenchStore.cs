@@ -59,6 +59,11 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
             InitializeTeamProposals();
             if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("role"))
                 Exec("ALTER TABLE windows ADD COLUMN role TEXT; ALTER TABLE windows ADD COLUMN new_session_pending INTEGER NOT NULL DEFAULT 0");
+            if (!columns.Contains("launch_model_pending"))
+                Exec("""
+                    ALTER TABLE windows ADD COLUMN launch_model_pending INTEGER NOT NULL DEFAULT 0;
+                    UPDATE windows SET launch_model_pending=1 WHERE new_session_pending=1 AND session IS NULL;
+                    """);
             InitializeManagedMcps();
             InitializeManagedSkills();
             Exec("CREATE TABLE IF NOT EXISTS copilot_session_archives(session TEXT PRIMARY KEY)");

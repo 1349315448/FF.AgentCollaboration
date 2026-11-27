@@ -203,6 +203,7 @@ export function readFramedPrompt(engine, term, lines) {
     return {empty:!busy, clear:true, draft:false, screen:busy ? "running" : "clear",
       ...(nativeBusy && physicalStart && {busyInput:true}), ...(queuedId && {queuedId})};
   if (text) return {empty:false, clear:false, draft:true, draftText:text, editableText:busy ? null : text, screen:busy ? "active" : "draft",
+    placeholderCandidate: !busy && physicalStart && (zcode || engine === "qoder") && placeholder.test(text) && editor.filter(Boolean).length === 1,
     ...(nativeBusy && inEditor && {busyEditable:true}), ...(queuedId && {queuedId})};
   return result;
 }

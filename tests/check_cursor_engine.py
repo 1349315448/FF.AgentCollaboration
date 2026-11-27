@@ -45,7 +45,7 @@ def verify(executable, case):
         details = next(item for item in http(base, "/api/engines?detail=true", timeout=25)[1] if item["engine"] == "cursor")
         assert Path(details["path"]) == candidate and details["version"] == "2026.11.01-fixture", details
         catalog = http(base, "/api/engines/capabilities")[1]["cursor"]
-        assert {mode["id"] for mode in catalog["modes"]} == {"ask", "plan"} and not catalog.get("startupApproval"), catalog
+        assert {mode["id"] for mode in catalog["modes"]} == {"ask", "plan"} and catalog["startupApproval"]["auto"] == "--force", catalog
         assert http(base, "/api/quota/cursor")[1]["supported"] is False
         query = "?" + urlencode({"project": str(project)})
         topic = http(base, "/api/topics", {"name": "Cursor test", "project": str(project)})[1]
@@ -79,14 +79,22 @@ def verify(executable, case):
         route = "/api/windows/" + window["id"]
         marker = project / "cursor-launch.txt"
         failure = project / "cursor-launch-error.txt"
-        for attempt in range(2):
-            for _ in range(100):
+        for attempt in range(4):
+            for _ in range(300):
                 assert not failure.exists(), failure.read_text(encoding="utf-8")
                 if marker.exists() and marker.stat().st_size:
                     break
                 time.sleep(.05)
+            else:
+                view = next(w for w in http(base, "/api/state")[1]["windows"] if w["agent"]["id"] == window["id"])
+                raise AssertionError(("Cursor launch timed out", attempt, view["activity"], view["exitCode"]))
             args = marker.read_text(encoding="utf-8-sig").splitlines()
-            assert args[:5] == ["--resume=" + window["session"], "--model", "sonnet", "--mode", "ask"], args
+            assert args[0] == "--resume=" + window["session"] and args[args.index("--mode")+1] == "ask", args
+            assert ("--force" in args) == (attempt == 1), args
+            if attempt in (0, 2):
+                assert args[args.index("--model")+1] == ("sonnet" if attempt == 0 else "auto"), args
+            else:
+                assert "--model" not in args, args
             plugin = Path(args[args.index("--plugin-dir") + 1])
             assert plugin.parent.resolve() == (state / "engine-profiles" / window["id"]).resolve(), plugin
             assert json.loads((plugin / ".cursor-plugin/plugin.json").read_text(encoding="utf-8"))["name"] == "ff-agent-collaboration"
@@ -96,9 +104,15 @@ def verify(executable, case):
             assert servers["a-remote"]["headers"] == {"Authorization": "${env:FF_CURSOR_MCP_0}"}
             assert servers["z-local"]["env"]["KEY"] == "${env:FF_CURSOR_MCP_1}"
             assert not any(secret in config for secret in ("fixture-remote-header", "fixture-local-env"))
-            assert http(base, route + "/stop", method="POST")[0] == 204
             marker.unlink()
-            if attempt == 0:
+            if attempt in (0, 1):
+                generation = next(w["terminal"] for w in http(base, "/api/state")[1]["windows"] if w["agent"]["id"] == window["id"])
+                if attempt == 1:
+                    assert http(base, route + "/config", {"name":"Cursor","updateModel":True,"model":"auto"}, "PUT")[0] == 204
+                assert http(base, route + "/approval", {"terminal":generation,"approval":"auto" if attempt == 0 else "ask"}, "PUT")[0] == 204
+            else:
+                assert http(base, route + "/stop", method="POST")[0] == 204
+            if attempt == 2:
                 assert http(base, route + "/start", method="POST")[0] == 204
         assert (project / "created.txt").read_text(encoding="utf-8").splitlines() == ["created"]
         assert json.loads(native.read_text(encoding="utf-8")) == {"mcpServers": {"original": {"command": "test-original"}}}

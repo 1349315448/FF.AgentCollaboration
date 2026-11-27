@@ -6,6 +6,7 @@ internal sealed record AgentWindow(string Id, string Name, string Engine, string
     public string? Role { get; init; }
     public bool IsLeader { get; init; }
     internal bool NewSessionPending { get; init; }
+    internal bool LaunchModelPending { get; init; }
     public string? SessionTitle { get; init; }
     public string? Approval { get; init; }
     public string ReceiveMode { get; init; } = "queued";

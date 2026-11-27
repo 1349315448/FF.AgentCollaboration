@@ -132,7 +132,7 @@ async function loadCatalogs() {
     byId("history-field").hidden = byId("history-action").hidden = !history;
     byId("history-action").querySelector('[value="resume"]').disabled = !actions.includes("resume");
     const policy = profile?.startupApproval;
-    const separate = engine === "copilot";
+    const separate = engine === "copilot" || engine === "cursor";
     byId("copilot-approval-field").hidden = !separate || !policy;
     byId("mode-label").textContent = separate ? "运行模式" : "审批权限";
     if (policy && !separate) {
@@ -267,7 +267,7 @@ byId("new-form").addEventListener("submit", async event => {
     forkSession: byId("session-source").value === "history" && byId("new-form").elements.historyAction.value === "fork",
     model: byId("agent-model").value || null, effort: byId("agent-effort").value || null,
     mode: byId("agent-mode").value.startsWith("approval:") ? null : byId("agent-mode").value || null,
-    approval: selectedEngine() === "copilot" ? byId("copilot-approval").value || null :
+    approval: ["copilot","cursor"].includes(selectedEngine()) ? byId("copilot-approval").value || null :
       byId("agent-mode").value.split(":")[1] || null
   };
   catalogRequest?.abort();

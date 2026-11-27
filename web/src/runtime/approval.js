@@ -16,7 +16,7 @@ export async function chooseApproval(pane) {
   const agent = pane.agent, generation = agent.online ? pane.generation : null;
   const profile = (await engineCapabilities())[agent.engine];
   const policy = profile?.startupApproval;
-  if (!policy) throw new Error("请更新工作台以切换审批权限");
+  if (!policy) throw new Error("此引擎的审批权限由原生 CLI 管理");
   const dialog = byId("approval-dialog"), choice = byId("approval-choice");
   if (dialog.open) return;
   pane.approvalProfile = profile;

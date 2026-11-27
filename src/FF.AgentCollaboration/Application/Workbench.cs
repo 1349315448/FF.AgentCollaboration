@@ -31,7 +31,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             terminals.TryGetValue(agent.Id, out var terminal);
             var (online, inputReady, activity) = terminal?.ViewState() ?? (false, false, "offline");
             return new WindowView(agent with { Online = online }, terminal?.Generation, terminal?.ExitCode,
-                inputReady, activity, state.Inbox(agent.Id), wakeErrors.GetValueOrDefault(agent.Id), online && pendingMcps.ContainsKey(agent.Id), terminal?.NativeInbox == true);
+                inputReady, activity, state.Inbox(agent.Id), wakeErrors.GetValueOrDefault(agent.Id), online && pendingMcps.ContainsKey(agent.Id), terminal?.NativeInbox == true || terminal?.Enqueue != null);
         }).ToArray();
         var byTopic = windows.ToLookup(w => w.Agent.TopicId);
         var topics = state.Topics().Select(topic =>
@@ -162,7 +162,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             request.ForkSession ? null : session, Option(request.Effort, "推理档位"), EmptyToNull(request.Mode),
             AutoReceive: true, Online: false, TopicId: topic.Id)
         {
-            Approval = ValidateApproval(request.Approval), Role = WorkbenchInput.AgentRole(request.Role)
+            Approval = ValidateApproval(request.Approval), Role = WorkbenchInput.AgentRole(request.Role), LaunchModelPending = true
         };
     }
 
@@ -231,10 +231,10 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
                 var mode = EmptyToNull(input.Mode);
                 if (mode != null && !adapter.Capabilities.Modes.Any(m => m.Id == mode)) throw new WorkbenchError("该引擎不支持所选模式");
                 updated = updated with { Engine = engine, Model = Option(input.Model,"模型"), Effort = Option(input.Effort,"推理档位"),
-                    Mode = mode, Approval = ValidateApproval(input.Approval), Session = null, SessionTitle = null, NewSessionPending = true };
+                    Mode = mode, Approval = ValidateApproval(input.Approval), Session = null, SessionTitle = null, NewSessionPending = true, LaunchModelPending = true };
             }
             else if (input.UpdateModel)
-                updated = updated with { Model = Option(input.Model, "模型"), Effort = Option(input.Effort, "推理档位") };
+                updated = updated with { Model = Option(input.Model, "模型"), Effort = Option(input.Effort, "推理档位"), LaunchModelPending = true };
             if (input.SessionMode is not (null or "new" or "resume") || (input.SessionMode == "resume") != !string.IsNullOrWhiteSpace(input.SessionId))
                 throw new WorkbenchError("请选择新建或一个历史会话");
             bool switchSession = input.SessionMode == "new" || input.SessionMode == "resume" && input.SessionId != updated.Session;
@@ -300,6 +300,8 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         if (updatingEngines.ContainsKey(window.Engine)) throw new WorkbenchError("此引擎正在更新，请稍后打开", WorkbenchFailure.Conflict);
         using var engine = Engine.Create(window.Engine, window.Project);
         RequireSessionOperation(window, engine.Capabilities, forkSource != null ? "fork" : window.Session == null ? "new" : "resume");
+        // 初次建窗或用户显式保存启动模型时传一次，后续恢复让原生会话选择模型和档位。
+        bool applyModel = window.LaunchModelPending;
         string? newTitle = null;
         if (window.Session == null)
         {
@@ -308,7 +310,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             if (engine.CreatesSessionBeforeLaunch)
             {
                 using var timeout = SessionCatalog.Deadline(ct);
-                string id = await engine.NewSession(newTitle, window.Model, forkSource, timeout.Token);
+                string id = await engine.NewSession(newTitle, applyModel ? window.Model : null, forkSource, timeout.Token);
                 if (id == forkSource || !engine.ValidSessionId(id)) throw new WorkbenchError("引擎未返回独立的会话编号", WorkbenchFailure.Unavailable);
                 window = window with { Session = id };
             }
@@ -331,10 +333,10 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         var grant = WorkbenchStore.NewGrant();
         var mcp = new EngineMcp(Root, "workbench-mcp", grant, CollaborationTools.Names, events.NotifyPort);
         using var launchTimeout = SessionCatalog.Deadline(ct);
-        var forLaunch = window;
-        if (window.Approval != null && window.Engine != "copilot" && StartupApproval.For(window.Engine) is { } policy)
+        var forLaunch = applyModel ? window : window with { Model = null, Effort = null };
+        if (window.Approval != null && window.Engine is not ("copilot" or "cursor") && StartupApproval.For(window.Engine) is { } policy)
         {
-            forLaunch = window with { Mode = window.Approval == "ask" ? policy.Ask : policy.Auto };
+            forLaunch = forLaunch with { Mode = window.Approval == "ask" ? policy.Ask : policy.Auto };
         }
         terminals.TryGetValue(window.Id, out var previous);
         bool reopeningEmpty = reopening && newTitle == null && window.Session != null && window.Engine switch {
@@ -406,7 +408,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         {
             terminals[window.Id] = new TerminalSession(window.Engine, executable, launch.Arguments,
                 ProjectFolders.Resolve(window.Project), grant, 100, 30, events.Changed, launch.Environment, engine.SubmissionReceipts(window))
-                { NativeInbox = launch.NativeInbox };
+                { NativeInbox = launch.NativeInbox, Enqueue = launch.Enqueue };
             state.AppliedMcps(window.Id, revision);
             return window with { Online = true };
         }
@@ -582,8 +584,9 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         {
             using var state = new WorkbenchStore(Root);
             var message = state.Pending(id, WorkbenchInput.Id(request.MessageId));
-            if (terminal.NativeInbox) await OfferNative(state, terminal, message, "manual", ct);
-            else if (!await DeliverCompatible(state, terminal, message, false, state.Window(id).ReceiveMode == "immediate", ct, manualClick: true))
+            if (terminal.Enqueue != null) await EnqueueNative(state, terminal, message, false, false, ct);
+            else if (terminal.NativeInbox) await OfferNative(state, terminal, message, "manual", ct);
+            else if (!await DeliverCompatible(state, terminal, message, false, state.Window(id).ReceiveMode == "immediate", ct, manualClick: true, draft: request.Draft))
                 throw new WorkbenchError("等待终端可接收；人工草稿和审批会保留", WorkbenchFailure.Conflict);
             return;
         }
@@ -608,6 +611,33 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         finally { lifecycle.Release(); }
     }
 
+    private async Task EnqueueNative(WorkbenchStore state, TerminalSession terminal, InboxItem message, bool automatic, bool immediate, CancellationToken ct)
+    {
+        await lifecycle.WaitAsync(ct);
+        try
+        {
+            if (!terminal.Online || !terminals.TryGetValue(message.Target, out var current) || current != terminal) return;
+            if (message.Source == "peer-mailbox") await state.BeginPeerAudit(message.Id, ct);
+            if (!state.ClaimMessage(message.Id, automatic, immediate)) return;
+            waking.TryRemove(new KeyValuePair<string,string>(message.Target, terminal.Generation));
+            events.RefreshPages();
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            try
+            {
+                await terminal.Enqueue!(message.AsText(), timeout.Token);
+                state.FinishMessage(message.Id, "delivered");
+            }
+            catch (Exception error) when (error is IOException or OperationCanceledException or System.ComponentModel.Win32Exception)
+            {
+                state.FinishMessage(message.Id, "delivery_uncertain");
+                throw new IOException("未获得原生会话收件确认，请核对后再决定是否重发", error);
+            }
+            finally { events.Changed(); }
+        }
+        finally { lifecycle.Release(); }
+    }
+
     private async Task OfferNative(WorkbenchStore state, TerminalSession terminal, InboxItem message, string mode, CancellationToken ct)
     {
         if (message.NativeOffer == mode || message.NativeOffer == "manual") return;
@@ -618,9 +648,9 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
     }
 
     private async Task<bool> DeliverCompatible(WorkbenchStore state, TerminalSession terminal, InboxItem message,
-        bool automatic, bool immediate, CancellationToken ct, bool manualClick = false)
+        bool automatic, bool immediate, CancellationToken ct, bool manualClick = false, ManualEditorDraft? draft = null)
     {
-        if (!terminal.CanDeliver(!manualClick, immediate)) return false;
+        if (draft == null && !terminal.CanDeliver(!manualClick, immediate)) return false;
         if (message.Source == "peer-mailbox") await state.BeginPeerAudit(message.Id, ct);
         bool claimed = false;
         try
@@ -634,7 +664,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
                     events.RefreshPages();
                 }
                 return claimed;
-            }, ct, immediate);
+            }, ct, immediate, draft);
             if (delivered) state.FinishMessage(message.Id, "delivered");
             return delivered;
         }
@@ -681,7 +711,12 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
                     if (!terminal.Online) continue;
                     try
                     {
-                        if (terminal.NativeInbox)
+                        if (terminal.Enqueue != null)
+                        {
+                            if (terminal.MayEnqueue(recipient.ReceiveMode == "immediate"))
+                                await EnqueueNative(state, terminal, entry, true, recipient.ReceiveMode == "immediate", stoppingToken);
+                        }
+                        else if (terminal.NativeInbox)
                         {
                             if (entry.NativeOffer != null && state.AwaitingCompatibility(entry.Id))
                                 await DeliverCompatible(state, terminal, entry, entry.NativeOffer != "manual", recipient.ReceiveMode == "immediate", stoppingToken);

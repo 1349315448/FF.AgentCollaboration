@@ -106,6 +106,9 @@ internal static class TerminalSocket
             if (!command.TryGetProperty("type", out var type)) continue;
             switch (type.GetString())
             {
+                case "composition":
+                    terminal.ObserveComposition(viewerId, command.GetProperty("active").GetBoolean());
+                    break;
                 case "mention-picker":
                     terminal.SetMentionPicker(viewerId, command.GetProperty("open").GetBoolean(),
                         command.TryGetProperty("request", out var token) && token.TryGetInt32(out int sequence) ? sequence : 0);
@@ -125,7 +128,8 @@ internal static class TerminalSocket
                         command.TryGetProperty("draftTail", out var tail) ? tail.GetString() : null,
                         command.TryGetProperty("foldedChars", out var folded) && folded.TryGetInt32(out int chars) ? chars : null,
                         command.TryGetProperty("busyInput", out var busy) && busy.GetBoolean(),
-                        command.TryGetProperty("queuedId", out var queued) ? queued.GetString() : null);
+                        command.TryGetProperty("queuedId", out var queued) ? queued.GetString() : null,
+                        command.TryGetProperty("placeholderCandidate", out var hint) && hint.GetBoolean());
                     break;
             }
         }

@@ -8,6 +8,12 @@ class CursorEngineFixture
 {
     internal static int Main(string[] args)
     {
+        try { return Run(args); }
+        catch (Exception error) { return Failed(error.ToString()); }
+    }
+
+    private static int Run(string[] args)
+    {
         if (args.Length == 1)
         {
             switch (args[0])
@@ -36,7 +42,7 @@ class CursorEngineFixture
             }
         }
         if (Array.IndexOf(args, "--plugin-dir") < 0 || Array.IndexOf(args, "--approve-mcps") >= 0 ||
-            Array.IndexOf(args, "--force") >= 0 || Array.IndexOf(args, "--yolo") >= 0)
+            Array.IndexOf(args, "--yolo") >= 0)
             return Failed("unexpected arguments");
         var grant = Environment.GetEnvironmentVariable("LX_P0_WINDOW_GRANT");
         if (String.IsNullOrEmpty(grant) || grant != Environment.GetEnvironmentVariable("FF_P0_WINDOW_GRANT") ||
@@ -46,6 +52,7 @@ class CursorEngineFixture
         var root = Environment.GetEnvironmentVariable("FF_TEST_CURSOR_ROOT");
         var command = new ProcessStartInfo(host, "workbench-mcp \"" + root + "\"");
         command.UseShellExecute = false;
+        command.WorkingDirectory = Path.GetDirectoryName(host);
         command.RedirectStandardInput = command.RedirectStandardOutput = true;
         using (var bridge = Process.Start(command))
         {

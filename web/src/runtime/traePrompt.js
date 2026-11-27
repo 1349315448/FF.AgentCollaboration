@@ -72,6 +72,7 @@ export function readTraePrompt(term, lines) {
   if (atStart && (!text || suggestion))
     return {empty:!busy, clear:true, draft:false, screen:busy ? "active" : "clear", busyInput:busyComposer, queuedId};
   if (text) return {empty:false, clear:false, draft:true, draftText:text, editableText:busy ? null : text,
+    placeholderCandidate: !busy && atStart && text === "Ask TRAE CLI to do anything",
     busyEditable:busyComposer && buffer.cursorY >= row && buffer.cursorY < bottom && !atStart,
     screen:busy ? "active" : "draft", queuedId};
   return busy ? {...unavailable, screen:"active"} : unavailable;

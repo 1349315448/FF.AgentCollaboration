@@ -87,7 +87,7 @@ async function updateConfigEngine() {
   const modelField = byId("config-model");
   modelField.disabled = true;
   byId("config-save").textContent = changed && agent.online ? "保存并重启终端" : "保存";
-  byId("config-effect").textContent = changed && agent.online ? "切换引擎将重启当前终端" : "启动模型于下次打开终端时生效";
+  byId("config-effect").textContent = changed && agent.online ? "切换引擎将重启当前终端" : "修改的模型和档位仅在下次启动时指定，之后跟随原生会话";
   byId("config-session-effect").textContent = agent.online ? "新建或切换会话将打开所选对话" : "下次打开时进入所选会话";
   const status=byId("config-catalog-status");
   configModels=[];

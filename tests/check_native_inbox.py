@@ -119,7 +119,48 @@ def verify_channel(exe, case):
         print("PASS real ConPTY and MCP channel: immediate and queued envelopes received with the original Chinese draft intact and zero Enter")
 
 
+def verify_session_queue(exe, case):
+    project, root = case / "queue-project", case / "queue-state"
+    project.mkdir()
+    (project / "queue.fixture").touch()
+    fixture = case / "channel-cli.exe"
+    with patch.dict(os.environ, LX_CODEX_EXE=str(fixture)), host(exe, root, project) as url, closing(sqlite3.connect(root / "workbench.sqlite")) as db:
+        topic = http(url, "/api/topics", {"name":"queue", "project":str(project)})[1]["id"]
+        status, receiver = http(url, "/api/windows", {"name":"receiver", "engine":"codex", "topic":topic, "newSession":True})
+        assert status == 200, receiver
+        route = "/api/windows/" + receiver["id"]
+        sender = new_id()
+        db.execute("INSERT INTO windows(id,name,engine,project,grant_hash,online,topic_id) VALUES(?,?,?,?,?,1,?)",
+                   (sender, sender, "codex", str(project), hashlib.sha256(sender.encode()).hexdigest().upper(), topic))
+        db.commit()
+        draft = "Ask Codex to do anything"
+        assert http(url, route+"/input", {"text":draft})[0] == 204
+        for mode in ("immediate", "queued", "manual", "lost"):
+            enabled = mode != "manual"
+            assert http(url, route+"/auto-receive", {"mode":"queued" if mode == "queued" else "immediate", "enabled":enabled}, "PUT")[0] == 204
+            if mode == "lost":
+                (project / "lost-receipt.fixture").touch()
+            body = 'native "draft" & | %PATH% ' + mode
+            result = mcp(exe, root, sender, "send_to_agent", target=receiver["id"], message=body, supersedePrevious=False)
+            mid = json.loads(result["content"][0]["text"])["id"]
+            if not enabled:
+                assert http(url, route+"/input", {"messageId":mid})[0] == 204
+            expected = "delivery_uncertain" if mode == "lost" else "delivered"
+            for _ in range(100):
+                if http(url, "/api/messages/"+mid)[1]["state"] == expected:
+                    break
+                time.sleep(.1)
+            else:
+                raise AssertionError((mode, http(url, "/api/messages/"+mid)[1]))
+            records = (project/"queued.txt").read_text(encoding="utf-8-sig").splitlines()
+            assert sum(mid[:8] in row and body in row for row in records) == 1, records
+        assert (project/"draft-observed.txt").read_text(encoding="utf-8-sig") == draft
+        assert not (project/"enters.txt").exists()
+        print("PASS session-bound queue: automatic, queued, manual, lost acknowledgement, intact draft, no viewer or Enter")
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="ff-native-inbox-") as case:
         verify(Path(sys.argv[1]).resolve(), Path(case))
         verify_channel(Path(sys.argv[1]).resolve(), Path(case))
+        verify_session_queue(Path(sys.argv[1]).resolve(), Path(case))

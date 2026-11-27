@@ -1,6 +1,7 @@
 import { request } from "../services/api";
 import { chooseApproval, labelApproval } from "./approval.js";
 import { framedInputBounds } from "./framedPrompt.js";
+import { manualInboxDelivery } from "./manualDraft.js";
 import { byId, feedback } from "./dom.js";
 import { openFiles } from "./files.js";
 import { fitPaneToolbar, focusAgent, isLayoutAnimating, renderLayout, saveLayout, togglePrimary } from "./layout.js";
@@ -19,7 +20,7 @@ import { engineNames } from "../services/engines";
 const bytes = new TextEncoder();
 document.addEventListener("pointerdown", event => {
   const input = document.activeElement;
-  if (input?.matches(".pane:is([data-engine=qwen],[data-engine=codebuddy],[data-engine=qoder]) .xterm-helper-textarea") &&
+  if (!event.target.closest(".write-inbox") && input?.matches(".pane:is([data-engine=qwen],[data-engine=codebuddy],[data-engine=qoder]) .xterm-helper-textarea") &&
       !input.closest(".terminal-viewport").contains(event.target)) input.blur();
 }, {capture:true});
 function makePane(agent) {
@@ -185,9 +186,11 @@ function makePane(agent) {
     pane.selectedMessage = messages[(current + 1) % messages.length].id;
     updatePane(pane, pane.view);
   });
+  const deliverManually = manualInboxDelivery(pane, windowRoute(pane) + "/input");
+  element.querySelector(".write-inbox").addEventListener("mousedown", event => event.preventDefault());
   element.querySelector(".write-inbox").onclick = () => {
     const messageId = pane.message.id;
-    return paneAction(pane, () => request(windowRoute(pane) + "/input", { method:"POST", body:{messageId} }), messageId);
+    return paneAction(pane, () => deliverManually(messageId), messageId);
   };
   const power = element.querySelector(".pane-power"), launcher = element.querySelector(".start-pane");
   async function changePower(start) {
@@ -241,6 +244,7 @@ function canIgnore(message) {
 
 function updatePane(pane, view) {
   syncTerminal(pane, view);
+  void pane.resumeSavedDraft();
   pane.element.querySelector(".mcp-restart").hidden = !view.mcpRestartRequired;
   labelApproval(pane);
   if (pane.receiptErrorId && !view.inbox.some(item => item.id === pane.receiptErrorId)) {
@@ -255,7 +259,7 @@ function updatePane(pane, view) {
   const receiveMode = pane.element.querySelector(".receive-mode");
   receiveMode.value = agent.receiveMode ?? "queued";
   receiveMode.title = view.nativeInbox
-    ? "优先向当前会话直投。首次连接未获确认时，兼容投递会等待输入框安全。"
+    ? "优先投递到当前原生会话。立即接收会将来信交给 CLI 调度。"
     : "兼容投递：原生建议视为空框；已输入的草稿或审批会暂缓投递。";
   receiveMode.hidden = !agent.receiveMode;
   receiveMode.disabled = !agent.receiveMode || !agent.autoReceive;

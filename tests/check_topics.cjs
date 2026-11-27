@@ -70,9 +70,68 @@ async function checkFoldedDelivery(page,target) {
 async function run() {
   const browser = await chromium.launch({executablePath:process.env.CHROME_PATH || undefined});
   try {
-    const page = await browser.newPage({viewport:{width:1460,height:940}});
+    const context = await browser.newContext({viewport:{width:1460,height:940}});
+    const page = await context.newPage();
+    if (process.argv.includes("--manual-draft")) {
+      const project = path.join(root,"one");
+      const post = async (route,data) => {
+        const r = await page.request.post(base+"/api"+route,{data});
+        assert(r.ok(),await r.text()); return r.json();
+      };
+      const topic = await post("/topics",{name:"手动投递与草稿",project});
+      const receiver = await post("/windows",{topic:topic.id,name:"接收",engine:"codex",newSession:true});
+      const sender = await post("/windows",{topic:topic.id,name:"发件",engine:"claude",newSession:true,project:path.join(root,"two")});
+      sql("UPDATE windows SET grant_hash=? WHERE id=?",crypto.createHash("sha256").update(token).digest("hex").toUpperCase(),sender.id);
+      await page.goto(base);
+      const id = receiver.id, pane = page.locator('.pane[data-window="'+id+'"]');
+      await page.waitForFunction(id=>window.panes?.get?.(id)?.view.inputReady,id);
+      const original = "my unfinished thought";
+      await pane.locator(".xterm-helper-textarea").focus();
+      await page.keyboard.type(original);
+      await page.waitForFunction(({id,original})=>panes.get(id)?.lastPrompt?.prompt.editableText===original,{id,original});
+      const msg = mcp("send_to_agent",{target:id,message:"只提交一次并恢复草稿"}).id;
+      await pane.locator(".write-inbox").waitFor();
+      assert.equal(sql("SELECT state FROM inbox WHERE id=?",msg)[0][0],"pending");
+      const route = base+"/api/windows/"+id+"/input";
+      const snapshot = await page.evaluate(id=>({revision:panes.get(id).revision,generation:panes.get(id).generation}),id);
+      for (const changed of [{text:"different text"},{revision:0}]) {
+        const r = await page.request.post(route,{data:{messageId:msg,draft:{...snapshot,text:original,...changed}}});
+        assert.equal(r.status(),409);
+      }
+      await pane.locator(".write-inbox").click();
+      await until(()=>sql("SELECT state FROM inbox WHERE id=?",msg)[0][0]==="delivered","manual draft delivery",20000);
+      await page.waitForFunction(({id,original})=>panes.get(id)?.lastPrompt?.prompt.editableText===original,{id,original});
+      assert.deepEqual(logLines("one","enters.txt"),["submit"]);
+      assert.equal(logLines("one","accepted.txt").filter(line=>line.includes(msg.slice(0,8))&&!line.includes(original)).length,1);
+      await pane.locator(".saved-editor-draft").waitFor({state:"hidden"});
+      console.log("PASS typed draft protected from automatic delivery and stale snapshots; explicit delivery submits once and restores draft");
+      fs.writeFileSync(path.join(project,"mode.txt"),"busy-after-submit");
+      const busy = mcp("send_to_agent",{target:id,message:"工作结束后自动还原"}).id;
+      await pane.locator(".write-inbox").click();
+      await until(()=>sql("SELECT state FROM inbox WHERE id=?",busy)[0][0]==="delivered","letter accepted while editor busy",15000);
+      await page.waitForFunction(({id,original})=>panes.get(id)?.lastPrompt?.prompt.editableText===original,{id,original});
+      await pane.locator(".saved-editor-draft").waitFor({state:"hidden"});
+      console.log("PASS busy terminal restores the original when its input next becomes available");
+      fs.writeFileSync(path.join(project,"mode.txt"),"interleaved");
+      const next = mcp("send_to_agent",{target:id,message:"投递期间继续打字"}).id;
+      await pane.locator(".write-inbox").click();
+      await until(()=>logLines("one","accepted.txt").some(line=>line.includes(next.slice(0,8))),"second letter accepted");
+      await pane.locator(".xterm-helper-textarea").focus();
+      await page.keyboard.type("new input");
+      await until(()=>sql("SELECT state FROM inbox WHERE id=?",next)[0][0]==="delivered","interleaved submit acknowledged",20000);
+      await page.waitForFunction(id=>panes.get(id)?.lastPrompt?.prompt.editableText==="new input",id);
+      const backup = pane.locator(".saved-editor-draft textarea");
+      assert.equal(await backup.inputValue(),original);
+      assert.deepEqual(logLines("one","enters.txt"),["submit","busy-after-submit","interleaved"]);
+      const replacement = await page.context().newPage();
+      await replacement.goto(base);
+      await page.waitForURL("blob:**");
+      assert.equal(await page.locator("pre").textContent(),original);
+      console.log("PASS new typing kept, saved original available after another workbench tab takes over");return;
+    }
     if(process.argv.includes("--expanded")){
       const project=path.join(root,"one");
+      fs.writeFileSync(path.join(project,"native-prompt.fixture"),"plain-hint");
       const post=async(route,data)=>{const r=await page.request.post(base+"/api"+route,{data});assert(r.ok(),await r.text());return r.json();};
       const topic=await post("/topics",{name:"无重绘提交",project});
       const target=await post("/windows",{topic:topic.id,name:"Codex",engine:"codex",newSession:true});
@@ -113,7 +172,15 @@ async function run() {
       fs.appendFileSync(rollout,JSON.stringify({type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:acceptedReview[0]}]}})+"\n");
       await until(()=>reviewState()==="delivered","periodic check recognizes late native receipt",12000);
       assert.equal(logLines("one","enters.txt").filter(l=>l==="review-retry").length,reviewAttempts);
-      console.log("PASS uncertain delivery rechecks a redrawn folded draft and consumes exactly one native receipt");return;
+      console.log("PASS uncertain delivery rechecks a redrawn folded draft and consumes exactly one native receipt");
+      const inputUrl=base+"/api/windows/"+target.id+"/input";
+      const typed=await page.request.post(inputUrl,{data:{text:"Ask Codex to do anything"}});
+      assert(typed.ok(),await typed.text());
+      await page.waitForFunction(id=>panes.get(id)?.lastPrompt?.prompt.placeholderCandidate && !panes.get(id).view.inputReady,target.id);
+      const protectedId=mcp("send_to_agent",{target:target.id,message:"Keep the identical hand-typed draft"}).id;
+      assert.equal((await page.request.post(inputUrl,{data:{messageId:protectedId}})).status(),409);
+      assert.equal(sql("SELECT state FROM inbox WHERE id=?",protectedId)[0][0],"pending");
+      console.log("PASS compatibility accepts a plain startup hint and protects identical human input at Home");return;
     }
     if (process.argv.includes("--buddy-inbox")) {
       const project = path.join(root,"one");

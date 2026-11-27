@@ -51,7 +51,7 @@ export function NewAgentDialog() {
             <label className="field"><span>推理档位</span><select id="agent-effort"></select></label>
           </div>
           <label className="field"><span id="mode-label">初始模式</span><select id="agent-mode"></select></label>
-          <label className="field" id="copilot-approval-field" hidden><span>审批权限</span><select id="copilot-approval"><option value="">跟随引擎默认</option><option value="ask">需要审批</option><option value="auto">自动审批（允许所有工具）</option></select></label>
+          <label className="field" id="copilot-approval-field" hidden><span>审批权限</span><select id="copilot-approval"><option value="">跟随引擎默认</option><option value="ask">需要审批</option><option value="auto">自动审批</option></select></label>
           <div className="quota-row"><div className="quota-info" id="engine-quota" role="status"></div><button className="text-button" id="refresh-quota" type="button">刷新额度</button></div>
           <div className="model-feedback"><span id="catalog-status" role="status"></span><button id="reload-catalog" className="text-button" type="button" hidden>重新读取</button></div>
           <p id="create-error" className="form-error" role="alert" hidden></p>

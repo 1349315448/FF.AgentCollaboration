@@ -8,6 +8,28 @@ namespace FF.AgentCollaboration.Engines;
 internal sealed class CodexEngine(string cwd, string executable = "codex") : RpcEngine
 {
     internal override EngineCapabilities Capabilities => Profile;
+    internal override async Task<TerminalLaunch> PrepareTerminal(AgentWindow window, EngineMcp mcp, string? newTitle,
+        string? forkSource, bool reopening, CancellationToken ct)
+    {
+        var launch = await base.PrepareTerminal(window, mcp, newTitle, forkSource, reopening, ct);
+        // TRAE's queue talks to its shared daemon. This workbench starts its TUI with --no-daemon.
+        if (executable != "codex") return launch;
+        string binary = EngineExecutable.FindExecutable(executable);
+        if (!Guid.TryParseExact(window.Session, "D", out _) || !Path.GetExtension(binary).Equals(".exe", StringComparison.OrdinalIgnoreCase))
+            return launch;
+        string session = window.Session!;
+        var (status, commands) = await EngineAuthentication.RunCommand(binary, cwd, ["--help"], ct);
+        if (status != 0 || !commands.Split('\n').Any(line => line.TrimStart().StartsWith("queue ", StringComparison.Ordinal))) return launch;
+        var (code, help) = await EngineAuthentication.RunCommand(binary, cwd, ["queue", "--help"], ct);
+        if (code != 0 || !help.Contains("--thread", StringComparison.Ordinal) || !help.Contains("--message", StringComparison.Ordinal))
+            return launch;
+        return launch with { Enqueue = async (body, token) =>
+        {
+            var result = await EngineAuthentication.RunCommand(binary, cwd, ["queue", "--thread", session, "--message", body], token);
+            if (result.Code != 0) throw new IOException("原生会话未确认收件，请核对投递状态");
+        } };
+    }
+
     internal override ISubmissionReceiptSource? SubmissionReceipts(AgentWindow window)
     {
         if (executable != "codex" || !Guid.TryParseExact(window.Session, "D", out _)) return null;

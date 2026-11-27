@@ -16,6 +16,11 @@ export function AgentPane({element, slot, presentation}: Props) {
       <InboxBanner />
       <TerminalMount />
       <PaneToolbar />
+      <details className="saved-editor-draft" hidden>
+        <summary>查看暂存草稿</summary>
+        <textarea aria-label="暂存的原文，可复制回终端" rows={2} readOnly />
+        <button type="button" className="text-button">清除副本</button>
+      </details>
       <p className="pane-error form-error" role="alert" hidden></p>
     </PaneContext.Provider>
   );

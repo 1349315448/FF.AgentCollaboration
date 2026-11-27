@@ -82,6 +82,7 @@ internal sealed partial class CursorEngine(string cwd) : Engine
         if (window.Session is { } session) args.Add("--resume=" + session);
         if (window.Model is { } model) args.AddRange(["--model", model]);
         if (window.Mode is "plan" or "ask") args.AddRange(["--mode", window.Mode]);
+        if (window.Approval == "auto") args.Add("--force");
         return args;
     }
 

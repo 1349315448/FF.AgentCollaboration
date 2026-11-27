@@ -14,7 +14,7 @@ internal sealed record TerminalFrame(long Revision, byte[] Data, int MentionRequ
 internal sealed record TerminalViewer(int Id, int Columns, int Rows, TerminalFrame[] Replay, ChannelReader<TerminalFrame> Live);
 
 // [01、04] ConPTY 输入与输出由独立管道处理。唯一写入锁同时保护键盘和外部消息。
-internal sealed class TerminalSession : IDisposable
+internal sealed partial class TerminalSession : IDisposable
 {
     private readonly object outputLock = new();
     private readonly object consoleLock = new();
@@ -40,6 +40,9 @@ internal sealed class TerminalSession : IDisposable
     private long clearedDraftRevision = -1;
     private long clearedAtRevision = -1;
     private long keyboardVersion;
+    private long cleanEditorIntent;
+    private long submittedEditorIntent;
+    private long submittedEditorRevision;
     private long keyboardIntent;
     private long deliveryEpoch;
     private readonly long launchedAt = Stopwatch.GetTimestamp();
@@ -124,6 +127,7 @@ internal sealed class TerminalSession : IDisposable
 
     internal string Generation { get; } = Guid.NewGuid().ToString("N");
     internal bool NativeInbox { get; init; }
+    internal Func<string, CancellationToken, Task>? Enqueue { get; init; }
     private bool unsubmittedNewSession;
     internal bool CanReopenEmpty { get { lock (outputLock) return unsubmittedNewSession; } }
     // 调用方在终端释放前注销等待。登录 CLI 可能先退出，ConPTY 的输出管道仍然打开。
@@ -217,6 +221,7 @@ internal sealed class TerminalSession : IDisposable
             ready.Remove(id);
             visibleDrafts.Remove(id);
             screens.Remove(id);
+            composingViewers.Remove(id);
             mentionPickers.Remove(id);
             if (viewers.Remove(id, out var channel)) channel.Writer.TryComplete();
             NotifyView();
@@ -225,11 +230,22 @@ internal sealed class TerminalSession : IDisposable
 
     internal void ObservePrompt(int viewerId, long observedRevision, bool emptyPastePrompt, bool bracketedPaste,
         long? clearedDraft, string? retryDraft, string? screen, string? draftId, string? approvalDraft, string? draftTail,
-        int? foldedChars, bool busyInput, string? queuedId)
+        int? foldedChars, bool busyInput, string? queuedId, bool placeholderCandidate)
     {
         lock (outputLock)
         {
             if (!viewers.ContainsKey(viewerId)) return;
+            long intent = Volatile.Read(ref keyboardIntent);
+            if (observedRevision == revision && revision > submittedEditorRevision && submittedEditorIntent == intent &&
+                !placeholderCandidate && bracketedPaste && (emptyPastePrompt && screen == "clear" || busyInput && screen is ("active" or "running")))
+                cleanEditorIntent = intent;
+            if (placeholderCandidate && observedRevision == revision && bracketedPaste && screen == "draft" &&
+                draftId == null && retryDraft == null && intent == cleanEditorIntent)
+            {
+                screen = "clear";
+                emptyPastePrompt = true;
+            }
+            else if (placeholderCandidate) clearedDraft = null;
             if (observedRevision == revision)
             {
                 bool busyEditor = busyInput && bracketedPaste && screen is ("active" or "running") && draftId == null;
@@ -307,6 +323,15 @@ internal sealed class TerminalSession : IDisposable
         }
     }
 
+    internal bool MayEnqueue(bool immediate)
+    {
+        lock (outputLock)
+        {
+            // With no screen observer we have no idle signal. Leave scheduling to the CLI's thread queue.
+            return Online && (immediate || viewers.Count == 0 || ViewState().Activity == "idle");
+        }
+    }
+
     internal (bool Online, bool InputReady, string Activity) ViewState()
     {
         lock (outputLock)
@@ -359,7 +384,7 @@ internal sealed class TerminalSession : IDisposable
     {
         lock (outputLock)
         {
-            if (!Online || mentionPickers.Count != 0 || draftMayContainText) return false;
+            if (!Online || mentionPickers.Count != 0 || composingViewers.Count != 0 || draftMayContainText) return false;
             if (!automatic) return !screens.Values.Any(s => s.Revision == revision && s.Screen is "blocked" or "draft");
             return bracketedPasteEnabled && pasteRevision == revision &&
                 ((ready.Values.Contains(revision) && Stopwatch.GetElapsedTime(lastActivity) >= Quiet) ||
@@ -415,7 +440,7 @@ internal sealed class TerminalSession : IDisposable
             if (cleaned.Length == 0) terminalReply = bytes;
             else if (cleaned.Length != original.Length) bytes = Encoding.Latin1.GetBytes(cleaned);
         }
-        if (terminalReply == null) Interlocked.Increment(ref keyboardIntent);
+        long intent = terminalReply == null ? Interlocked.Increment(ref keyboardIntent) : 0;
         await inputLock.WaitAsync(ct);
         try
         {
@@ -431,7 +456,14 @@ internal sealed class TerminalSession : IDisposable
             }
             lock (outputLock)
             {
+                TrackTypedLine(bytes, intent);
                 keyboardVersion++;
+                // A later unambiguous empty editor can release ownership after Enter or Ctrl+U.
+                if (bytes.Length == 1 && bytes[0] is 13 or 21)
+                {
+                    submittedEditorIntent = intent;
+                    submittedEditorRevision = revision;
+                }
                 lastKeyboardInput = Stopwatch.GetTimestamp();
                 if (bytes.AsSpan().IndexOfAny((byte)10, (byte)13) >= 0) unsubmittedNewSession = false;
                 if (bytes.Length == 1 && bytes[0] is 3 or 8 or 13 or 21 or 127) draftMayContainText = false;
@@ -532,7 +564,7 @@ internal sealed class TerminalSession : IDisposable
     private static readonly Regex TerminalReports = new(
         @"\x1b(?:\[(?:\??[0-9]+;[0-9]+R|[?>=][0-9;]*c|\??[0-9]+;[0-9]+\$y|[IO]|0n)|\](?:10|11|12);rgb:[a-fA-F0-9/]+(?:\x1b\\|\x07))");
 
-    internal async Task<bool> Deliver(InboxItem item, bool automatic, Func<bool> claim, CancellationToken ct, bool immediate = false)
+    internal async Task<bool> Deliver(InboxItem item, bool automatic, Func<bool> claim, CancellationToken ct, bool immediate = false, ManualEditorDraft? draft = null)
     {
         // 提交后允许同一 WebSocket 处理键盘或终端查询回复，继续接收浏览器的草稿清空回执。
         // 下一条外部投递须等本条确认或转为待核对，不能借用另一条消息的清空信号。
@@ -546,17 +578,35 @@ internal sealed class TerminalSession : IDisposable
             var compact = string.Concat(text.Where(c => !char.IsWhiteSpace(c)));
             string fullTail = compact.Length <= 48 ? compact : compact[^48..];
             string? tail = codexEditor || immediate ? fullTail : null;
+            long? draftIntent = null;
+            if (draft != null)
+            {
+                if (automatic) return false;
+                draftIntent = await ClearManualDraft(draft, ct);
+                if (draftIntent == null) return false;
+                // After temporarily clearing an editor, require fresh empty and keyboard evidence at claim and submit.
+                automatic = true;
+                immediate = false;
+            }
             if (!CanDeliver(automatic, immediate)) return false;
             receipt = submissionReceipts?.Begin(item.Id, text);
             int expectedChars = text.EnumerateRunes().Count();
             review = new(fullTail, expectedChars, receipt);
             bool Claim()
             {
+                if (draftIntent != null && draftIntent != Volatile.Read(ref keyboardIntent)) return false;
                 return claimed = claim();
             }
             var written = await PasteAndSubmit(item.Id, text, tail, expectedChars, automatic, Claim, ct, immediate, review);
             if (written == null) return false;
             await WaitForSubmitConfirmation(item.Id, tail, expectedChars, written.Value, receipt, review, ct);
+            if (draft != null && draftIntent.HasValue)
+            {
+                draft.Restored = await RestoreManualDraft(draft.Text, draftIntent.Value, ct);
+                if (!draft.Restored)
+                    lock (outputLock) deferredDraft = (item.Id, draftIntent.Value, deliveryEpoch,
+                        System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(draft.Text)));
+            }
             return true;
         }
         catch
@@ -608,6 +658,7 @@ internal sealed class TerminalSession : IDisposable
                 review.BusyAtStart = busyAtStart;
                 automaticDeliveryInProgress = automatic;
                 MarkInput();
+                ResetTypedLine();
                 draftMayContainText = false;
             }
             async Task Paste()
@@ -641,7 +692,7 @@ internal sealed class TerminalSession : IDisposable
             lock (outputLock)
             {
                 if (!Online) throw new IOException("终端在提交前退出");
-                if (automatic && (Volatile.Read(ref keyboardIntent) != keyboardAtPaste ||
+                if (automatic && (Volatile.Read(ref keyboardIntent) != keyboardAtPaste || composingViewers.Count != 0 ||
                     screens.Values.Any(s => s.Revision == revision && s.Screen == "blocked")))
                     throw new IOException("已观察到人工输入或审批，暂停自动提交");
                 folded = lastFoldedRevision > beforePaste;
@@ -884,6 +935,7 @@ internal sealed class TerminalSession : IDisposable
                     exitCode = ReadExitCode();
                     Volatile.Write(ref disposed, 1);
                     quietTimer?.Dispose();
+                    ResetTypedLine();
                 }
                 Native.ClosePseudoConsole(console);
                 // 保持输出读取线程运行，让 CLI 有机会完成原生关闭和历史落盘。

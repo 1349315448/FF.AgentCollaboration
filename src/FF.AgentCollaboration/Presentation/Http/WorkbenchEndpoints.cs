@@ -215,9 +215,14 @@ internal static class WorkbenchEndpoints
             workbench.Create(request, cancellation));
         app.Map("/api/windows/{id}/terminal", (string id, HttpContext context, Workbench workbench) =>
             TerminalSocket.Run(context, workbench.Terminal(WorkbenchInput.Id(id)), app.Lifetime.ApplicationStopping));
+        app.MapPost("/api/windows/{id}/inbox/{message}/restore-draft", async (string id, string message, ManualEditorDraft draft,
+            Workbench workbench, CancellationToken ct) => Results.Ok(new {
+                restored = await workbench.Terminal(WorkbenchInput.Id(id)).RestoreAfterDelivery(WorkbenchInput.Id(message), draft, ct)
+            }));
         app.MapPost("/api/windows/{id}/input", async (string id, TerminalInput request, Workbench workbench, CancellationToken cancellation) =>
         {
             await workbench.WriteInput(WorkbenchInput.Id(id), request, cancellation);
+            if (request.Draft is {} draft) return Results.Ok(new { draft.Restored });
             return Results.NoContent();
         });
         app.MapPost("/api/windows/{id}/start", async (string id, Workbench workbench, CancellationToken cancellation) =>

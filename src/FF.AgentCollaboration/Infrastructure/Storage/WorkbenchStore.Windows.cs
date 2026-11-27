@@ -9,12 +9,12 @@ internal sealed partial class WorkbenchStore
 {
     private const string AgentColumns = """
         id,name,engine,project,model,session,effort,mode,auto_receive,online,topic_id,session_title,approval,receive_mode,role,new_session_pending,
-        EXISTS(SELECT 1 FROM topics t WHERE t.id=windows.topic_id AND t.leader_window_id=windows.id)
+        EXISTS(SELECT 1 FROM topics t WHERE t.id=windows.topic_id AND t.leader_window_id=windows.id),launch_model_pending
         """;
 
     private static AgentWindow Agent(SqliteDataReader row) => new(row.GetString(0), row.GetString(1), row.GetString(2),
         row.GetString(3), Optional(row, 4), Optional(row, 5), Optional(row, 6), Optional(row, 7), row.GetBoolean(8), row.GetBoolean(9), row.GetString(10))
-        { SessionTitle = Optional(row, 11), Approval = Optional(row, 12), ReceiveMode = row.GetString(13), Role = Optional(row,14), NewSessionPending = row.GetBoolean(15), IsLeader = row.GetBoolean(16) };
+        { SessionTitle = Optional(row, 11), Approval = Optional(row, 12), ReceiveMode = row.GetString(13), Role = Optional(row,14), NewSessionPending = row.GetBoolean(15), IsLeader = row.GetBoolean(16), LaunchModelPending = row.GetBoolean(17) };
 
     // Copilot 旧表沿用原 ID。Claude 用独立前缀以免两个引擎碰巧使用相同 UUID。
     internal HashSet<string> ArchivedSessions(string engine)
@@ -36,10 +36,10 @@ internal sealed partial class WorkbenchStore
     internal void AddWindow(AgentWindow agent)
     {
         if (Exec("""
-            INSERT INTO windows(id,name,engine,project,model,session,effort,mode,topic_id,auto_receive,role,approval,new_session_pending)
-            SELECT $p0,$p1,$p2,$p3,$p4,$p5,$p6,$p7,id,$p9,$p10,$p11,$p12 FROM topics WHERE id=$p8 AND status='active'
+            INSERT INTO windows(id,name,engine,project,model,session,effort,mode,topic_id,auto_receive,role,approval,new_session_pending,launch_model_pending)
+            SELECT $p0,$p1,$p2,$p3,$p4,$p5,$p6,$p7,id,$p9,$p10,$p11,$p12,$p13 FROM topics WHERE id=$p8 AND status='active'
             """, agent.Id, agent.Name, agent.Engine, agent.Project, agent.Model, agent.Session, agent.Effort, agent.Mode, agent.TopicId, agent.AutoReceive, agent.Role,
-            agent.Approval, agent.NewSessionPending) == 0)
+            agent.Approval, agent.NewSessionPending, agent.LaunchModelPending) == 0)
             throw new WorkbenchError("请先重新打开这个话题", WorkbenchFailure.Conflict);
     }
     internal void RenameWindow(string id, string name)
@@ -65,8 +65,8 @@ internal sealed partial class WorkbenchStore
     internal void SaveConfiguration(AgentWindow w) =>
         Exec("""
             UPDATE windows SET name=$p1,role=$p2,engine=$p3,model=$p4,effort=$p5,mode=$p6,approval=$p7,
-                session=$p8,session_title=$p9,new_session_pending=$p10 WHERE id=$p0 AND closed=0
-            """, w.Id,w.Name,w.Role,w.Engine,w.Model,w.Effort,w.Mode,w.Approval,w.Session,w.SessionTitle,w.NewSessionPending);
+                session=$p8,session_title=$p9,new_session_pending=$p10,launch_model_pending=$p11 WHERE id=$p0 AND closed=0
+            """, w.Id,w.Name,w.Role,w.Engine,w.Model,w.Effort,w.Mode,w.Approval,w.Session,w.SessionTitle,w.NewSessionPending,w.LaunchModelPending);
 
     internal void StartConfigured(AgentWindow w, string grant) => Atomic(() => { SaveConfiguration(w); Start(w, grant); });
 
@@ -74,12 +74,12 @@ internal sealed partial class WorkbenchStore
         Exec("""
             UPDATE inbox SET native_offer=CASE WHEN native_offer='manual' THEN 'manual' END,native_offered_at=unixepoch()
             WHERE target=$p0 AND state='pending' AND native_offer IS NOT NULL;
-            UPDATE windows SET grant_hash=$p1,online=1,new_session_pending=0,channel_confirmed=0,session=$p2,session_title=$p3,approval=$p4 WHERE id=$p0 AND closed=0
+            UPDATE windows SET grant_hash=$p1,online=1,new_session_pending=0,launch_model_pending=0,channel_confirmed=0,session=$p2,session_title=$p3,approval=$p4 WHERE id=$p0 AND closed=0
             """,
             window.Id, Hash(grant), window.Session, window.SessionTitle, window.Approval);
     internal void RestoreSession(AgentWindow previous) =>
-        Exec("UPDATE windows SET grant_hash=NULL,online=0,session=$p1,session_title=$p2,approval=$p3,new_session_pending=$p4 WHERE id=$p0 AND closed=0",
-            previous.Id, previous.Session, previous.SessionTitle, previous.Approval, previous.NewSessionPending);
+        Exec("UPDATE windows SET grant_hash=NULL,online=0,session=$p1,session_title=$p2,approval=$p3,new_session_pending=$p4,launch_model_pending=$p5 WHERE id=$p0 AND closed=0",
+            previous.Id, previous.Session, previous.SessionTitle, previous.Approval, previous.NewSessionPending, previous.LaunchModelPending);
     internal void Offline(string id) => Exec("UPDATE windows SET grant_hash=NULL,online=0 WHERE id=$p0", id);
     internal void StopWindow(string id) => Atomic(() => { ClearWake(id); Offline(id); });
     internal void Close(string id) => Atomic(() =>
