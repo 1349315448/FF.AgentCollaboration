@@ -85,7 +85,7 @@ internal sealed class ProjectFileBrowser(string root)
 
     private static WorkbenchError Missing() => new("文件或目录已不存在", WorkbenchFailure.NotFound);
 
-    private static FileStream OpenVerified(string fullPath)
+    internal static FileStream OpenVerified(string fullPath)
     {
         using var guard = WorkspaceDirectoryGuard.Open(Path.GetDirectoryName(fullPath)!);
         TopicArchive.CheckPath(fullPath);

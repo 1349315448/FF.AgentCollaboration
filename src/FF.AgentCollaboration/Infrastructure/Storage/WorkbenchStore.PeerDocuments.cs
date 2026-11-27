@@ -9,35 +9,52 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 internal sealed partial class WorkbenchStore
 {
     internal const int PeerFileLimit = 1024 * 1024;
+    internal const int PeerBinaryLimit = 20 * 1024 * 1024;
+    private static readonly HashSet<string> PeerExtensions = new(
+        [".md", ".txt", ".xls", ".xlsx", ".ppt", ".pptx", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".zip"],
+        StringComparer.OrdinalIgnoreCase);
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private string PeerDirectory => Path.Combine(root, "federation-inbox");
 
     internal static async Task<byte[]> PeerBytes(Stream stream, CancellationToken ct)
+        => await PeerAttachmentBytes(stream, "handoff.md", ct);
+
+    internal static int PeerAttachmentLimit(string name) =>
+        name.EndsWith(".md", StringComparison.OrdinalIgnoreCase) ? PeerFileLimit : PeerBinaryLimit;
+
+    internal static async Task<byte[]> PeerAttachmentBytes(Stream stream, string name, CancellationToken ct)
     {
+        int limit = PeerAttachmentLimit(name);
         using var output = new MemoryStream();
         var buffer = new byte[16384];
         int read;
         while ((read = await stream.ReadAsync(buffer, ct)) > 0)
         {
-            if (output.Length + read > PeerFileLimit) throw new FederationException(413, "file_too_large");
+            if (output.Length + read > limit) throw new FederationException(413, "file_too_large");
             output.Write(buffer, 0, read);
         }
         var bytes = output.ToArray();
-        if (bytes.Contains((byte)0)) throw new FederationException(415, "invalid_markdown");
-        try { StrictUtf8.GetCharCount(bytes); }
-        catch (DecoderFallbackException) { throw new FederationException(415, "invalid_markdown"); }
+        ValidatePeerBytes(name, bytes);
         return bytes;
     }
 
-    private static string SafePeerName(string value)
+    private static void ValidatePeerBytes(string name, byte[] bytes)
     {
-        if (value.Length > 255 || !value.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
-            throw new FederationException(415, "markdown_required");
-        string leaf = value.Replace('\\', '/').Split('/')[^1][..^3];
+        if (!name.EndsWith(".md", StringComparison.OrdinalIgnoreCase)) return;
+        if (bytes.Contains((byte)0)) throw new FederationException(415, "invalid_markdown");
+        try { StrictUtf8.GetCharCount(bytes); }
+        catch (DecoderFallbackException) { throw new FederationException(415, "invalid_markdown"); }
+    }
+
+    internal static string SafePeerName(string value)
+    {
+        string ext = Path.GetExtension(value);
+        if (value.Length > 255 || !PeerExtensions.Contains(ext)) throw new FederationException(415, "file_type_not_allowed");
+        string leaf = value.Replace('\\', '/').Split('/')[^1][..^ext.Length];
         string stem = Regex.Replace(leaf, @"[^\p{L}\p{Nd}_-]", "_");
         if (stem.Length > 48) stem = stem[..48];
         if (stem.Length == 0 || Regex.IsMatch(stem, @"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", RegexOptions.IgnoreCase)) stem = "document";
-        return stem + ".md";
+        return stem + ext.ToLowerInvariant();
     }
 
     private string PeerPath(string relative)
@@ -164,5 +181,15 @@ internal sealed partial class WorkbenchStore
         }
         Exec("DELETE FROM fed_upload_rate WHERE created<=unixepoch()-3600");
         Exec("UPDATE fed_outbox SET content=NULL WHERE created<=unixepoch()-2592000 AND state NOT IN ('pending','sending') AND content IS NOT NULL");
+        Exec("""
+            UPDATE fed_outbox SET state='rejected' WHERE state='awaiting_user'
+            AND (created<=unixepoch()-2592000 OR NOT EXISTS(SELECT 1 FROM windows w WHERE w.id=fed_outbox.window_id AND w.closed=0))
+            """);
+        Exec("""
+            DELETE FROM fed_send_file WHERE dispatch IN (
+                SELECT id FROM fed_outbox WHERE state NOT IN ('pending','sending','awaiting_user')
+            )
+            """);
+        Exec("DELETE FROM fed_attachment WHERE file NOT IN (SELECT id FROM fed_file)");
     }
 }

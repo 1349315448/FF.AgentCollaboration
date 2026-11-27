@@ -6,6 +6,8 @@ internal static class CollaborationTools
     internal const string Send = "send_to_agent";
     internal const string Receive = "receive_message";
     internal const string ReportTask = "report_task_status";
+    internal const string ShowExternalApproval = "show_external_collaboration_approval";
+    internal const string SendPeerFiles = "send_peer_files";
     internal const string ReadDocument = "read_handoff_doc";
     internal const string FinishTopic = "finish_topic";
     internal const string ReadSkill = "read_collaboration_skill";
@@ -18,6 +20,6 @@ internal static class CollaborationTools
     internal const string AvailableEngines = "list_available_engines";
     internal const string ProposeTeam = "propose_team_agents";
     internal static readonly string[] Names =
-        [ListWindows, Send, Receive, ReportTask, ReadDocument, FinishTopic, ReadSkill,
+        [ListWindows, Send, Receive, ReportTask, ShowExternalApproval, SendPeerFiles, ReadDocument, FinishTopic, ReadSkill,
          KnowledgeSearch, KnowledgeRead, KnowledgeWrite, KnowledgeTeam, ReadKnowledgeSkill, ReadTeamSkill, AvailableEngines, ProposeTeam];
 }

@@ -119,6 +119,27 @@ def verify(exe, case):
         view = lambda url: http(url,"/api/peers")[1]
         g = until(lambda:view(local)["grants"],lambda ls: len(ls)==1)[0]
         assert g["status"] == "pending" and g["nodeName"] == "审阅端改名"
+        approval_key = new_id()
+        with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
+            notice = db.execute("SELECT source,target,text,wake_requested FROM inbox WHERE id=?", (g["id"],)).fetchone()
+            assert notice[:2] == ("collaboration-system", w) and notice[3] == 0, notice
+            assert "show_external_collaboration_approval" in notice[2] and "代码审阅" not in notice[2]
+            db.execute("UPDATE windows SET online=1,grant_hash=? WHERE id=?",
+                       (hashlib.sha256(approval_key.encode()).hexdigest().upper(), w))
+            db.commit()
+        try:
+            assert mcp(exe,provider,approval_key,"show_external_collaboration_approval",applicationId=new_id()).get("isError")
+            request = mcp(exe,provider,approval_key,"show_external_collaboration_approval",applicationId=g["id"])
+            assert json.loads(request["content"][0]["text"])["status"] == "awaiting_user", request
+            assert view(local)["requestedReviews"] == [g["id"]]
+            assert view(local)["grants"][0]["status"] == "pending"
+            assert http(local,grant_url+g["id"]+"/review-shown",method="POST")[0] == 204
+            assert view(local)["requestedReviews"] == []
+        finally:
+            with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
+                db.execute("UPDATE windows SET online=0,grant_hash=NULL WHERE id=?", (w,))
+                db.commit()
+        print("PASS receiving Agent can open only its pending application; authorization remains a human operation")
         approve = lambda **kw: http(local,grant_url+g["id"],dict(action="approve",quotaMode="total",quotaLimit=2,**kw),"PUT")
         assert approve(permissionMode="read_write")[0] in (400,403,409)
         assert approve()[0] == 200
@@ -240,7 +261,7 @@ def verify(exe, case):
         agent_reply("审核完成", final=True)
         until(rem,lambda r:r["lastReply"]=="审核完成")
         with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
-            assert db.execute("SELECT count(*) FROM inbox").fetchone()[0] == 2
+            assert db.execute("SELECT count(*) FROM inbox WHERE source!='collaboration-system'").fetchone()[0] == 2
             assert db.execute("SELECT count(*) FROM inbox WHERE text LIKE '[EXTERNAL_COLLAB_POLICY: READ_ONLY%' AND wake_requested=0").fetchone()[0] == 2
             assert db.execute("SELECT online FROM windows WHERE id=?",(w,)).fetchone()[0] == 0
         def policy(**kw):

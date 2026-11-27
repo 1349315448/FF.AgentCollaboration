@@ -20,6 +20,7 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
     private bool localOnly;
     internal IPAddress? ActiveIp { get; private set; }
     internal int Port { get; set; }
+    internal int RtcPort { get; set; }
     internal static bool PrivateIp(IPAddress ip)
     {
         if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
@@ -137,7 +138,7 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
         return endpoint != null && (host.Port ?? 443) == endpoint.Port &&
             string.Equals(host.Host, endpoint.IdnHost, StringComparison.OrdinalIgnoreCase);
     }
-    internal object ShareLink(WorkbenchStore store, string id, bool restarted = false)
+    internal object ShareLink(WorkbenchStore store, string id, string? rtcBlockReason, bool restarted = false)
     {
         var window = store.Window(id);
         var share = store.Share(id);
@@ -149,7 +150,8 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
             var endpoint = publicEndpoint;
             link = $"ffcp://{endpoint?.IdnHost ?? ActiveIp.ToString()}:{endpoint?.Port ?? Port}/share/{share.Value.Token}?node={node.NodeId}&window={window.Id}&pin={pin}&agent={Uri.EscapeDataString(window.Name)}";
         }
-        return new { enabled = share != null, permissionMode = share?.Permission ?? "read_only", dedicatedReadOnly=store.DedicatedReader(id), link, restarted };
+        return new { enabled = share != null, permissionMode = share?.Permission ?? "read_only", dedicatedReadOnly=store.DedicatedReader(id),
+            link, restarted, rtc = rtcBlockReason == null, rtcBlockReason, attachmentAllowed = store.AttachmentPermission(id) };
     }
     internal static string AddRemote(WorkbenchStore store, RemoteApplication input)
     {

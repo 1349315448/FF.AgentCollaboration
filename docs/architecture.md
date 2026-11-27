@@ -6,7 +6,9 @@
 
 联邦在选定网卡上复用工作台端口并单独绑定 HTTPS。默认使用私网 IPv4。提供方可在本机配置对外 HTTPS 地址，分享链接使用该地址的主机与端口，支持直接监听和 TCP 端口映射。宿主按匹配的端点、实际监听地址和 Host 隔离控制面。分享链接携带节点、窗口和证书指纹。提供方用单窗授权控制收信，用 SQLite 短事务处理去重、配额和回执。请求方通过出站 HTTPS 提交任务，通过出站 SSE 接收回信，每次落库时一起提交游标。工作台数据库及其备份含节点私钥和对端凭据，应限本机用户访问。
 
-跨端 MCP 通过 SQLite 发件箱持久化。请求方先上传 Markdown，再用同一请求编号提交消息。提供方在同一事务内绑定文档、扣额、登记回信地址并创建本地收件。回信的附件引用与 SSE 游标同时落库，由独立的待下载记录补收。原发件窗口已关闭时，仍可从信箱取回回信文档。受管文件只存放在数据目录的 `federation-inbox` 下。专用审阅窗口按已领取请求限制 MCP 可见范围，共享读写会话同时显示只读协议提示和 Git 审计结果。
+跨内网连接使用独立的 `FF.AgentCollaboration.Signaling` 服务签发一次性邀请并交换协商信息。工作台用 `Application/RtcTransport.cs` 启动 `FF.AgentCollaboration.WebRtc` 后台进程。WebRTC DataChannel 承载联邦 HTTPS 流量，对端工作台只从专用环回端口接收联邦路由，并沿用节点指纹和授权校验。双方可直连时，任务正文和附件由两端传输。无法直连时可使用 TURN。工作台的信令配置以加密数据写入 SQLite，Windows 使用当前账号的 DPAPI 保护解密密钥。
+
+跨端 MCP 通过 SQLite 发件箱持久化。请求方先上传已批准的附件，再用同一请求编号提交消息。追加附件采用原消息编号。提供方在事务中完成去重、扣额、附件绑定和收件。多文件授权可仅用于本次，也可长期授予发件 Agent。回信的 Markdown 附件引用与 SSE 游标同时落库，由独立的待下载记录补收。原发件窗口已关闭时，仍可从信箱取回回信文档。受管文件存放在数据目录的 `federation-inbox` 下。专用审阅窗口按已领取请求限制 MCP 可见范围，共享读写会话同时显示只读协议提示和 Git 审计结果。
 
 `POST /api/federation/uploads` 的回执包含 `uploadId` 和 `pathHint`。后者展示相对于对端数据目录的受管位置。随后发送消息时用 `uploadId` 绑定文件，接收终端由本机解析实际路径。
 
@@ -55,3 +57,4 @@ ZCode 的窗口专属 MCP 配置位于工作台数据目录的 `engine-profiles/
 - `tests/check_recovery.py` 检查 CLI 协作丢失确认时的恢复。
 - `tests/check_topics.py` 与 `--create` 分别验证工作台交互与建窗流程。在 Windows 安装 Python、Node.js、Playwright 和 Chromium 后运行。可用 `CHROME_PATH` 指定浏览器。
 - `tests/check_session_history.py` 使用已安装的 CLI 和临时会话。`tests/check_claude_fork.py` 使用本地模拟模型端点验证 Claude 分支。
+- `tests/check_signaling_tls.ps1` 检查信令证书续期和指纹校验。`tests/check_signaling_settings.py` 检查加密配置、邀请签发和可选的 Chromium 界面验证。`tests/check_webrtc_federation.py` 使用两套独立工作台验证 WebRTC 收发和跨端附件授权。

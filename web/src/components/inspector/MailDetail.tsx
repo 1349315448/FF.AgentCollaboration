@@ -11,12 +11,14 @@ export function MailDetail({reference}:{reference:string}){
   const local=snapshot?.timeline.find(row=>row.id===id);
   const peer=type==="peer"?snapshot?.federation?.mail.find(row=>row.seq===Number(id)):undefined;
   const [peerText,setPeerText]=useState("");
+  const [attachments,setAttachments]=useState<{id:string;name:string;bytes:number}[]>([]);
   const [detail,setDetail]=useState<Detail>(),[document,setDocument]=useState(""),[note,status]=useState(""),[busy,lock]=useState(false);
   useEffect(()=>{
     const abort=new AbortController(),opts={signal:abort.signal};
     async function load(){
       if(type==="message")setDetail(await request<Detail>("/messages/"+id,opts));
       else {const result=await request<{text:string}>("/peers/mail/"+id,opts);setPeerText(result.text);}
+      setAttachments(peer?.attachmentCount ? await request("/peers/mail/"+id+"/attachments",opts) : []);
       if(peer?.hasDocument){
         const r=await fetch("/api/peers/mail/"+id+"/document",opts);
         if(!r.ok)throw Error("无法读取外部交接文档");setDocument(await r.text());
@@ -24,7 +26,7 @@ export function MailDetail({reference}:{reference:string}){
     }
     load().catch(e=>{if(!abort.signal.aborted)status(e.message);});
     return ()=>abort.abort();
-  },[id,type,peer?.hasDocument,local?.state,local?.acknowledged]);
+  },[id,type,peer?.hasDocument,peer?.attachmentCount,local?.state,local?.acknowledged]);
   const state=detail?.acknowledged?"已忽略":states[detail?.state??""]??({application:"接入申请",incoming:"外部来信",outgoing:"发往外部","reply-in":"外部回信","reply-out":"回信已发",blocked:"已拦截",audit:"变更告警"} as Record<string,string>)[peer?.kind??""];
   const text=[detail?.text??peerText,...(detail?.files??[]),detail?.returnHint].filter(Boolean).join("\n\n");
   async function action(fn:()=>Promise<unknown>,ok:string){if(busy)return;lock(true);try{await fn();status(ok);}catch(e){status((e as Error).message);}finally{lock(false);}}
@@ -33,6 +35,9 @@ export function MailDetail({reference}:{reference:string}){
   const peerRoute=peer?(peer.kind==="incoming"?peer.label:address(peer.source))+" → "+(peer.kind==="reply-out"?peer.label:address(peer.target)):undefined;
   return <section className="mail-detail"><h3>{peerRoute??[local?.from??detail?.from,local?.to].filter(Boolean).join(" → ")}</h3>
     <small>{stamp?new Date(stamp).toLocaleString():""}　{state}</small><p style={{whiteSpace:"pre-wrap"}}>{text}</p>
+    {attachments.length>0&&<ul aria-label="协作附件">{attachments.map(file=><li key={file.id}>
+      <a href={"/api/peers/mail/"+id+"/attachments/"+file.id} download={file.name}>{file.name}</a>
+      <small>　{Math.ceil(file.bytes/1024)} KB</small></li>)}</ul>}
     {document&&<Markdown skipHtml remarkPlugins={[remarkGfm]} components={{img:({alt})=><span>{alt}</span>,a:({children})=><span>{children}</span>}}>{document}</Markdown>}
     <div className="preview-tools"><button disabled={busy||!text} onClick={()=>action(()=>copyText(text),"已复制")}>复制</button>
     {detail&&<button disabled={busy} onClick={()=>action(()=>request("/messages/"+id+"/resend",{method:"POST"}),"已重新投递")}>重发</button>}

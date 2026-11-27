@@ -17,7 +17,7 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 | 更换模型与会话 | 双击 Agent →「基本设置」→「启动模型」→ 保存，下次开启同一 Agent 时应用。改会话用「会话管理」。原生 `/model` 在当前 CLI 会话生效，是否记住由引擎决定。 |
 | 同话题交接、查看结果 | 终端按默认快捷键 `Alt+Shift+A` 选择 Agent，正文写清要做的事再提交。底部「协作信箱」分别显示投递与处理状态。需要回复的任务通过原消息 ID 关联。 |
 | 组长发通知 | 红旗组长从本话题的 `@Agent` 选择器选 `@全部`。用户明确要求群发时调用 `send_to_agent(target="@全部", broadcast=true)`，每位本地组员有自己的消息 ID。只有用户点名的授权外部组员才写入 `externalTargets`。群发保留此前的待办。 |
-| 从另一台电脑请 Agent 帮忙 | 提供方在 Agent 标题栏开启外部协作并复制分享链接。请求方从「＋ Agent → 外部协作 Agent」提交申请，提供方在协作信箱审批权限与额度。接收 Agent 用 `send_to_agent` 关联原任务回信。正文和结果在各自的协作信箱查看。 |
+| 从另一台电脑请 Agent 帮忙 | 提供方在 Agent 标题栏开启外部协作并复制分享链接。请求方从「＋ Agent → 外部协作 Agent」提交申请，提供方在协作信箱审批权限与额度。看到平台的申请通知后，提醒用户，并用 `show_external_collaboration_approval` 的 `applicationId` 打开待审界面，由用户决定。接收 Agent 用 `send_to_agent` 关联原任务回信。 |
 | 分工、移交和查任务记录 | 组长按 `read_team_skill` 发起团队提案，由用户确认。点顶栏「知识库」打开总计划与成员任务记录。知识库接口与写权限通过 `read_knowledge_skill` 查看。 |
 | 看文件、Git、MCP 与技能 | 顶栏「代码模式」打开项目文件、差异和只读媒体预览。MCP 管理和 Skills 管理在模式切换下方，按引擎、项目查看或设置。 |
 
@@ -48,6 +48,8 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 | `list_windows` | `detail?`、`allTopics?` 均为布尔值，默认 false。本地条目含 name、online，按需返回 role 和 leader。detail 增加 id、engine、project；allTopics 增加 topic。当前话题的远程条目含胶囊 id、node，detail 时带 remote。 | 窗口对象数组 |
 | `send_to_agent` | 新消息必填字符串 target、message。可选 document 为项目或所属话题归档内已有 Markdown 路径，此时摘要最多 500 字符。files 为发件项目内已有文件路径数组，最多 20 个；跨端使用单份 document。autoReturnHint 为布尔值或不超过 1000 字符的自定义回信要求。supersedePrevious 默认 true，独立任务显式设 false。replyTo 为原 MSG_ID（8 位或完整）；finalReply 默认 true，仅用于关联回信。 | `{"id":"…","status":"queued","document":null}`，可能附 hint |
 | `send_to_agent` 重发／撤回 | resend 为自己原消息的完整 ID，可附 target 改投；原文档与附件复用。cancel 传完整 ID，或传 true 加 target 撤回最近一条可撤回消息。 | 重发返回新的 queued 编号；撤回返回 id、status 为 cancelled |
+| `send_peer_files` | 新消息传远程 `target` 和 `message`。追加附件传自己已送达的完整 `attachTo` ID。两种方式都传项目内相对路径 `files`，最多 20 个文件、合计 20 MiB。 | 返回 `id` 和 `status`。`awaiting_user` 时提醒用户核对接收方与文件清单，等用户在工作台授权。`queued` 表示已入队。 |
+| `show_external_collaboration_approval` | `applicationId` 是系统通知给出的完整编号，只能打开本窗口收到的待审申请。 | `status: "awaiting_user"`。请让用户在工作台决定。 |
 | `report_task_status` | 必填 messageId、status，两者为字符串。status 可取 working、need_info 或 completed，作用于本窗口实际收到的任务。 | 返回当前状态，如 `{"status":"need_info"}` |
 | `read_handoff_doc` | 必填字符串 pathOrId，使用实际 HANDOFF_DOC 路径、完整编号或唯一的 8 位 MSG_ID。 | Markdown 正文 |
 | `receive_message` | 可传通知内的完整 messageId 和 channelReceipt。空参数领取本窗口最早可接收的消息。 | 含 id、message 的信封，或 null |
@@ -70,6 +72,9 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 {"name":"list_available_engines","arguments":{}}
 {"name":"propose_team_agents","arguments":{"summary":"并行核对原生终端交互与文档","members":[{"name":"终端验证","role":"核对收件和提交行为，记录可复现的步骤","taskSummary":"验证长消息提交和终端回执，不改动投递协议","suggestedEngine":"codex"},{"name":"文档核对","role":"核对操作指南并整理差异","taskSummary":"列出界面和文档不一致的入口","suggestedEngine":"claude"}]}}
 {"name":"receive_message","arguments":{}}
+{"name":"show_external_collaboration_approval","arguments":{"applicationId":"0123456789abcdef0123456789abcdef"}}
+{"name":"send_peer_files","arguments":{"target":"@联调","message":"请核对打包后的前端文件。","files":["release.zip","docs/screen.png"]}}
+{"name":"send_peer_files","arguments":{"attachTo":"0123456789abcdef0123456789abcdef","files":["docs/cases.xlsx"]}}
 {"name":"send_to_agent","arguments":{"target":"@接口","message":"请核对协议版本与兼容性","document":"docs/protocol.md","autoReturnHint":true}}
 {"name":"send_to_agent","arguments":{"target":"@接口","message":"另查错误码的覆盖范围","supersedePrevious":false}}
 {"name":"report_task_status","arguments":{"messageId":"1258ab45","status":"working"}}

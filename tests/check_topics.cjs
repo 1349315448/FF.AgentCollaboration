@@ -303,19 +303,22 @@ async function run() {
     const healthyAgain = page.waitForResponse(r => new URL(r.url()).pathname === "/api/state" && r.ok());
     assert((await page.request.post(base+"/api/events/wake",{headers:{"X-FF-Notify":"1"}})).ok());
     await healthyAgain;
-    async function pickFolder(folder) {
+    async function pickFolder(folder, expectedKnowledgeMode) {
       await page.locator("#folder-dialog[open]").waitFor();
       await page.waitForFunction(()=>!!folderListing);
       await page.locator("#folder-path").fill(folder);
       await page.locator("#folder-path").press("Enter");
       await page.waitForFunction(path=>folderListing?.path===path, folder);
+      if (expectedKnowledgeMode) assert.equal(await page.locator("#folder-knowledge-mode").inputValue(), expectedKnowledgeMode);
       await page.locator("#choose-folder").click();
       await page.locator("#folder-dialog").waitFor({state:"hidden"});
     }
     assert.deepEqual(await page.evaluate(()=>snapshot.projects), []);
     assert.equal(await page.locator(".project-button").count(),0);
     await page.getByRole("button",{name:"打开项目文件夹",exact:true}).and(page.locator("#empty-create")).click();
-    await pickFolder(path.join(root,"one"));
+    const firstProject = path.join(root,"one");
+    await pickFolder(firstProject, "local_only");
+    await page.waitForFunction(project=>snapshot.knowledgeModes?.[project]==="local_only", firstProject);
     const post = async (url, body) => {
       const res = await page.request.post(base + "/api" + url, {data:body});
       assert(res.ok(), await res.text());

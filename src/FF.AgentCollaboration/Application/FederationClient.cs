@@ -13,7 +13,7 @@ using Microsoft.Extensions.Hosting;
 namespace FF.AgentCollaboration.Application;
 
 // 每个外部胶囊只建立一条向外的 SSE。游标和事件在同一事务提交，中断后从已落盘的位置恢复。
-internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents events) : BackgroundService
+internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents events, RtcTransport rtc) : BackgroundService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private WorkbenchStore Store() => new(startup.Root);
@@ -72,12 +72,23 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
         finally { await Task.WhenAll(workers.Values); }
     }
 
-    private static HttpClient Connect(RemoteConnection remote)
+    private HttpClient Connect(RemoteConnection remote)
     {
-        var handler = new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false, UseCookies = false, ConnectCallback = ConnectPeer };
+        bool tunnel = remote.Endpoint.StartsWith("rtc://", StringComparison.Ordinal);
+        var handler = new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false, UseCookies = false,
+            ConnectCallback = tunnel ? (_, ct) => ConnectTunnel(remote.Endpoint, ct) : ConnectPeer };
         handler.SslOptions.RemoteCertificateValidationCallback = (_, cert, _, _) => cert != null &&
             string.Equals(cert.GetCertHashString(HashAlgorithmName.SHA256), remote.Pin, StringComparison.OrdinalIgnoreCase);
-        return new HttpClient(handler) { BaseAddress = new Uri(remote.Endpoint + "/api/federation/"), Timeout = TimeSpan.FromSeconds(8) };
+        return new HttpClient(handler) { BaseAddress = new Uri((tunnel ? "https://127.0.0.1" : remote.Endpoint) +
+            "/api/federation/"), Timeout = TimeSpan.FromSeconds(8) };
+    }
+
+    private async ValueTask<Stream> ConnectTunnel(string endpoint, CancellationToken ct)
+    {
+        int port = rtc.PeerPort(endpoint);
+        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try { await socket.ConnectAsync(IPAddress.Loopback, port, ct); return new NetworkStream(socket, ownsSocket: true); }
+        catch { socket.Dispose(); throw; }
     }
 
     private static async ValueTask<Stream> ConnectPeer(SocketsHttpConnectionContext context, CancellationToken ct)
@@ -161,6 +172,21 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
             using var uploaded = await client.SendAsync(upload, HttpCompletionOption.ResponseHeadersRead, ct);
             var metadata = await Read<JsonElement>(uploaded, ct);
             message = message with { UploadId = WorkbenchInput.Id(metadata.GetProperty("uploadId").GetString()) };
+        }
+        if (dispatch != null)
+        {
+            var attachments = new List<string>();
+            foreach (var item in db.OutgoingAttachments(dispatch.Id))
+            {
+                using var upload = Request(HttpMethod.Post, "attachment-uploads", remote.Token);
+                upload.Headers.Add("X-FF-Upload-Key", item.Id);
+                upload.Headers.Add("X-FF-File-Name", Uri.EscapeDataString(item.Name));
+                upload.Content = new ByteArrayContent(item.Content);
+                using var uploaded = await client.SendAsync(upload, HttpCompletionOption.ResponseHeadersRead, ct);
+                var metadata = await Read<JsonElement>(uploaded, ct);
+                attachments.Add(WorkbenchInput.Id(metadata.GetProperty("uploadId").GetString()));
+            }
+            message = message with { AttachmentIds = attachments.Count == 0 ? null : attachments.ToArray(), AttachTo = dispatch.AttachTo };
         }
         using var request = Request(HttpMethod.Post, "messages", remote.Token, message);
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);

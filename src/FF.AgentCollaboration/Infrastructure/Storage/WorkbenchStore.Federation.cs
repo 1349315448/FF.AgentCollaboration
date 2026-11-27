@@ -12,6 +12,13 @@ internal sealed partial class WorkbenchStore
         Exec("""
             INSERT OR IGNORE INTO settings VALUES('node_id',lower(hex(randomblob(16))));
             CREATE TABLE IF NOT EXISTS fed_share(window_id TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, permission TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS fed_review_dialog(application TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS fed_send_file(id TEXT PRIMARY KEY, dispatch TEXT NOT NULL, name TEXT NOT NULL, content BLOB NOT NULL);
+            CREATE INDEX IF NOT EXISTS fed_send_file_dispatch ON fed_send_file(dispatch);
+            CREATE TABLE IF NOT EXISTS fed_attachment(dispatch TEXT NOT NULL, file TEXT NOT NULL, original TEXT NOT NULL, local TEXT NOT NULL,
+                PRIMARY KEY(dispatch,file));
+            CREATE INDEX IF NOT EXISTS fed_attachment_local ON fed_attachment(local);
+            CREATE TABLE IF NOT EXISTS fed_attachment_right(window TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS fed_grant(
                 id TEXT PRIMARY KEY, window_id TEXT NOT NULL, node TEXT NOT NULL, name TEXT NOT NULL, ip TEXT NOT NULL,
                 purpose TEXT NOT NULL, status TEXT NOT NULL, claim_hash TEXT NOT NULL UNIQUE, salt TEXT, token_hash TEXT UNIQUE,
@@ -79,6 +86,8 @@ internal sealed partial class WorkbenchStore
             Exec("ALTER TABLE fed_remote ADD COLUMN contacts_published INTEGER NOT NULL DEFAULT 0");
         if (!Read("PRAGMA table_info(fed_remote)", r => r.GetString(1)).Contains("quota_snapshot"))
             Exec("ALTER TABLE fed_remote ADD COLUMN quota_snapshot TEXT");
+        if (!Read("PRAGMA table_info(fed_outbox)", r => r.GetString(1)).Contains("attach_to"))
+            Exec("ALTER TABLE fed_outbox ADD COLUMN attach_to TEXT");
         if (!Read("PRAGMA table_info(inbox)", r => r.GetString(1)).Contains("work_state"))
             Exec("""
                 ALTER TABLE inbox ADD COLUMN work_state TEXT;
@@ -114,6 +123,7 @@ internal sealed partial class WorkbenchStore
     }
 
     internal string? FedSetting(string key) => Read("SELECT value FROM settings WHERE key=$p0", r => r.GetString(0), key).SingleOrDefault();
+    internal List<string> RtcRooms() => Read("SELECT value FROM settings WHERE key GLOB 'rtc_room.*'", r => r.GetString(0));
     internal void SetFedSetting(string key, string value) =>
         Exec("INSERT INTO settings VALUES($p0,$p1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, value);
     internal FederationNode FederationNode() => new(FedSetting("node_id")!, FedSetting("node_name"), FedSetting("node_ip"), FedSetting("node_public_endpoint"));
@@ -138,6 +148,8 @@ internal sealed partial class WorkbenchStore
         }
         if (!input.Enabled)
         {
+            foreach (var pending in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND status='pending'", r => r.GetString(0), id))
+                ClearPeerReview(pending);
             foreach (var grant in Read("SELECT id FROM fed_grant WHERE window_id=$p0", r => r.GetString(0), id)) WithdrawPeerInbox(grant);
             Exec("DELETE FROM fed_share WHERE window_id=$p0", id);
             Exec("UPDATE fed_grant SET status='revoked',token_hash=NULL,salt=NULL WHERE window_id=$p0 AND status IN ('approved','pending')", id);
@@ -177,13 +189,38 @@ internal sealed partial class WorkbenchStore
 
     internal FederationSummary FederationSummary() => new(
         Read($"SELECT {GrantFields} FROM fed_grant WHERE window_id IN (SELECT id FROM windows WHERE closed=0) ORDER BY rowid DESC", GrantView),
-        RemoteCapsules(), Read("SELECT window_id FROM fed_share WHERE window_id IN (SELECT id FROM windows WHERE closed=0)", r => r.GetString(0)), RecentPeerMail(), ReturnContacts());
+        RemoteCapsules(), Read("SELECT window_id FROM fed_share WHERE window_id IN (SELECT id FROM windows WHERE closed=0)", r => r.GetString(0)),
+        RecentPeerMail(), ReturnContacts(), Read("""
+            SELECT g.id FROM fed_review_dialog d JOIN fed_grant g ON g.id=d.application
+            JOIN windows w ON w.id=g.window_id AND w.closed=0
+            WHERE g.status='pending' ORDER BY d.rowid
+            """, r => r.GetString(0)), AttachmentApprovals());
+
+    internal void ShowExternalApproval(string grant, string id) => Atomic(() =>
+    {
+        var window = Caller(grant);
+        if (!Read("SELECT 1 FROM fed_grant WHERE id=$p0 AND window_id=$p1 AND status='pending'",
+            _ => true, WorkbenchInput.Id(id), window.Id).Any())
+            throw new WorkbenchError("当前 Agent 无此待审外协申请", WorkbenchFailure.Forbidden);
+        Exec("INSERT OR IGNORE INTO fed_review_dialog VALUES($p0)", id);
+    });
+
+    internal void ReviewDialogShown(string id) =>
+        Exec("DELETE FROM fed_review_dialog WHERE application=$p0", WorkbenchInput.Id(id));
+
+    private void ClearPeerReview(string id)
+    {
+        ReviewDialogShown(id);
+        Exec("UPDATE inbox SET acknowledged=1,wake_requested=0 WHERE id=$p0 AND source='collaboration-system'", id);
+    }
 
     internal void DecidePeer(string id, PeerDecision decision) => Atomic(() =>
     {
         var grant = Grant(id);
         var share = Share(grant.WindowId) ?? throw new FederationException(409, "sharing_disabled");
         Window(grant.WindowId);
+        if (grant.Status == "pending" && decision.Action is "approve" or "reject")
+            ClearPeerReview(id);
         if (decision.Action is "reject" or "revoke")
         {
             string before = decision.Action == "reject" ? "pending" : "approved";
@@ -225,6 +262,11 @@ internal sealed partial class WorkbenchStore
             if (Exec("INSERT OR IGNORE INTO fed_grant(id,window_id,node,name,ip,purpose,status,claim_hash) VALUES($p0,$p1,$p2,$p3,$p4,$p5,'pending',$p6)",
                 id, window, node, name, ip, purpose, claim) != 1) throw new FederationException(409, "pair_exists");
             Mail(Window(window).TopicId,"application",id,window,name+"#"+node[..8],purpose);
+            var target = Window(window);
+            if (Topic(target.TopicId).Status == "active")
+                QueueIncoming(id, target with { AutoReceive = false }, "collaboration-system", "协作平台",
+                    "有一条外部协作申请等待人工审批。请提醒用户，并调用 show_external_collaboration_approval，applicationId 填 " + id + "。由用户决定是否通过。",
+                    null, null);
         });
         // POST 响应丢失后重试时，审批可能已经完成；用原有申请凭据恢复同一个授权。
         return ClaimPeer(input.Claim, node);
@@ -277,6 +319,21 @@ internal sealed partial class WorkbenchStore
         string id = WorkbenchInput.Id(input.Id), body = WorkbenchInput.Text(input.Text, "消息", 8000);
         string? sender = input.SenderKey == null ? null : WorkbenchInput.Id(input.SenderKey);
         input = input with { Id = id, UploadId = input.UploadId == null ? null : WorkbenchInput.Id(input.UploadId) };
+        if (input.AttachmentIds?.Length > 20) throw new FederationException(400, "too_many_attachments");
+        if (input.AttachmentIds != null) input = input with { AttachmentIds = input.AttachmentIds.Select(WorkbenchInput.Id).Distinct().ToArray() };
+        if (input.AttachTo != null)
+        {
+            if (input.AttachmentIds is not { Length: > 0 } || input.UploadId != null)
+                throw new FederationException(400, "attachments_required");
+            object? result = null;
+            Atomic(() =>
+            {
+                var grant = Grant(UploadOwner(token, node));
+                result = ReceiveSupplement(grant, input, sender);
+            });
+            changed();
+            return result!;
+        }
         FederationException? denied = null;
         string permission = "";
         bool inserted = false;
@@ -295,6 +352,10 @@ internal sealed partial class WorkbenchStore
                     var original = prior[0];
                     if (original.Body != body || upload != input.UploadId || original.ExpectsReply!=input.ExpectsReply ||
                         (original.Sender != null && original.Sender != sender)) throw new FederationException(409, "message_id_conflict");
+                    var files = Read("SELECT file FROM fed_attachment WHERE dispatch=$p0 AND original=$p0 AND local=(SELECT local FROM fed_incoming WHERE grant_id=$p1 AND request=$p0) ORDER BY file",
+                        r => r.GetString(0), id, grant.Id);
+                    if (!files.SequenceEqual((input.AttachmentIds ?? []).Order(StringComparer.Ordinal)))
+                        throw new FederationException(409, "message_id_conflict");
                     permission = original.Permission;
                     return;
                 }

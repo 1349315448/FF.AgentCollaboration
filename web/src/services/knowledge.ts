@@ -7,11 +7,12 @@ export const knowledgeModes = {
 } as const;
 
 export type KnowledgeMode = keyof typeof knowledgeModes;
+export const newProjectKnowledgeMode: KnowledgeMode = "local_only";
 
 export const knowledgeUiLocal = location.hostname === "127.0.0.1";
 
-export function knowledgeModeFor(modes: Record<string, KnowledgeMode> | undefined, project?: string) {
-  if (!project || !modes) return "disabled";
+export function knowledgeModeFor(modes: Record<string, KnowledgeMode> | undefined, project?: string, fallback: KnowledgeMode = "disabled") {
+  if (!project || !modes) return fallback;
   const key = projectKey(project);
-  return modes[project] ?? Object.entries(modes).find(([path]) => projectKey(path) === key)?.[1] ?? "disabled";
+  return modes[project] ?? Object.entries(modes).find(([path]) => projectKey(path) === key)?.[1] ?? fallback;
 }

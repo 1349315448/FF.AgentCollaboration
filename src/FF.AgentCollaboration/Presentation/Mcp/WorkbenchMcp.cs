@@ -45,6 +45,12 @@ internal static class WorkbenchMcp
         new { name=CollaborationTools.ReportTask, description="Report starting work, waiting for clarification, or completing a received task. If a reply was requested send the final result with send_to_agent and replyTo instead of completed.",
             inputSchema=new { type="object", properties=new { messageId=new {type="string"}, status=new {type="string", @enum=new[]{"working","need_info","completed"}} },
                 required=new[]{"messageId","status"}, additionalProperties=false } },
+        Mcp.Tool(CollaborationTools.ShowExternalApproval, "Show the human approval dialog for an external collaboration application addressed to this Agent. Use only the application ID from the workbench notice. This tool cannot approve or reject.", "applicationId"),
+        new { name=CollaborationTools.SendPeerFiles,
+            description="Send files to an authorized external Agent. For a new message use target + message; use attachTo instead to supplement an original message sent by this Agent. Only relative project paths. The workbench asks the user unless this Agent already has permanent approval.",
+            inputSchema=new { type="object", properties=new {target=new {type="string"}, message=new {type="string"},
+                attachTo=new {type="string"}, files=new {type="array", items=new {type="string"}, minItems=1, maxItems=20}},
+                required=new[]{"files"}, additionalProperties=false } },
         Mcp.Tool(CollaborationTools.ReadDocument, "Read a Markdown handoff you sent or received. Use its HANDOFF_DOC path, full message ID, or unique 8-hex MSG_ID. Plain MSG messages have no handoff document.", "pathOrId"),
         new
         {
@@ -143,7 +149,8 @@ internal static class WorkbenchMcp
                 return message == null ? "null" : JsonSerializer.Serialize(new {id=message.Id,message=message.AsText()});
             }
             string result = Call(root, grant, name, input, ObserveIdentity, port);
-            if (port.HasValue && name is CollaborationTools.Send or CollaborationTools.FinishTopic or CollaborationTools.ReportTask or CollaborationTools.ProposeTeam)
+            if (port.HasValue && name is CollaborationTools.Send or CollaborationTools.FinishTopic or CollaborationTools.ReportTask or
+                CollaborationTools.ProposeTeam or CollaborationTools.ShowExternalApproval or CollaborationTools.SendPeerFiles)
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/api/events/wake");
                 request.Headers.Add("X-FF-Notify", "1");
@@ -231,6 +238,13 @@ internal static class WorkbenchMcp
             if(state.DedicatedReader(caller.Id)) throw new WorkbenchError("专用审阅会话不支持该操作",WorkbenchFailure.Forbidden);
         switch (name)
         {
+            case CollaborationTools.SendPeerFiles:
+                if (input["files"] is not JsonArray attachments) throw new WorkbenchError("请选择要发送的项目附件");
+                return JsonSerializer.Serialize(state.QueuePeerAttachments(grant, (string?)input["target"], (string?)input["message"],
+                    (string?)input["attachTo"], attachments.Select(item => (string?)item ?? "").ToArray()));
+            case CollaborationTools.ShowExternalApproval:
+                state.ShowExternalApproval(grant, WorkbenchInput.Id((string?)input["applicationId"]));
+                return """{"status":"awaiting_user"}""";
             case CollaborationTools.ReportTask:
                 var status=state.ReportTask(grant,WorkbenchInput.Text((string?)input["messageId"],"MSG_ID",32),WorkbenchInput.Text((string?)input["status"],"协作状态",16));
                 return JsonSerializer.Serialize(new {status});

@@ -3,7 +3,7 @@ import { loadCatalogs, setSelectedProject } from "./create.js";
 import { byId, feedback, node, setBusy } from "./dom.js";
 import { selectedProject, snapshot } from "../store/workbenchStore";
 import { selectProject } from "./topics.js";
-import { knowledgeModeFor } from "../services/knowledge";
+import { knowledgeModeFor, newProjectKnowledgeMode } from "../services/knowledge";
 
 let folderRequest;
 let folderListing;
@@ -12,7 +12,7 @@ let choosingProject;
 function openFolders(path, onPick, chooseProject = false) {
   pickFolder = onPick;
   choosingProject = chooseProject;
-  byId("folder-knowledge-mode").value = "disabled";
+  byId("folder-knowledge-mode").value = newProjectKnowledgeMode;
   byId("folder-dialog").showModal();
   loadFolders(path);
 }
@@ -43,7 +43,7 @@ async function loadFolders(path) {
     byId("folder-knowledge-field").hidden = !(choosingProject && listing.path && listing.canConfigureKnowledge);
     byId("folder-knowledge-notice").hidden = !(choosingProject && listing.path && !listing.canConfigureKnowledge);
     if (!byId("folder-knowledge-field").hidden)
-      byId("folder-knowledge-mode").value = knowledgeModeFor(snapshot?.knowledgeModes, listing.path);
+      byId("folder-knowledge-mode").value = knowledgeModeFor(snapshot?.knowledgeModes, listing.path, newProjectKnowledgeMode);
     byId("folder-up").disabled = !listing.path;
     byId("choose-folder").disabled = !listing.path;
     list.replaceChildren(...listing.folders.map(folder => {

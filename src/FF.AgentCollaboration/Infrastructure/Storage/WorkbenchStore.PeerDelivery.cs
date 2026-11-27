@@ -48,10 +48,11 @@ internal sealed partial class WorkbenchStore
                CASE WHEN acknowledged=1 THEN 'ignored' WHEN local_delivery IS NOT NULL THEN local_delivery
                     WHEN kind='outgoing' AND task_id IS NOT NULL THEN coalesce(remote_delivery,dispatch,'accepted')
                     WHEN kind='reply-in' THEN 'accepted' WHEN kind='reply-out' THEN 'sent'
-                    WHEN kind='blocked' THEN 'blocked' END
+                    WHEN kind='blocked' THEN 'blocked' END,
+               CASE WHEN kind='incoming' THEN (SELECT count(*) FROM fed_attachment a JOIN fed_file f ON f.id=a.file WHERE a.local=m.task_id) ELSE 0 END
         FROM receipts m ORDER BY seq DESC
         """, r => new PeerMail(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5),
-            r.GetString(6), r.GetString(7), r.GetBoolean(8), Optional(r,9), Optional(r,10)));
+            r.GetString(6), r.GetString(7), r.GetBoolean(8), Optional(r,9), Optional(r,10), r.GetInt32(11)));
 
     internal bool DedicatedReader(string window) => FedSetting("peer_reader." + window) == "1";
     internal string? CurrentPeerRequest(string window) => Read("""
@@ -95,6 +96,8 @@ internal sealed partial class WorkbenchStore
         if (contactKey != null) header += "[RETURN_CONTACT: " + ScopedContactId(grant.Id,contactKey) + "] ";
         Exec("INSERT INTO fed_incoming(local,grant_id,request,upload,contact_key) VALUES($p0,$p1,$p2,$p3,$p4)", id, grant.Id, input.Id, input.UploadId, contactKey);
         QueueIncoming(id, window, "peer-mailbox", label, header + body, path, input.ExpectsReply ? "请用 send_to_agent 向 @reply-" + id + " 回信，replyTo 填本条 MSG_ID，可附 Markdown 文档。" : null);
+        var files = BindAttachments(grant, input.Id, input.Id, id, input.AttachmentIds ?? []);
+        if (files.Length > 0) Exec("UPDATE inbox SET files=$p1 WHERE id=$p0", id, JsonSerializer.Serialize(files));
         Exec("UPDATE inbox SET work_state='queued' WHERE id=$p0",id);
         Mail(window.TopicId, "incoming", "peer-mailbox", window.Id, label, body, input.UploadId,id);
     }
@@ -250,8 +253,9 @@ internal sealed partial class WorkbenchStore
     }
 
     internal List<PeerDispatch> Dispatches() => Read("""
-        SELECT id,remote,window_id,body,name,content,expects_reply FROM fed_outbox WHERE state='pending' AND next_try<=unixepoch() ORDER BY rowid LIMIT 8
-        """, r => new PeerDispatch(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), Optional(r, 4), r.IsDBNull(5) ? null : (byte[])r[5],r.GetBoolean(6)));
+        SELECT id,remote,window_id,body,name,content,expects_reply,attach_to FROM fed_outbox WHERE state='pending' AND next_try<=unixepoch() ORDER BY rowid LIMIT 8
+        """, r => new PeerDispatch(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), Optional(r, 4),
+            r.IsDBNull(5) ? null : (byte[])r[5],r.GetBoolean(6),Optional(r,7)));
 
     // 0 尚未发出，1 首次发送中，2 存在可能被对端接受的尝试。后续限流不能撤销此前的未知结果。
     internal bool ClaimDispatch(string id) => Exec("UPDATE fed_outbox SET state='sending',started=CASE WHEN started=0 THEN 1 ELSE 2 END WHERE id=$p0 AND state='pending'", id) == 1;

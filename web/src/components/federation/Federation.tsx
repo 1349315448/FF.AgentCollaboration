@@ -14,15 +14,24 @@ export interface Grant {
   allowUpload:boolean; connected:boolean; lastReceived:number|null;
 }
 interface Capsule {quota?:{mode:Mode;limit:number|null;remaining:number|null;paused:boolean;resetsAt:number|null}; id:string; topicId:string; agentName:string; nodeName:string; nodeId:string; status:string; connected:boolean; online:boolean; error?:string; contactAgentId?:string|null; deniedAgentIds?:string[]; teamMember?:boolean}
-export interface PeerMail {seq:number;topicId:string;kind:string;source:string;target:string;label:string;text:string;createdAt:string;hasDocument:boolean;workState?:string|null;deliveryState?:string|null}
+export interface PeerMail {seq:number;topicId:string;kind:string;source:string;target:string;label:string;text:string;createdAt:string;hasDocument:boolean;workState?:string|null;deliveryState?:string|null;attachmentCount?:number}
 export interface ReturnContact {id:string; windowId:string; name:string; nodeName:string; online:boolean; canMention:boolean; canRemove:boolean}
-export interface Federation {grants:Grant[]; remotes:Capsule[]; sharedWindows:string[]; mail:PeerMail[]; contacts?:ReturnContact[]}
-interface Share {enabled:boolean; permissionMode:string; dedicatedReadOnly:boolean; link:string|null; restarted:boolean}
+interface AttachmentApproval {id:string;agentId:string;agentName:string;recipient:string;files:string[];original?:string}
+export interface Federation {grants:Grant[]; remotes:Capsule[]; sharedWindows:string[]; mail:PeerMail[]; contacts?:ReturnContact[];
+  requestedReviews?:string[];attachmentApprovals?:AttachmentApproval[]}
+interface Share {enabled:boolean; permissionMode:string; dedicatedReadOnly:boolean; link:string|null; restarted:boolean; rtc?:boolean;rtcBlockReason?:string|null;attachmentAllowed?:boolean}
 interface NodeInfo {nodeId:string; nodeName:string; selectedIp:string|null; activeIp:string|null; addresses:string[]; publicEndpoint:string|null; restartRequired:boolean}
-type Selection = {windowId:string} | {remoteId:string;topicId:string} | {grantId:string} | {contactId:string};
+type Selection = {windowId:string;share?:Share} | {remoteId:string;topicId:string} | {grantId:string} | {contactId:string} | {attachmentId:string};
 
 const quotaLabels = {daily:"每日", hourly:"每小时", total:"总次数", unlimited:"无限制"};
 const states:Record<string,string> = {applying:"正在申请",pending:"待审批",approved:"已授权",revoked:"已吊销",rejected:"已拒绝"};
+const rtcBlockMessages:Record<string,string> = {
+  signaling_not_configured:"未配置信令服务器",
+  bridge_missing:"缺少 WebRTC 后台组件",
+  restart_required:"重启工作台后生效",
+  signing_key_missing:"生成链接需要签发密钥",
+  settings_unreadable:"信令设置无法解密，请重新填写"
+};
 const open = (detail:Selection)=>window.dispatchEvent(new CustomEvent("ff-peer-dialog",{detail}));
 const put = <T,>(path:string,body:unknown)=>request<T>("/peers/"+path,{method:"PUT",body});
 const errorText = (error:unknown)=>error instanceof Error ? error.message : "操作失败";
@@ -92,8 +101,8 @@ export function PeerBadge({id}:{id:string}) {
     try {
       const share=await request<Share>("/peers/"+path);
       if (action==="share") {
-        if (!share.link) throw new Error("当前没有可用的分享链接");
-        await copyText(share.link);setNote("已复制分享链接");return;
+        open({windowId:id,share});
+        return;
       }
       if (share.enabled!==enabled) return;
       const terminal=snapshot?.windows.find(w=>w.agent.id===id && w.agent.online)?.terminal;
@@ -106,7 +115,7 @@ export function PeerBadge({id}:{id:string}) {
     <button type="button" className="text-button fed-badge" data-enabled={enabled} title="管理外部协作权限与申请" onClick={()=>open({windowId:id})}>
       <WorkspaceIcon name="network"/><span>外部协作{enabled?"已开启":"未开启"}</span>{pending>0 && <small>{pending} 待审</small>}</button>
     <button type="button" className="text-button" aria-label={(enabled?"关闭":"开启")+"外部协作"} disabled={busy} onClick={()=>act("toggle")}>{enabled?"关闭":"开启"}</button>
-    <button type="button" className="text-button" title={enabled?"复制协作分享链接":"请先开启外部协作"} disabled={!enabled||busy} onClick={()=>act("share")}>分享</button>
+    <button type="button" className="text-button" title={enabled?"选择协作连接方式":"请先开启外部协作"} disabled={!enabled||busy} onClick={()=>act("share")}>分享</button>
     <span className="fed-feedback" role="status">{note}</span>
   </div>;
 }
@@ -232,6 +241,12 @@ function Provider({id,run}:{id:string;run:Run}) {
       <small role="status">{notice}</small></div>
     {share.enabled && <div className="fed-row"><button className="button" disabled={!share.link} onClick={()=>run(async()=>{await copyText(share.link!);setNotice("已复制分享链接");})}>复制分享链接</button>
       <button className="text-button" disabled={dirty} onClick={()=>run(async()=>{apply(await put<Share>(path,{enabled:true,permissionMode:share.permissionMode,dedicatedReadOnly:share.dedicatedReadOnly,rotate:true,confirmWrite:share.permissionMode==="read_write"}));setNotice("分享链接已重置。");})}>重置链接</button></div>}
+    {snapshot?.federation?.attachmentApprovals?.filter(item=>item.agentId===id).map(item=>
+      <button className="button" key={item.id} onClick={()=>open({attachmentId:item.id})}>审核发给 {item.recipient} 的附件</button>)}
+    {share.attachmentAllowed && <button className="button" onClick={()=>run(async()=>{
+      await request("/peers/"+path+"/attachment-permission",{method:"DELETE"});
+      setShare({...share,attachmentAllowed:false});
+    })}>撤销此 Agent 的长期附件授权</button>}
     {grants.map(g=><GrantPolicy key={g.id+g.status+g.permissionMode} grant={g} canWrite={share.permissionMode==="read_write"} run={run}/>)}</>;
 }
 
@@ -239,24 +254,75 @@ export function FederationDialog() {
   const ref=useRef<HTMLDialogElement>(null);
   const [selection,select]=useState<Selection>(),[note,notify]=useState(""),[busy,setBusy]=useState(false);
   const {snapshot}=useWorkbench();
+  const shown=useRef(new Set<string>());
   useEffect(()=>{
     const show=(e:Event)=>{select((e as CustomEvent<Selection>).detail);notify("");ref.current?.showModal();};
     window.addEventListener("ff-peer-dialog",show);return ()=>window.removeEventListener("ff-peer-dialog",show);
   },[]);
+  useEffect(()=>{
+    const requests=snapshot?.federation?.requestedReviews ?? [];
+    const attachments=snapshot?.federation?.attachmentApprovals ?? [];
+    function showPending() {
+      if (document.querySelector("dialog[open]")) return;
+      const id=requests.find(candidate=>!shown.current.has(candidate));
+      if (id) {
+        shown.current.add(id);
+        viewApplication(id);
+        void request("/peers/grants/"+id+"/review-shown", {method:"POST"}).catch(()=>shown.current.delete(id));
+        return;
+      }
+      const pending=attachments.find(item=>!shown.current.has(item.id));
+      if (pending) {shown.current.add(pending.id);open({attachmentId:pending.id});}
+    }
+    showPending();
+    document.addEventListener("close",showPending,true);
+    return ()=>document.removeEventListener("close",showPending,true);
+  },[snapshot?.federation?.requestedReviews,snapshot?.federation?.attachmentApprovals]);
   const run:Run=async op=>{setBusy(true);notify("");try{await op();}catch(e){notify(errorText(e));}finally{setBusy(false);}};
   const remote=selection && "remoteId" in selection && snapshot?.federation?.remotes.find(r=>r.id===selection.remoteId && r.topicId===selection.topicId);
+  const share=selection && "windowId" in selection ? selection.share : undefined;
+  const directLink=share?.link;
+  const rtcHint=share && !share.rtc ? rtcBlockMessages[share.rtcBlockReason ?? ""] ?? "跨内网连接暂不可用" : undefined;
   const grantId=selection && "grantId" in selection ? selection.grantId : undefined;
   const grant=snapshot?.federation?.grants.find(g=>g.id===grantId && g.status==="pending");
+  const attachment=selection && "attachmentId" in selection
+    ? snapshot?.federation?.attachmentApprovals?.find(item=>item.id===selection.attachmentId) : undefined;
   const contact=selection && "contactId" in selection ? snapshot?.federation?.contacts?.find(c=>c.id===selection.contactId) : undefined;
   const owner=contact && snapshot?.windows.find(w=>w.agent.id===contact.windowId)?.agent.name;
   useEffect(()=>{if(grantId && !grant) ref.current?.close();},[grantId,grant]);
-  const title=grantId ? "外部协作申请" : selection && "windowId" in selection ? "@"+(snapshot?.windows.find(w=>w.agent.id===selection.windowId)?.agent.name||"Agent")+" · 外部协作" :
+  const title=attachment?"发送附件授权":grantId ? "外部协作申请" : selection && "windowId" in selection ? "@"+(snapshot?.windows.find(w=>w.agent.id===selection.windowId)?.agent.name||"Agent")+(share?" · 分享外部协作":" · 外部协作") :
     contact?"@"+contact.name+" · 协作好友":remote?"@"+remote.agentName:"外部协作";
   return <dialog ref={ref} id="federation-dialog" closedby="any" aria-labelledby="fed-title" onClose={()=>select(undefined)}>
     <header className="dialog-header"><h2 id="fed-title">{title}</h2><button type="button" className="icon-button" aria-label="关闭" onClick={()=>ref.current?.close()}>×</button></header>
     <fieldset disabled={busy} className="dialog-body fed-fields">
     {grant && <MailApproval key={grant.id} grant={grant} run={run}/>}
-    {selection && "windowId" in selection && <Provider key={selection.windowId} id={selection.windowId} run={run}/>}
+    {attachment && <><p>@{attachment.agentName} → @{attachment.recipient}</p>
+      {attachment.original && <small>补充到消息 {attachment.original.slice(0,8)}</small>}
+      <ul>{attachment.files.map((file,i)=><li key={i}>{file}</li>)}</ul>
+      <div className="fed-row">{([["once","单次授权"],["always","永久授权此 Agent"],["reject","拒绝"]] as const).map(([action,label])=>
+        <button type="button" className={action==="once"?"button primary":"button"} key={action} onClick={()=>run(async()=>{
+          await request("/peers/attachment-approvals/"+attachment.id,{method:"POST",body:{action}});
+          ref.current?.close();
+        })}>{label}</button>)}</div></>}
+    {selection && "windowId" in selection && (share
+      ? <div className="fed-share-options">
+          <div className="fed-share-option">
+            <button type="button" className="button" disabled={!directLink} aria-describedby={!directLink?"fed-direct-note":undefined}
+              onClick={directLink ? ()=>run(async()=>{
+                await copyText(directLink);notify("已复制直接连接链接");
+              }) : undefined}>直接连接</button>
+            {!directLink && <small id="fed-direct-note">暂无直连地址</small>}
+          </div>
+          <div className="fed-share-option">
+            <button type="button" className="button" disabled={!share.rtc} aria-describedby={rtcHint?"fed-signaling-note":undefined}
+              onClick={()=>run(async()=>{
+                const invite=await request<{link:string}>("/peers/windows/"+selection.windowId+"/signaling-invitation",{method:"POST"});
+                await copyText(invite.link);notify("已复制跨内网链接，15 分钟内可领取");
+              })}>跨内网连接</button>
+            {rtcHint && <small id="fed-signaling-note">{rtcHint}</small>}
+          </div>
+        </div>
+      : <Provider key={selection.windowId} id={selection.windowId} run={run}/>)}
     {contact && <><b>{contact.nodeName} · {contact.online?"在线":"离线"}</b>
       <p>移除后，@{contact.name} 将收到通知，并失去向 @{owner} 请求协作的权限。</p>
       {contact.canRemove ? <button className="button danger" onClick={()=>run(async()=>{
@@ -268,6 +334,8 @@ export function FederationDialog() {
       {remote.status==="approved" && <ReturnAgentSelect topicId={remote.topicId} value={remote.contactAgentId??""} onChange={agentId=>run(()=>put("remotes/"+remote.id+"/contact",{topicId:remote.topicId,agentId:agentId||null}))}/>}
       {remote.error && <small>{remote.error}</small>}
       <button className="button" onClick={()=>run(async()=>{await request("/peers/remotes/"+remote.id+"?topic="+remote.topicId,{method:"DELETE"});ref.current?.close();})}>移除本地胶囊</button></>}
-    </fieldset>{note && <p role="alert" className="form-error">{note}</p>}
+    </fieldset>{note && (note.startsWith("已复制")
+      ? <p role="status" className={share?"fed-share-feedback":undefined}>{note}</p>
+      : <p role="alert" className={share?"form-error fed-share-feedback":"form-error"}>{note}</p>)}
   </dialog>;
 }

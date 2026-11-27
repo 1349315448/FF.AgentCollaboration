@@ -1,4 +1,5 @@
 import { KnowledgeModeOptions } from "./ProjectKnowledgeDialog";
+import { newProjectKnowledgeMode } from "../../services/knowledge";
 
 export function FolderDialog() {
   return (
@@ -10,7 +11,7 @@ export function FolderDialog() {
         <p className="form-error" id="folder-error" role="alert" hidden></p>
         <div className="selection-list" id="folder-list" aria-label="子文件夹"></div>
         <label className="field" id="folder-knowledge-field" hidden>项目知识库（.ff-acp-knowledge）
-          <select id="folder-knowledge-mode" defaultValue="disabled"><KnowledgeModeOptions/></select>
+          <select id="folder-knowledge-mode" defaultValue={newProjectKnowledgeMode}><KnowledgeModeOptions/></select>
         </label>
         <small className="file-notice" id="folder-knowledge-notice" hidden>请在运行工作台的电脑上设置项目知识库。</small>
       </div>

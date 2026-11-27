@@ -1,5 +1,6 @@
 using System.Net;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
@@ -73,9 +74,13 @@ internal static class WorkbenchHost
             ContentRootPath = AppContext.BaseDirectory,
             WebRootPath = "wwwroot"
         });
+        bool rtcListener = RtcTransport.Executable(builder.Configuration) != null;
         builder.WebHost.ConfigureKestrel(server =>
         {
             server.Listen(IPAddress.Loopback, network.Port);
+            if (rtcListener)
+                server.Listen(IPAddress.Loopback, 0, listener => listener.UseHttps(tls =>
+                    tls.ServerCertificateSelector = (_, _) => network.Certificate()));
             if (lanIp != null) server.Listen(lanIp, lanPort!.Value);
             if (network.ActiveIp != null)
                 server.Listen(network.ActiveIp, network.Port, listener => listener.UseHttps(tls =>
@@ -83,14 +88,24 @@ internal static class WorkbenchHost
             server.Limits.MaxRequestBodySize = 300_000;
         });
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
+        var keyDirectory = new DirectoryInfo(Path.Combine(WorkbenchLocation.LocalData, "FF.AgentCollaboration", "signaling-keys"));
+        var protection = builder.Services.AddDataProtection().SetApplicationName("FF.AgentCollaboration")
+            .PersistKeysToFileSystem(keyDirectory);
+        if (OperatingSystem.IsWindows()) protection.ProtectKeysWithDpapi();
         var events = new WorkbenchEvents();
-        builder.Services.AddSingleton(_ => new FederationClient(startup, events));
+        builder.Services.AddSingleton(services => new SignalingSettings(startup,
+            services.GetRequiredService<IDataProtectionProvider>()));
+        builder.Services.AddSingleton(services => new RtcTransport(startup, network, builder.Configuration,
+            services.GetRequiredService<SignalingSettings>(),
+            services.GetRequiredService<IHostApplicationLifetime>()));
+        builder.Services.AddSingleton(services => new FederationClient(startup, events, services.GetRequiredService<RtcTransport>()));
         builder.Services.AddHostedService(services => services.GetRequiredService<FederationClient>());
         builder.Services.AddSingleton(_ => new SessionCatalog(startup));
         builder.Services.AddSingleton(services => new Workbench(startup, services.GetRequiredService<SessionCatalog>(), services.GetRequiredService<ILogger<Workbench>>(), events));
         builder.Services.AddHostedService(services => services.GetRequiredService<Workbench>());
         await using var app = builder.Build();
-        using var federation = new FederationEndpoints(startup, network, events);
+        var rtc = app.Services.GetRequiredService<RtcTransport>();
+        using var federation = new FederationEndpoints(startup, network, events, rtc, app.Services.GetRequiredService<SignalingSettings>());
         app.UseRouting();
         app.Use(lanAccess.Invoke);
 
@@ -109,6 +124,8 @@ internal static class WorkbenchHost
                     await next(context);
                     return;
                 }
+                if (network.RtcPort > 0 && context.Connection.LocalPort == network.RtcPort)
+                { context.Response.StatusCode = StatusCodes.Status403Forbidden; return; }
                 if (!pairedLan && (!Equals(context.Connection.LocalIpAddress, IPAddress.Loopback) ||
                     context.Connection.RemoteIpAddress is not { } remote || !IPAddress.IsLoopback(remote) ||
                     request.Host.Host != "127.0.0.1" || request.Host.Port != context.Connection.LocalPort ||
@@ -193,7 +210,12 @@ internal static class WorkbenchHost
             catch (Exception error) { app.Logger.LogWarning(error, "关闭时备份失败，下次启动将从原目录重新同步"); }
         });
         await app.StartAsync();
-        string address = app.Urls.Single(url => new Uri(url).Host == "127.0.0.1");
+        string address = app.Urls.Single(url => new Uri(url) is { Host: "127.0.0.1", Scheme: "http" });
+        if (rtcListener)
+        {
+            network.RtcPort = new Uri(app.Urls.Single(url => new Uri(url) is { Host: "127.0.0.1", Scheme: "https" })).Port;
+            if (startup.Ready.IsCompletedSuccessfully) rtc.Restore();
+        }
         network.Port = new Uri(address).Port;
         events.NotifyPort = new Uri(address).Port;
         Console.WriteLine($"LX_WORKBENCH {address}");
