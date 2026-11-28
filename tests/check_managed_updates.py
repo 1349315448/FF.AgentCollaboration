@@ -144,13 +144,11 @@ else:
 
         manifest("1.0.3",assets)
         admin = new_id()*2
-        local_admin = new_id()*2
         scope.enter_context(supervisor(signal_dir,"FF.AgentCollaboration.Signaling",["signaling-managed","--urls",signal_url],
             dict(env,InternalService__Key=new_id()*2,Updates__AdminKeyHash=hashlib.sha256(admin.encode()).hexdigest(),
                  Signaling__PublicOrigin="https://127.0.0.1:5390")))
         scope.enter_context(supervisor(work,"FF.AgentCollaboration",["workbench-managed",str(state),"--fixed-data-dir",
-            "--loopback-only","--port",str(app_port),"--project",str(project)],
-            dict(env,Updates__AdminKeyHash=hashlib.sha256(local_admin.encode()).hexdigest())))
+            "--loopback-only","--port",str(app_port),"--project",str(project)],env))
         setup = until(lambda:http(app_url,"/api/initialize")[1],lambda value:"initialized" in value)
         assert http(app_url,"/api/initialize",dict(setup,nodeName="Update fixture"),"POST")[0]==204
         topic = http(app_url,"/api/topics",{"name":"Update fixture","project":str(project)})[1]["id"]
@@ -180,9 +178,17 @@ else:
         assert inbox()==[]
         blocked=mcp(executable,state,before["key"],"workbench_update",action="apply",version="1.0.3",mode="now",notify_port=app_port)
         assert blocked.get("isError"),blocked
-        update_headers={"X-FF-Update-Key":local_admin}
+        def open_page():
+            code,page=http(app_url,"/api/page",method="POST",**{"X-FF-Page":"open"})
+            assert code==200
+            return {"X-FF-View":page}
+        update_headers=open_page()
         assert http(app_url,"/api/updates",dict(action="restart",mode="now"))[0]==403
         assert http(app_url,f"/api/windows/{window}/config",{"name":"Fixture","allowPlatformUpdate":True},"PUT")[0]==403
+        assert http(app_url,f"/api/windows/{window}/config",{"name":"Fixture","allowPlatformUpdate":True},"PUT",**update_headers)[0]==204
+        assert http(app_url,f"/api/windows/{window}/config",{"name":"Fixture","allowPlatformUpdate":False},"PUT",**update_headers)[0]==204
+        revoked=mcp(executable,state,before["key"],"workbench_update",action="restart",mode="now",notify_port=app_port)
+        assert revoked.get("isError"),revoked
         assert http(app_url,f"/api/windows/{window}/config",{"name":"Fixture","allowPlatformUpdate":True},"PUT",**update_headers)[0]==204
         applied=mcp(executable,state,before["key"],"workbench_update",action="apply",version="1.0.3",mode="now",notify_port=app_port)
         assert not applied.get("isError"),applied
@@ -215,12 +221,14 @@ else:
         held=mcp(executable,state,after["key"],"resume_after_restart",message="Do not release after rollback",notify_port=app_port)
         assert not held.get("isError"),held
         held_id=json.loads(held["content"][0]["text"])["id"]
+        update_headers=open_page()
         assert http(app_url,"/api/updates",dict(action="apply",version="1.0.4",mode="now",tasks=[held_id]),**update_headers)[0]==202
         until(lambda:http(app_url,"/api/updates/progress")[1],lambda data:
               data["release"]["current"]=="1.0.3" and data["release"]["last"] and data["release"]["last"]["status"]=="failed")
         assert http(app_url,"/api/messages/"+held_id)[0]==404
         assert any(task["id"]==held_id and task["assigned"] for task in http(app_url,"/api/updates/progress")[1]["tasks"])
         assert len(inbox())==1
+        update_headers=open_page()
         assert http(app_url,"/api/updates",dict(action="restart",mode="idle"),**update_headers)[0]==202
         until(lambda:http(app_url,"/api/updates/progress")[1]["release"],lambda row:row["progress"]["phase"]=="waiting")
         assert http(app_url,"/api/updates/cancel",method="POST",**update_headers)[0]==204

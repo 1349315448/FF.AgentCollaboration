@@ -17,6 +17,10 @@ namespace FF.AgentCollaboration.Presentation.Http;
 
 internal static class WorkbenchHost
 {
+    // 中间件统一验证 X-FF-View 属于当前活动页面。维护操作还必须来自本机界面。
+    internal static bool IsLocalPage(HttpContext context) =>
+        IsLoopback(context) && context.Request.Headers.ContainsKey("X-FF-View");
+
     internal static bool IsLoopback(HttpContext context) =>
         context.Connection.LocalIpAddress is { } local && IPAddress.IsLoopback(local) &&
         context.Connection.RemoteIpAddress is { } remote && IPAddress.IsLoopback(remote);

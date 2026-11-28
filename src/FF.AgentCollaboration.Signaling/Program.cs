@@ -63,12 +63,11 @@ app.UseWebSockets(new WebSocketOptions
 var api = app.MapGroup("/api/signaling/v1");
 api.MapGet("/status", () => Results.NoContent());
 api.MapGet("/updates",async (HttpRequest request,bool? progress,CancellationToken ct)=>
-    progress==true || !ManagedUpdates.AuthorizeAdmin(builder.Configuration,SignalingSocket.Bearer(request))
+    progress==true || !IsUpdateAdmin(request)
         ? updates.Status : await updates.Check(ct));
 api.MapPost("/updates",(HttpRequest request,UpdateRequest input)=>
 {
-    if(request.Headers.ContainsKey("Origin") ||
-        !ManagedUpdates.AuthorizeAdmin(builder.Configuration,SignalingSocket.Bearer(request))) return Results.Unauthorized();
+    if(request.Headers.ContainsKey("Origin") || !IsUpdateAdmin(request)) return Results.Unauthorized();
     try
     {
         var id=updates.Schedule(input with {Mode="now",Tasks=null},()=>true,(_,_)=>{});
@@ -134,6 +133,12 @@ if (certificate != null)
 var renewal = certificate?.Maintain(app.Logger, app.Lifetime.ApplicationStopping);
 await app.WaitForShutdownAsync();
 if (renewal != null) await renewal;
+
+bool IsUpdateAdmin(HttpRequest request)
+{
+    string? hash=builder.Configuration["Updates:AdminKeyHash"];
+    return InvitationRooms.IsToken(hash) && InvitationRooms.Matches(Convert.FromHexString(hash!),SignalingSocket.Bearer(request));
+}
 
 static IPAddress ParseAddress(Uri origin) => IPAddress.TryParse(origin.IdnHost.Trim('[', ']'), out var address) &&
     !IPAddress.Any.Equals(address) && !IPAddress.IPv6Any.Equals(address)

@@ -29,12 +29,8 @@ function openPaneSessions(pane, tab = "history") {
   byId("rename-name").value = pane.agent.name;
   byId("config-role").value = pane.agent.role ?? "";
   byId("config-auto-start").checked = pane.agent.autoStart === true;
-  byId("config-platform-update").checked = pane.agent.allowPlatformUpdate === true;
-  byId("config-update-key").value = "";
-  byId("config-update-key-field").hidden = true;
-  byId("config-platform-update").onchange = () => {
-    byId("config-update-key-field").hidden = byId("config-platform-update").checked === (pane.agent.allowPlatformUpdate === true);
-  };
+  const updatePermission = byId("config-platform-update");
+  updatePermission.defaultChecked = updatePermission.checked = pane.agent.allowPlatformUpdate === true;
   const engines = byId("config-engine");
   for (const option of engines.options) {option.textContent = engineNames[option.value]; option.disabled = false;}
   engines.value = pane.agent.engine;
@@ -55,11 +51,6 @@ function openPaneSessions(pane, tab = "history") {
   showConfigTab(tab);
 }
 
-function configHeaders() {
-  const key=byId("config-update-key").value.trim();
-  return key?{"X-FF-Update-Key":key}:undefined;
-}
-
 function showConfigTab(tab) {
   const history = tab === "history";
   byId("agent-config-basic").hidden = history;
@@ -72,8 +63,9 @@ function showConfigTab(tab) {
 
 function configPayload() {
   const engine = byId("config-engine").value;
-  const fields = {name:byId("rename-name").value, role:byId("config-role").value, engine, autoStart:byId("config-auto-start").checked,
-    allowPlatformUpdate:byId("config-platform-update").checked};
+  const fields = {name:byId("rename-name").value, role:byId("config-role").value, engine, autoStart:byId("config-auto-start").checked};
+  const updatePermission = byId("config-platform-update");
+  if (updatePermission.checked !== updatePermission.defaultChecked) fields.allowPlatformUpdate = updatePermission.checked;
   if (!byId("config-model").disabled && !byId("config-model-fields").hidden) {
     const model = byId("config-model").value || null, effort = byId("config-effort").value || null;
     if (engine !== sessionPane.agent.engine || model !== (sessionPane.agent.model ?? null) || effort !== (sessionPane.agent.effort ?? null))
@@ -218,7 +210,7 @@ async function runSessionAction(action, session) {
   try {
     if (action === "new" || action === "resume") {
       if (!byId("rename-name").value.trim()) { showConfigTab("basic"); byId("rename-name").reportValidity(); return; }
-      await request(windowRoute(pane) + "/config", {method:"PUT",headers:configHeaders(), body:{...configPayload(), sessionMode:action, sessionId:session?.id}});
+      await request(windowRoute(pane) + "/config", {method:"PUT", body:{...configPayload(), sessionMode:action, sessionId:session?.id}});
       dialog.close();
       await refresh();
       if (panes.has(pane.agent.id)) focusAgent(pane.agent.id);
@@ -248,7 +240,7 @@ byId("agent-config-basic").onsubmit = async e => {
   if (dialog.dataset.busy === "true") return;
   setBusy(dialog,true); byId("agent-config-basic").inert=true;
   try {
-    await request(windowRoute(sessionPane)+"/config",{method:"PUT",headers:configHeaders(),body:configPayload()});
+    await request(windowRoute(sessionPane)+"/config",{method:"PUT",body:configPayload()});
     dialog.close(); await refresh();
   } catch(error){feedback("rename-error",error.message);}
   finally {byId("agent-config-basic").inert=false;setBusy(dialog,false);}

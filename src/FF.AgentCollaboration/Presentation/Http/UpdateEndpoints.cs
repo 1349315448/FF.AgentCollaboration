@@ -44,11 +44,11 @@ internal static class UpdateEndpoints
         local.MapGet("",async (CancellationToken ct)=>new {release=await updates.Check(ct),tasks=Tasks()});
         local.MapGet("/progress",()=>new {release=updates.Status,tasks=Tasks()});
         local.MapPost("",(HttpRequest request,UpdateRequest input,Workbench workbench)=>
-            ManagedUpdates.AuthorizeAdmin(app.Configuration,request.Headers["X-FF-Update-Key"].ToString())
-                ? Schedule(input,workbench) : Results.Json(new {error="请输入有效的工作台维护密钥"},statusCode:403));
+            WorkbenchHost.IsLocalPage(request.HttpContext)
+                ? Schedule(input,workbench) : Results.Json(new {error="请从本机工作台安排更新或重启"},statusCode:403));
         local.MapPost("/cancel",(HttpRequest request)=>
-            !ManagedUpdates.AuthorizeAdmin(app.Configuration,request.Headers["X-FF-Update-Key"].ToString())
-                ? Results.Json(new {error="请输入有效的工作台维护密钥"},statusCode:403)
+            !WorkbenchHost.IsLocalPage(request.HttpContext)
+                ? Results.Json(new {error="请从本机工作台取消安排"},statusCode:403)
                 : updates.Cancel()?Results.NoContent():Results.Conflict(new {error="当前更新已经结束或正在重启"}));
         local.MapPost("/agent",async (HttpRequest request,AgentUpdate input,Workbench workbench,CancellationToken ct)=>
         {

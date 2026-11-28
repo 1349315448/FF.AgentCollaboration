@@ -126,4 +126,4 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 {"message":"重启后继续验证原任务 MSG_ID abcd1234，从任务记录中的第 3 步开始。"}
 ```
 
-用 `workbench_update` 的 `{"action":"check"}` 读取当前版本和签名发布渠道的可用版本。用户开启此 Agent 的维护权限后，可用 `{"action":"apply","version":"1.0.3","mode":"idle"}` 安排更新，或用 `{"action":"restart","mode":"idle"}` 重启当前版本。调用结束后等待工作台恢复；新进程通过检查并启动原会话时，恢复消息才进入收件队列。回滚后由用户选择待处理的恢复记录。
+用 `workbench_update` 的 `{"action":"check"}` 读取当前版本和签名发布渠道的可用版本。用户在本机 Agent 设置勾选「允许此 Agent 更新或重启本机工作台」并保存后，可用 `{"action":"apply","version":"1.0.5","mode":"idle"}` 安排更新（版本填此次查询结果），或用 `{"action":"restart","mode":"idle"}` 重启当前版本。权限被拒绝时，请用户在设置中决定是否授权。调用结束后等待工作台恢复；新进程通过检查并启动原会话时，恢复消息才进入收件队列。回滚后由用户选择待处理的恢复记录。

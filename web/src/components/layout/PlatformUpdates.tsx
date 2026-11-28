@@ -20,7 +20,6 @@ export function PlatformUpdates({version}:{version:string}) {
   const [running,setRunning]=useState<string>();
   const [feedback,setFeedback]=useState("");
   const [checking,setChecking]=useState(false);
-  const [maintenanceKey,setMaintenanceKey]=useState("");
   const release=state?.release;
 
   useEffect(()=>{void request<PlatformStatus>("/updates").then(setState).catch(()=>{});},[]);
@@ -56,7 +55,7 @@ export function PlatformUpdates({version}:{version:string}) {
   async function start(action:"apply"|"restart",mode:"idle"|"now"){
     setChecking(true);setFeedback("");
     try{
-      const next=await request<{id:string}>("/updates",{method:"POST",headers:{"X-FF-Update-Key":maintenanceKey.trim()},body:{
+      const next=await request<{id:string}>("/updates",{method:"POST",body:{
         action,mode,version:action==="apply"?release?.available:undefined,tasks:selected
       }});
       setRunning(next.id);
@@ -72,7 +71,7 @@ export function PlatformUpdates({version}:{version:string}) {
       {release?.available&&<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" aria-label="有可用更新"><path d="M8 12V3m-4 4 4-4 4 4" strokeWidth="1.5"/></svg>}
       {version}
     </button>
-    <dialog ref={dialog} closedby="any" aria-labelledby="platform-update-title" className="platform-update-dialog" onClose={()=>setMaintenanceKey("")}>
+    <dialog ref={dialog} closedby="any" aria-labelledby="platform-update-title" className="platform-update-dialog">
       <header className="dialog-header"><h2 id="platform-update-title">工作台更新</h2>
         <button type="button" className="icon-button" aria-label="关闭更新" onClick={()=>dialog.current?.close()}>×</button></header>
       <div className="dialog-body fed-fields">
@@ -80,8 +79,6 @@ export function PlatformUpdates({version}:{version:string}) {
         {release?.notes&&<p className="platform-update-notes">{release.notes}</p>}
         {release&&!release.managed&&<small>使用支持更新的启动器打开工作台后可应用更新或重启。</small>}
         {release&&!release.configured&&<small>请先在安装目录配置发布公钥。</small>}
-        {release?.managed&&<label>工作台维护密钥<input type="password" maxLength={64} autoComplete="off"
-          value={maintenanceKey} onChange={e=>setMaintenanceKey(e.target.value)}/></label>}
         {!!state?.tasks.length&&<fieldset className="fed-fields"><legend>启动完成后恢复</legend>
           {state.tasks.map(task=><label className="fed-row" key={task.id} title={task.body}>
             <input type="checkbox" disabled={busy} checked={selected.includes(task.id)}
@@ -94,15 +91,15 @@ export function PlatformUpdates({version}:{version:string}) {
       </div>
       <footer className="dialog-footer">
         <button type="button" className="text-button" disabled={checking} onClick={()=>void check()}>重新检查</button>
-        {(phase==="waiting"||phase==="downloading")&&<button type="button" className="button" disabled={maintenanceKey.trim().length!==64}
-          onClick={()=>{void request("/updates/cancel",{method:"POST",headers:{"X-FF-Update-Key":maintenanceKey.trim()}}).then(()=>{
+        {(phase==="waiting"||phase==="downloading")&&<button type="button" className="button"
+          onClick={()=>{void request("/updates/cancel",{method:"POST"}).then(()=>{
             setRunning(undefined);
             setFeedback("已取消安排");
           }).catch(error=>setFeedback(error.message));}}>取消安排</button>}
-        {release?.managed&&<button type="button" className="button" disabled={busy||maintenanceKey.trim().length!==64} onClick={()=>void start("restart","idle")}>空闲后重启</button>}
+        {release?.managed&&<button type="button" className="button" disabled={busy} onClick={()=>void start("restart","idle")}>空闲后重启</button>}
         {release?.managed&&release.available&&<>
-          <button type="button" className="button" disabled={busy||maintenanceKey.trim().length!==64} onClick={()=>void start("apply","idle")}>空闲后更新</button>
-          <button type="button" className="button primary" disabled={busy||maintenanceKey.trim().length!==64} onClick={()=>{
+          <button type="button" className="button" disabled={busy} onClick={()=>void start("apply","idle")}>空闲后更新</button>
+          <button type="button" className="button primary" disabled={busy} onClick={()=>{
             if(window.confirm("现在更新会关闭正在运行的终端。确认继续？"))void start("apply","now");
           }}>现在更新</button>
         </>}

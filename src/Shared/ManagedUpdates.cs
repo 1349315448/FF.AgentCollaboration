@@ -53,15 +53,6 @@ internal sealed class ManagedUpdates(string product,string version,IConfiguratio
         { return status with {Progress=new("check_failed","无法读取或验证发布清单")}; }
     }
 
-    internal static bool AuthorizeAdmin(IConfiguration config,string? supplied)
-    {
-        string? hash=config["Updates:AdminKeyHash"];
-        if(hash?.Length!=64 || !hash.All(char.IsAsciiHexDigit) || supplied?.Length!=64 || !supplied.All(char.IsAsciiHexDigit))
-            return false;
-        return CryptographicOperations.FixedTimeEquals(Convert.FromHexString(hash),
-            SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(supplied)));
-    }
-
     internal string Schedule(UpdateRequest request,Func<bool> idle,Action<string,string[]> bind)
     {
         if(UpdateSupervisor.Root is not { } root) throw new UpdateFailure("请使用支持更新的启动器打开服务");

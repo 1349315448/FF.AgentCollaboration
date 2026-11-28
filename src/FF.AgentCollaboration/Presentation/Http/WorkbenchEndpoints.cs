@@ -8,7 +8,6 @@ using FF.AgentCollaboration.Engines;
 using FF.AgentCollaboration.Infrastructure.Files;
 using FF.AgentCollaboration.Infrastructure.Storage;
 using FF.AgentCollaboration.Infrastructure.Terminal;
-using FF.AgentCollaboration.Updates;
 
 namespace FF.AgentCollaboration.Presentation.Http;
 
@@ -240,14 +239,8 @@ internal static class WorkbenchEndpoints
         app.MapPut("/api/windows/{id}/config", async (string id, AgentConfiguration request, HttpContext context, Workbench workbench, CancellationToken ct) =>
         {
             string window=WorkbenchInput.Id(id);
-            if(request.AllowPlatformUpdate is bool changed && (!WorkbenchHost.IsLoopback(context) ||
-                !ManagedUpdates.AuthorizeAdmin(app.Configuration,context.Request.Headers["X-FF-Update-Key"].ToString())))
-            {
-                using var db=new WorkbenchStore(startup.Root);
-                if(changed!=db.Window(window).AllowPlatformUpdate)
-                    throw new WorkbenchError("更改更新权限需要有效的工作台维护密钥",WorkbenchFailure.Forbidden);
-                request=request with {AllowPlatformUpdate=null};
-            }
+            if(request.AllowPlatformUpdate.HasValue && !WorkbenchHost.IsLocalPage(context))
+                throw new WorkbenchError("请在本机工作台更改此 Agent 的更新与重启权限",WorkbenchFailure.Forbidden);
             await workbench.ConfigureAgent(window,request,ct);
             return Results.NoContent();
         });

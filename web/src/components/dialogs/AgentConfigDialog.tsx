@@ -25,8 +25,6 @@ export function AgentConfigDialog() {
           <label className="field">身份提示词 / 职责描述（选填）<textarea id="config-role" rows={3} maxLength={200} placeholder="选填，例如：负责后端接口与数据库迁移；留空则不设固定身份"/></label>
           <label><input id="config-auto-start" type="checkbox"/> 工作台启动时自动打开原会话</label>
           <label><input id="config-platform-update" type="checkbox"/> 允许此 Agent 更新或重启本机工作台</label>
-          <label id="config-update-key-field" className="field" hidden>工作台维护密钥
-            <input id="config-update-key" type="password" autoComplete="off" maxLength={64}/></label>
           {agentId && <TopicLeaderButton agentId={agentId} inSettings />}
           <label className="field">引擎<select id="config-engine">
             {Object.entries(engineNames).map(([id,name])=><option key={id} value={id}>{name}</option>)}

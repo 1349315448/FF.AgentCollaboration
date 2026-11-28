@@ -6,15 +6,17 @@
 
 ## 部署配置
 
-从 Base v1.0.3 起，GitHub 官方发布包随附 `update-public.pem`，包内配置已指向该文件。首次部署或从旧版手动迁移时，请核对发布页的校验清单。保留原配置升级时，可将 `Updates:PublicKeyFile` 设置为 `update-public.pem`，然后按下表配置本机维护密钥。[官方验签公钥](update-public.pem)
+从 Base v1.0.3 起，GitHub 官方发布包随附 `update-public.pem`，包内配置已指向该文件。首次部署或从旧版手动迁移时，请核对发布页的校验清单。保留原配置升级时，可将 `Updates:PublicKeyFile` 设置为 `update-public.pem`。[官方验签公钥](update-public.pem)
 
-在原安装目录的 `appsettings.json` 中配置以下字段。工作台和信令服务的维护密钥分别生成，用 64 位高熵十六进制文本。两个配置文件分别保存该文本 UTF-8 编码的 SHA-256 十六进制摘要。维护密钥原文通过安全渠道交给操作人。
+用户在本机工作台直接操作更新和重启，在每个 Agent 的设置里单独授予或撤销 MCP 更新权限。本机控制界面信任操作系统账户；此开关约束平台提供的 MCP 工具。
+
+以下字段位于原安装目录的 `appsettings.json`。远程维护信令服务时，单独生成 64 位高熵十六进制密钥，将原文安全交给操作人，在信令服务器配置中保存原文 UTF-8 编码的 SHA-256 摘要。
 
 | 配置 | 值 |
 |---|---|
 | `Updates:PublicKeyFile` | 发布签名的 ECDSA PEM 公钥文件。 |
 | `Updates:ManifestUrl` | 受信任的 HTTPS 发布清单地址。省略时使用本项目 GitHub Releases 的 `ff-acp-update.json`。 |
-| `Updates:AdminKeyHash` | 本组件独立的维护密钥摘要，用于浏览器维护操作。 |
+| `Updates:AdminKeyHash` | 信令服务器验证远程维护操作时使用的密钥摘要。 |
 | `Signaling:PairingsPath` | 信令持久化配对文件，默认 `data/signaling-pairings.json`。单个信令宿主使用一份文件，服务账号需要写权限。 |
 
 信令服务升级会短暂重启，客户端使用现有配对重连。保留原信令配置、证书、公钥指纹和配对文件。首次启用自动续票需要更新两端工作台及信令服务。已经过期且从未完成续接登记的旧关系仍需用新邀请迁移一次。
