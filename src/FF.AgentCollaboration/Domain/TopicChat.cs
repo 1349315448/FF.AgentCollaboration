@@ -10,5 +10,5 @@ internal sealed record ChatReceipt(string Id, string Target, string Name, string
 internal sealed record ChatAttachment(string Name, string Key, string? Project = null, string? Path = null);
 internal sealed record ChatPost(string Id, string Topic, string Source, string Sender, string Text, string CreatedAt,
     string? ReplyTo, ChatAttachment[] Attachments, ChatReceipt[] Receipts, long? PeerSeq = null, string? Kind = null,
-    string? Application = null, string? ReplyTopic = null);
+    string? Application = null, string? ReplyTopic = null, string[]? Recipients = null);
 internal sealed record ChatUpload(string Name, Stream Content);

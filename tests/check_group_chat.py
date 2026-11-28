@@ -72,6 +72,8 @@ def check(exe, case):
         assert send(team,"请一起执行",[member,target],files=["接口说明.md"],requestReply=True)[0]==200
         post=next(post for post in history(team) if post["text"]=="请一起执行")
         assert len(post["receipts"])==2 and {r["delivery"] for r in post["receipts"]}=={"pending"}
+        assert post["recipients"]==["开发","测试组长"]
+        assert next(p for p in history(linked) if p["id"]==post["id"])["recipients"]==["测试组长"]
         assert len(next(p for p in history(linked) if p["id"]==post["id"])["receipts"])==1
         assert not any(p["id"]==post["id"] for p in history(unlinked))
         attachment=f"/api/topics/{team}/chat/{post['id']}/attachments/0"
@@ -292,6 +294,7 @@ def check_peers(exe, case):
                        lambda posts:any(p["text"]=="来自工作台用户："+body for p in posts))
         incoming=next(p for p in messages if p["text"]=="来自工作台用户："+body)
         assert incoming["kind"]=="incoming",incoming
+        assert incoming["recipients"]==["提供组组长"],incoming
         with sqlite3.connect(left/"db"/"workbench.sqlite") as db:
             task, prompt, hint=db.execute("SELECT id,text,return_hint FROM inbox WHERE text LIKE ?",("%"+body+"%",)).fetchone()
             assert "READ_ONLY" in prompt and f"GROUP_REPLY: 如需答复，请用 send_to_agent 向 @reply-{task}" in prompt and hint is None

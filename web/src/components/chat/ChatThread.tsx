@@ -61,10 +61,14 @@ export function ChatThread({topic, posts, busy, loadOlder, hasOlder, pending, me
       const reply=post.replyTo && quoted.get(post.replyTo);
       const sender=post.kind==="human-in" ? undefined : presence.get(post.source);
       const status=sender&&(sender.label??activityLabels[sender.activity]);
+      const recipients=post.recipients??post.receipts.map(r=>r.name);
+      const destination=recipients.length?recipients.join("、"):reply?reply.sender:post.source==="workbench-user"&&!system?"群聊":"";
       return <article className="chat-message" key={post.id} data-message={post.id} data-mine={mine} data-system={system}>
         <div className="chat-message-body">
           <header>{sender&&<span className="chat-sender-status" data-activity={sender.activity} title={status} role="img" aria-label={status}><span className="nav-dot"/></span>}
-            <strong>{post.sender}</strong>{post.topic!==topic&&<small>关联小组</small>}
+            <strong>{post.sender}</strong>{destination&&<span className="chat-destination" title={"发给 "+destination}>
+              → {destination}</span>}
+            {post.topic!==topic&&<small>关联小组</small>}
             <time dateTime={post.createdAt}>{time(post.createdAt)}</time>
             <div className="chat-message-actions">
               {members.has(post.source)&&<button className="text-button" type="button" title="查看终端" aria-label={"查看 "+post.sender+" 的终端"}

@@ -8,7 +8,7 @@ export interface Receipt { id:string; target:string; name:string; delivery:strin
 export interface Attachment { name:string; key:string; project?:string; path?:string }
 export interface ChatPost {
   id:string; topic:string; source:string; sender:string; text:string; createdAt:string; replyTo?:string;
-  attachments:Attachment[]; receipts:Receipt[]; peerSeq?:number; kind?:string; application?:string; replyTopic?:string;
+  attachments:Attachment[]; receipts:Receipt[]; recipients?:string[]; peerSeq?:number; kind?:string; application?:string; replyTopic?:string;
 }
 export interface ChatLink { id:string; name:string; leaderId?:string; leaderName?:string; peerMembers:string[]; peerMode:string }
 export interface ChatPresence { activity:Activity; label?:string }

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, type CSSProperties } from "react";
 import { request } from "../../services/api";
 import { copyText } from "../../services/clipboard";
 import { layout, selectedTopicId, snapshot } from "../../store/workbenchStore";
@@ -41,6 +41,12 @@ export default function CodeViewer({project,openDiff,reveal}:{project:string;ope
   const {tabs,active,session}=useEditor(project);
   const tab=tabs.find(t=>t.path===active), file=tab?.file;
   const [treeOpen,showTree]=useState(true), [notice,setNotice]=useState("");
+  const [treeWidth,setTreeWidth]=useState(()=>Math.max(160,Math.min(480,Number(localStorage.getItem("ff-file-tree-width"))||248)));
+  function resizeTree(handle:HTMLElement, requested:number) {
+    const width=Math.round(Math.max(160,Math.min(480,handle.parentElement!.clientWidth*.55,requested)));
+    setTreeWidth(width);
+    return width;
+  }
   const [located,setLocated]=useState("");
   const [,setLayoutTick]=useState(0);
   useEffect(()=>{
@@ -88,10 +94,23 @@ export default function CodeViewer({project,openDiff,reveal}:{project:string;ope
   function reload(item:FileTab) {
     if (!dirty(item) || window.confirm("重新读取会放弃当前草稿，继续？")) void session.load(item.path);
   }
-  return <div className="files-workbench" data-tree={treeOpen} onKeyDown={e=>{
+  return <div className="files-workbench" data-tree={treeOpen} style={{"--file-tree-width":treeWidth+"px"} as CSSProperties} onKeyDown={e=>{
     if (e.key.toLowerCase()==="s" && (e.ctrlKey||e.metaKey)) {e.preventDefault();if(tab && dirty(tab)) void session.save(tab).then(git.refresh);}
   }}>
     {treeOpen && <FileTreeView {...{project,open,openDiff,reveal}} active={located||active}/>}
+    {treeOpen && <div className="file-tree-divider" role="separator" aria-label="文件列表宽度" aria-orientation="vertical"
+      aria-valuemin={160} aria-valuemax={480} aria-valuenow={treeWidth} tabIndex={0}
+      onPointerDown={e=>{if(e.button===0){e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);}}}
+      onPointerMove={e=>{if(e.currentTarget.hasPointerCapture(e.pointerId))
+        resizeTree(e.currentTarget,e.clientX-e.currentTarget.parentElement!.getBoundingClientRect().left);}}
+      onLostPointerCapture={()=>localStorage.setItem("ff-file-tree-width",String(treeWidth))}
+      onKeyDown={e=>{
+        const width=e.currentTarget.previousElementSibling!.getBoundingClientRect().width;
+        const next=({ArrowLeft:width-16,ArrowRight:width+16,Home:160,End:480})[e.key];
+        if(next===undefined)return;
+        e.preventDefault();
+        localStorage.setItem("ff-file-tree-width",String(resizeTree(e.currentTarget,next)));
+      }}/>}
     <div className="code-workspace"><div className="file-tabbar">
       <button className="inspector-icon" aria-label={treeOpen?"收起文件树":"展开文件树"} aria-expanded={treeOpen} title={treeOpen?"收起文件树":"展开文件树"} onClick={()=>showTree(v=>!v)}><WorkspaceIcon name="rail"/></button>
       <div role="tablist" aria-label="已打开文件">{tabs.map(t=><div className="file-tab" key={t.path} data-active={active===t.path}

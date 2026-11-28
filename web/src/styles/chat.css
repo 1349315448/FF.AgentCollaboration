@@ -39,6 +39,7 @@
 .chat-message-body {min-width:0}
 .chat-message-body header {display:flex;align-items:center;gap:6px;min-height:25px}
 .chat-message-body header strong {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.chat-destination {min-width:0;color:var(--muted);font-size:11px;overflow-wrap:anywhere}
 .chat-message-actions {margin-left:auto;display:flex;align-items:center;gap:3px;flex:none;color:var(--muted)}
 .chat-message-actions > button {opacity:0}
 .chat-message:hover .chat-message-actions > button,.chat-message:focus-within .chat-message-actions > button {opacity:1}

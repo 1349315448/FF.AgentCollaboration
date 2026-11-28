@@ -237,7 +237,14 @@ button:disabled { cursor: default; opacity: .42; }
 #project-rail { flex:1; display:grid; grid-template-rows:28px minmax(0,1fr) 28px 36px; overflow:hidden; padding:0 6px; }
 .project-tools,.tree-row,.tree-agent,.tree-remote,.tree-actions,.agent-mail-count { display:flex; align-items:center; gap:4px; }
 .project-tools { justify-content:space-between; padding-inline:4px; }
-#project-tabs { display:block; overflow:auto; scrollbar-width:thin; overscroll-behavior:contain; }
+#project-tabs { display:block; overflow:auto; scrollbar-width:thin; scrollbar-color:var(--line-hover) transparent; overscroll-behavior:contain; }
+@supports selector(::-webkit-scrollbar) {
+  #project-tabs { scrollbar-width:auto; scrollbar-color:auto; }
+  #project-tabs::-webkit-scrollbar { width:4px; height:4px; }
+  #project-tabs::-webkit-scrollbar-track { background:transparent; }
+  #project-tabs::-webkit-scrollbar-thumb { background:var(--line-hover); border-radius:4px; }
+  #project-tabs::-webkit-scrollbar-thumb:hover { background:var(--muted); }
+}
 #project-tabs ul { margin:0; padding:0; list-style:none; }
 .tree-row,.tree-agent,.tree-remote { position:relative; min-width:0; width:100%; white-space:nowrap; border-radius:4px; cursor:pointer; }
 .tree-row:hover,.tree-agent:hover,.tree-remote:hover { background:var(--surface); }

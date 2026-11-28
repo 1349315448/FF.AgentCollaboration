@@ -49,7 +49,6 @@ export function ChatComposer({topic, targets, draft, update, sent, disabled}:{
   const matches = targets.filter(choice=>(pickerMarker==="#"?choice.kind==="agent":
     !human&&(!recipients.length||choice.kind!=="human")) &&
     [choice.name,choice.engine,choice.detail].join(" ").toLocaleLowerCase().includes(search));
-  const sendLabel = recipients.length ? "发给 "+recipients.length+" 位" : "发群聊";
 
   useEffect(()=>{
     const field=input.current!;
@@ -199,7 +198,7 @@ export function ChatComposer({topic, targets, draft, update, sent, disabled}:{
         onClick={()=>setMode(mode==="emoji"?null:"emoji")}>☺</button>
       <input ref={picker} type="file" multiple hidden onChange={e=>{if(e.target.files)addFiles(e.target.files);e.target.value="";}}/>
       <button type="submit" className="button primary chat-send" disabled={disabled || busy || (!draft.text.trim() && !draft.files.length)}
-        title="回车发送 · Shift+回车换行">{busy?"发送中…":sendLabel}</button>
+        title="回车发送 · Shift+回车换行">{busy?"发送中…":"发送"}</button>
     </div>
     {error && <p className="form-error" role="alert">{error}</p>}
   </form>;

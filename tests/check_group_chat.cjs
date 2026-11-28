@@ -256,6 +256,7 @@ async function run() {
     await post(note).waitFor();
     assert.equal(await post(note).locator(".chat-text").textContent(),note+"\n第二行");
     assert.equal(await post(note).locator(".chat-receipts").count(),0);
+    assert.equal(await post(note).locator(".chat-destination").getAttribute("title"),"发给 群聊");
 
     // 该用例由数据库构造成员，工作台不会为这些成员起真实 CLI 进程。在视图边界给一位成员设置在线状态。
     const stateApi=url=>url.pathname==="/api/state";
@@ -299,10 +300,11 @@ async function run() {
     await page.keyboard.insertText("核对");
     assert.equal(await chat.locator(".chat-editor .chat-address").textContent(),"@开发");
     assert.equal(await chat.locator(".chat-editor .chat-reference").textContent(),"#离线成员");
-    await chat.getByRole("button",{name:"发给 1 位",exact:true}).waitFor();
+    await chat.getByRole("button",{name:"发送",exact:true}).waitFor();
     await input.press("Enter");
     const inline="请@开发 看看接口测试 请找 #离线成员 核对";
     await post(inline).locator(".chat-receipts").waitFor();
+    assert.equal(await post(inline).locator(".chat-destination").getAttribute("title"),"发给 开发");
     assert.equal(await post(inline).locator(".chat-text").textContent(),inline);
     assert.equal(await post(inline).locator(".chat-text .chat-address").textContent(),"@开发");
     assert.equal(await post(inline).locator(".chat-text .chat-reference").textContent(),"#离线成员");
@@ -320,14 +322,14 @@ async function run() {
     await chat.getByRole("option", {name:/@开发/}).click();
     await input.evaluate(field=>field.setSelectionRange(0,0));
     await page.keyboard.insertText("仅引用 @开发 ");
-    await chat.getByRole("button", {name:"发给 1 位",exact:true}).waitFor();
+    await chat.getByRole("button", {name:"发送",exact:true}).waitFor();
     await input.evaluate(field=>{
       const selected=field.value.lastIndexOf("@开发");
       field.setSelectionRange(selected,selected+"@开发".length);
     });
     await input.press("Backspace");
     await page.keyboard.insertText("已删除点名");
-    await chat.getByRole("button", {name:"发群聊",exact:true}).click();
+    await chat.getByRole("button", {name:"发送",exact:true}).click();
     await post("仅引用 @开发 请已删除点名").waitFor();
     assert.equal(await post("仅引用 @开发 请已删除点名").locator(".chat-receipts").count(),0);
 
@@ -339,13 +341,27 @@ async function run() {
       field.dispatchEvent(new ClipboardEvent("paste",{bubbles:true,cancelable:true,clipboardData:transfer}));
     },[...photo]);
     await chat.getByRole("button", {name:/截图.png/}).waitFor();
-    await chat.getByRole("button", {name:"发群聊",exact:true}).click();
+    await chat.getByRole("button", {name:"发送",exact:true}).click();
     await post("截图测试").getByRole("button", {name:"预览 截图.png",exact:true}).click();
     const inspector=page.locator("#inspector-shell");
     await inspector.getByRole("img",{name:"截图.png",exact:true}).waitFor();
     const delivery=post("成果清单");
+    assert.equal(await delivery.locator(".chat-destination").getAttribute("title"),"发给 工作台用户");
     await delivery.getByRole("button",{name:"接口说明.md",exact:true}).click();
     await inspector.locator(".markdown-preview").getByText("approved project attachment").waitFor();
+    await page.setViewportSize({width:2400,height:900});
+    const divider=inspector.getByRole("separator",{name:"文件列表宽度"});
+    const bounds=await divider.boundingBox();
+    assert(bounds,"wide inspector exposes file tree divider");
+    await page.mouse.move(bounds.x+3,bounds.y+10);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x+65,bounds.y+10,{steps:4});
+    await page.mouse.up();
+    const dragged=Number(await divider.getAttribute("aria-valuenow"));
+    assert(dragged>248 && await page.evaluate(()=>Number(localStorage.getItem("ff-file-tree-width")))===dragged);
+    await divider.press("ArrowLeft");
+    assert.equal(Number(await divider.getAttribute("aria-valuenow")),dragged-16);
+    await page.setViewportSize({width:1460,height:900});
     await delivery.getByRole("button",{name:"发布.zip",exact:true}).click();
     await inspector.locator('.file-tree [aria-current="page"][title="src/成果 文件/发布.zip"]').waitFor();
     assert.equal(await inspector.getByRole("tab",{name:"发布.zip",exact:true}).count(),0);

@@ -23,14 +23,18 @@ internal sealed partial class WorkbenchStore
           AND NOT EXISTS(SELECT 1 FROM fed_mail f WHERE f.task_id=i.id AND f.topic=$p0)
         UNION ALL
         SELECT 'peer:'||m.seq,m.topic,m.source,coalesce(sender.name,m.label),NULL,m.body,strftime('%Y-%m-%dT%H:%M:%fZ',m.created),
-               m.reply_to,'[]',m.kind,m.seq,CASE WHEN m.kind='application' THEN m.source END,m.target,m.label,NULL,NULL,0,NULL,0
-        FROM fed_mail m LEFT JOIN windows sender ON m.kind='reply-out' AND sender.id=m.source
+               m.reply_to,'[]',m.kind,m.seq,CASE WHEN m.kind='application' THEN m.source END,m.target,
+               CASE WHEN m.kind IN ('outgoing','reply-out') THEN m.label
+                    WHEN m.kind='human-in' OR (m.kind='reply-in' AND m.target='peer-mailbox') THEN '工作台用户'
+                    ELSE recipient.name END,NULL,NULL,0,NULL,0
+        FROM fed_mail m LEFT JOIN windows sender ON m.kind IN ('reply-out','outgoing') AND sender.id=m.source
+        LEFT JOIN windows recipient ON recipient.id=m.target
         WHERE m.topic=$p0 AND NOT EXISTS(SELECT 1 FROM chat_delivery d WHERE d.id=m.task_id AND d.remote=1)
         """;
 
     private sealed record ChatRow(string Id, string Topic, string Source, string Sender, string? Project, string Body,
         string At, string? Reply, string[] Files, string Kind, long? Peer, string? Application, ChatReceipt? Receipt, string? ReplyTopic,
-        bool GroupIncoming);
+        bool GroupIncoming, string? Recipient);
 
     private List<ChatRow> ChatRecords(string topic, string? before, string? exact, int limit, string[]? changes = null)
     {
@@ -45,7 +49,7 @@ internal sealed partial class WorkbenchStore
                 r.GetString(5),r.GetString(6),Optional(r,7),JsonSerializer.Deserialize<string[]>(r.GetString(8))!,
                 r.GetString(9),r.IsDBNull(10) ? null : r.GetInt64(10),Optional(r,11),
                 r.IsDBNull(14) ? null : new(r.GetString(0),r.GetString(12),r.GetString(13),r.GetString(14),
-                    Optional(r,15),r.GetBoolean(16)), Optional(r,17),r.GetBoolean(18)), topic,before,exact,limit,changes == null ? null : JsonSerializer.Serialize(changes));
+                    Optional(r,15),r.GetBoolean(16)), Optional(r,17),r.GetBoolean(18),Optional(r,13)), topic,before,exact,limit,changes == null ? null : JsonSerializer.Serialize(changes));
     }
 
     internal ChatPost[] ChatHistory(string topic, string? before = null, string[]? changes = null)
@@ -53,6 +57,14 @@ internal sealed partial class WorkbenchStore
         if (changes is { Length: > 40 } || changes?.Any(id => id.Length > 64) == true)
             throw new WorkbenchError("最多刷新 40 条消息");
         var rows = ChatRecords(topic,before,null,40,changes);
+        var postIds = rows.Where(row=>row.Kind=="post").Select(row=>row.Id).ToArray();
+        var addresses = Read("""
+            SELECT d.post,CASE WHEN d.target=$p2 THEN '工作台用户' ELSE d.name END
+            FROM chat_delivery d JOIN chat_post p ON p.id=d.post
+            WHERE d.post IN (SELECT value FROM json_each($p0)) AND (d.topic=$p1 OR p.topic=$p1)
+            ORDER BY d.rowid
+            """,r=>(Post:r.GetString(0),Name:r.GetString(1)),JsonSerializer.Serialize(postIds),topic,InboxItem.ChatUser)
+            .ToLookup(address=>address.Post,address=>address.Name);
         long[] peerRows = rows.Where(row => row.Peer.HasValue).Select(row => row.Peer!.Value).ToArray();
         Dictionary<long,PeerMail> peerReceipts = peerRows.Length == 0 ? [] : RecentPeerMail(topic,peerRows).ToDictionary(mail => mail.Seq);
         return rows.Select(row =>
@@ -63,9 +75,14 @@ internal sealed partial class WorkbenchStore
                     mail.Kind is not ("reply-in" or "human-in")
                     ? [new(row.Id,mail.Target,mail.Label,state,mail.WorkState,false)] : [];
             var files = ChatFiles(row,topic);
-            string sender = row.Source == InboxItem.ChatUser && row.Kind != "human-in" ? "我" : row.Peer is long && row.Kind == "outgoing" ? "本机组长" : row.Sender;
+            string sender = row.Source == InboxItem.ChatUser && row.Kind != "human-in" ? "我" : row.Source=="peer-mailbox" && row.Kind == "outgoing" ? "本机组长" : row.Sender;
+            var recipients = row.Kind == "post" ? addresses[row.Id].ToArray()
+                : row.Recipient is string recipient ? [recipient] : Array.Empty<string>();
+            // 本组 Agent 直接给用户的消息和跨端发给本机用户的消息没有终端投递记录。
+            if (recipients.Length==0 && row.Kind=="post" && row.Source!=InboxItem.ChatUser)
+                recipients=["工作台用户"];
             return new ChatPost(row.Id,row.Topic,row.Source,sender,row.Body,row.At,row.Reply,
-                files.Select(file => Attachment(file,row.GroupIncoming?null:row.Project)).ToArray(),receipts,row.Peer,row.Kind,row.Application,row.ReplyTopic);
+                files.Select(file => Attachment(file,row.GroupIncoming?null:row.Project)).ToArray(),receipts,row.Peer,row.Kind,row.Application,row.ReplyTopic,recipients);
         }).ToArray();
     }
 
