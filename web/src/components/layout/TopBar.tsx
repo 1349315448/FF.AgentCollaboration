@@ -36,8 +36,11 @@ export function TopBar() {
   },[]);
 
   return <header className="topbar">
-    <button type="button" className="icon-button" id="project-collapse" aria-controls="project-rail" aria-expanded="true"
-      aria-label="收起项目栏"><img src="/platform-mark.svg" width="22" height="22" alt=""/></button>
+    <div className="platform-mark">
+      <button type="button" className="icon-button" id="project-collapse" aria-controls="project-rail" aria-expanded="true"
+        aria-label="收起项目栏"><img src="/platform-mark.svg" width="22" height="22" alt=""/></button>
+      <span className="connection" id="connection" role="status" title="连接中" aria-label="连接中">连接中</span>
+    </div>
     <nav className="workbench-menu" aria-label="工作台菜单" ref={menu}
       onClick={event=>{
         const button = (event.target as Element).closest("button");

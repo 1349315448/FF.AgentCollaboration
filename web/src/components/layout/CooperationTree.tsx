@@ -1,8 +1,8 @@
 import {useState,type ReactNode} from "react";
 import {useWorkbench,type Topic,type WindowView} from "../../store/workbenchStore";
 import {groupLinkSides,includedMember} from "../../services/groupLinks";
-import {openGroupCollaboration} from "../../services/permanentGroups";
-import {navigation,activityLabels,peerPresence} from "../../services/navigation";
+import {groupStates,openGroupCollaboration} from "../../services/permanentGroups";
+import {navigation,activityLabels,peerPresence,remoteOnline} from "../../services/navigation";
 import {engineNames} from "../../services/engines";
 import {RemoteCapsule,viewReturnContact} from "../federation/Federation";
 import {AgentNavigationItem} from "./AgentNavigationItem";
@@ -12,12 +12,20 @@ interface Cooperation {
   id:string;
   label:string;
   people:ReactNode;
+  status?:string;
   owners?:string[];
   open?:()=>void;
 }
 
 function Branch({name,children,link}:{name:string;children:ReactNode;link?:string}) {
   return <li><details open data-collab-branch={link}><summary title={name}>{name}</summary><ul>{children}</ul></details></li>;
+}
+
+function CooperationLink({item}:{item:Cooperation}) {
+  return <button type="button" className="tree-loan-group" data-collab-branch={item.id}
+    title={[item.label,item.status,"查看合作详情"].filter(Boolean).join(" · ")} onClick={item.open}>
+    <WorkspaceIcon name="network"/><span>{item.label}</span>{item.status&&<small>{item.status}</small>}
+  </button>;
 }
 
 function Person({id,name,status,activity,engine,leader,open}:{id:string;name:string;status:string;activity:string;
@@ -40,10 +48,8 @@ function OwnMember({view,cooperations}:{view:WindowView;cooperations:Cooperation
     </div>
     {cooperations.length>0&&<ul className="tree-loans" hidden={!expanded}>
       {cooperations.map(item=><li key={item.id} data-loan-link={item.id}>
-        <button type="button" className="tree-loan-group" title={item.label} onClick={item.open}>
-          <WorkspaceIcon name="network"/><span>{item.label}</span>
-        </button>
-        <ul>{item.people}</ul>
+        <CooperationLink item={item}/>
+        {item.people&&<ul>{item.people}</ul>}
       </li>)}
     </ul>}
   </li>;
@@ -71,13 +77,8 @@ export function CooperationTree({topic,members}:{topic:Topic;members:WindowView[
       <Person key={person.key} id={person.key} name={person.name} engine={person.engine} leader={person.leader}
         activity={person.online?"idle":"offline"} status={peerPresence(person.online,group.connected)} open={open}/>);
     const owners=!group.requester&&group.memberMode==="selected"&&group.members.length ? group.members : undefined;
-    cooperations.push({id:group.id,label,people:people.length?people:
-      <li><button type="button" className="text-button" onClick={open}>查看合作</button></li>,owners,open});
-  }
-  for(const remote of snapshot?.federation?.remotes??[]) {
-    if(remote.topicId!==topic.id)continue;
-    const label=[remote.groupName,remote.nodeName].filter(Boolean).join(" · ")||"外部协作";
-    cooperations.push({id:remote.id,label,people:<li><RemoteCapsule remote={remote} tree/></li>});
+    const status=group.status==="approved" ? (group.connected?"暂无参与成员":"成员未同步") : groupStates[group.status];
+    cooperations.push({id:group.id,label,people:people.length?people:null,status:people.length?undefined:status,owners,open});
   }
   for(const contact of snapshot?.federation?.contacts??[]) {
     if(!members.some(view=>view.agent.id===contact.windowId))continue;
@@ -86,10 +87,15 @@ export function CooperationTree({topic,members}:{topic:Topic;members:WindowView[
       people:<Person id={contact.id} name={contact.name} activity={contact.online?"idle":"offline"}
         status={peerPresence(contact.online,contact.connected)} open={open}/>});
   }
-  const own=[...members].sort((a,b)=>Number(b.agent.online)-Number(a.agent.online)).map(view=>
-    <OwnMember key={view.agent.id} view={view} cooperations={cooperations.filter(item=>item.owners?.includes(view.agent.id))}/>);
+  const remotes=snapshot?.federation?.remotes.filter(remote=>remote.topicId===topic.id)??[];
+  const own=[
+    ...members.map(view=>({online:view.agent.online,row:<OwnMember key={view.agent.id} view={view}
+      cooperations={cooperations.filter(item=>item.owners?.includes(view.agent.id))}/>})),
+    ...remotes.map(remote=>({online:remoteOnline(remote),row:<li key={"remote-"+remote.id}><RemoteCapsule remote={remote} tree/></li>}))
+  ].sort((a,b)=>Number(b.online)-Number(a.online)).map(item=>item.row);
   const branches=cooperations.filter(item=>!item.owners);
-  return <ul className="tree-members">{cooperations.length?<><Branch name="本组成员" link="own">{own}</Branch>
+  return <ul className="tree-members">{cooperations.length||remotes.length?<><Branch name="本组成员" link="own">{own}</Branch>
     {branches.length>0&&<Branch name="协作小组" link="partners">{branches.map(item=>
-      <Branch key={item.id} name={item.label} link={item.id}>{item.people}</Branch>)}</Branch>}</>:own}</ul>;
+      item.people ? <Branch key={item.id} name={item.label} link={item.id}>{item.people}</Branch> :
+        <li key={item.id}><CooperationLink item={item}/></li>)}</Branch>}</>:own}</ul>;
 }

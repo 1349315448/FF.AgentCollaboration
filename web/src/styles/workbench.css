@@ -40,7 +40,10 @@ button:disabled { cursor: default; opacity: .42; }
   display:flex; align-items:center; gap:7px; padding-inline:8px;
   background:var(--shell); border-bottom:1px solid var(--line);
 }
-.topbar > #project-collapse { flex:none; padding:0; width:27px; height:27px; }
+.platform-mark { position:relative; display:flex; flex:none; }
+.platform-mark #project-collapse { padding:0; width:27px; height:27px; }
+.platform-mark .connection { position:absolute; right:1px; bottom:1px; pointer-events:none;
+  border:1px solid var(--shell); border-radius:50%; background:var(--shell); }
 .workbench-menu { display:flex; align-items:center; gap:2px; min-width:0; }
 .workbench-menu details { position:relative; }
 .workbench-menu summary {
@@ -64,7 +67,6 @@ button:disabled { cursor: default; opacity: .42; }
 .menu-commands .team-proposal-launcher { display:flex; align-items:center; gap:6px; }
 .brand { display:flex; align-items:center; gap:6px; min-width:0; border-top:1px solid var(--line); }
 .brand-version { margin-left:auto; padding-right:3px; color:var(--muted); font:10px var(--mono); flex:none; }
-.brand .connection { vertical-align:middle; }
 .brand #open-settings { width:31px; height:31px; padding:0; flex:none; }
 .brand #open-settings svg { width:21px; height:21px; }
 

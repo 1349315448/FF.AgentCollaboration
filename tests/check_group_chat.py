@@ -3,6 +3,7 @@ from contextlib import closing
 import hashlib
 from http.client import HTTPSConnection
 import json
+import os
 from pathlib import Path
 import sqlite3
 import ssl
@@ -176,7 +177,8 @@ def check(exe, case):
         assert mcp(exe,root,member_grant,"send_to_agent",target="@工作台用户",message="越界",files=["../etc"]).get("isError")
         db.close()
         if "--browser" in sys.argv:
-            subprocess.run(["node",Path(__file__).with_suffix(".cjs"),base,team,member,linked],check=True,timeout=80)
+            subprocess.run(["node",Path(__file__).with_suffix(".cjs"),base,team,member,linked],check=True,timeout=100,
+                           env=dict(os.environ, FF_CHAT_TEST_HOST=str(exe), FF_CHAT_TEST_STATE=str(root), LX_P0_WINDOW_GRANT=lead_grant))
     print("PASS group privacy, reciprocal links, multiple targets, durable receipts, user replies, leader changes and attachment download")
 
 

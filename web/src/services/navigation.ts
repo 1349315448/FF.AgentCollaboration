@@ -10,7 +10,7 @@ export function remoteOnline(remote:{status:string;connected:boolean;online:bool
 }
 
 export function peerPresence(online:boolean, connected?:boolean) {
-  return connected===false ? "连接中断" : online ? "在线" : "离线";
+  return connected===false ? "断联" : online ? "在线" : "离线";
 }
 
 export interface NavigationActions {

@@ -34,10 +34,13 @@
 .group-collab-checks,.group-collab-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 .group-collab-actions { justify-content:flex-end; }
 .group-collab-actions span { margin-right:auto; min-width:0; overflow-wrap:anywhere; color:var(--muted); }
-.tree-members details > summary {height:24px;line-height:24px;cursor:pointer;color:var(--muted);padding-inline:18px 4px;
+#project-tabs .tree-members {margin-inline-start:20px;border-inline-start:1px solid var(--line);}
+.tree-members > li > .tree-agent-line > .tree-agent {padding-inline-start:9px;}
+.tree-members details .tree-agent {padding-inline-start:23px;}
+.tree-members details > summary {height:24px;line-height:24px;cursor:pointer;color:var(--muted);padding-inline:9px 4px;
   font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
-.tree-members details details > summary {padding-inline-start:28px;color:var(--text)}
-.tree-members details details :is(.tree-remote,.tree-group-person) {padding-inline-start:38px}
+.tree-members details details > summary {padding-inline-start:23px;color:var(--text)}
+.tree-members details details .tree-group-person {padding-inline-start:37px}
 .tree-group-person {display:flex;align-items:center;gap:4px;width:100%;height:28px;min-width:0;border:0;
   border-radius:4px;background:transparent;text-align:left;color:var(--text);font-size:11px;}
 .tree-group-person:hover,.tree-group-person:focus-visible {background:var(--surface)}
@@ -55,5 +58,18 @@
 .tree-cooperation-toggle svg,.tree-loan-group svg { width:12px; height:12px; flex:none; }
 .tree-loan-group { height:28px; width:100%; min-width:0; padding-inline-start:38px; text-align:left; font-size:11px; }
 .tree-loan-group span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tree-loan-group small { flex:none; margin-left:auto; color:var(--muted); font-size:10px; }
+.tree-members details > ul > li > .tree-loan-group { padding-inline:23px 4px; color:var(--text); }
+.tree-members .tree-remote {
+  display:grid; grid-template-columns:12px 6px minmax(0,1fr) auto; grid-template-rows:14px 12px;
+  align-content:center; column-gap:4px; row-gap:0; padding-inline:23px 4px;
+}
+.tree-remote > svg { grid-area:1/1; width:12px; height:12px; }
+.tree-remote .nav-dot { grid-area:1/2; }
+.tree-remote b { grid-area:1/3; color:var(--text); }
+.tree-remote small { grid-area:1/4; }
+.tree-remote .remote-origin { grid-area:2/3/3/5; overflow:hidden; text-overflow:ellipsis; color:var(--muted); font-size:10px; }
+.tree-remote:has(.remote-quota) .remote-origin { grid-column-end:4; }
+.tree-remote .remote-quota { grid-area:2/4; justify-self:end; color:var(--muted); }
 .tree-loans .tree-group-person { padding-inline-start:48px; }
 .tree-cooperation-toggle:hover,.tree-loan-group:hover { background:var(--surface); color:var(--text); }

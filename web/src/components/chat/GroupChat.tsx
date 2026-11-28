@@ -22,7 +22,7 @@ function Group({topic,drafts}:{topic:Topic;drafts:Map<string,ChatDraft>}) {
   const [notice,setNotice]=useState(""), [unread,setUnread]=useState(0);
   const list = useRef<HTMLDivElement>(null), atBottom=useRef(true);
   const known=useRef<Set<string>|null>(null), restoreTop=useRef<{height:number;top:number}|null>(null);
-  const latest=useRef<string>(""),synchronized=useRef(0),requests=useRef(0);
+  const previousFloor=useRef(""),pendingFlights=useRef<ChatPost[]>([]),synchronized=useRef(0),requests=useRef(0);
   const displayedRef=useRef<ChatPost[]>([]);
   const route="/topics/"+topic.id+"/chat";
   const sync=useCallback(async(signal?:AbortSignal)=>{
@@ -40,13 +40,13 @@ function Group({topic,drafts}:{topic:Topic;drafts:Map<string,ChatDraft>}) {
     if(signal?.aborted || requestIndex<synchronized.current) return;
     synchronized.current=requestIndex;
     if(known.current){
-      const newPosts=data.filter(post=>position(post)>latest.current && !known.current!.has(post.id));
+      // 同一秒内来自不同队列的新消息可能排在已显示消息之前。满页时排除删除消息后补入的旧记录。
+      const newPosts=data.filter(post=>!known.current!.has(post.id) && position(post)>=previousFloor.current);
       if(newPosts.length && !atBottom.current) setUnread(count=>count+newPosts.length);
-      for(const post of newPosts.filter(p=>p.receipts.length||p.kind==="human-in"||p.replyTo||p.source!=="workbench-user").slice(0,4))
-        window.dispatchEvent(new CustomEvent("ff:chat-flight",{detail:post}));
+      pendingFlights.current.push(...newPosts.reverse());
     }
     known.current=new Set(data.map(item=>item.id));
-    latest.current=data[0]?position(data[0]):"";
+    previousFloor.current=data.length===40 && earliest?position(earliest):"";
     const refreshed=new Set(refresh);
     setHistory(current=>data.length<40 ? [] : [...new Map([...current,...older].map(post=>[post.id,post])).values()]
       .filter(post=>!refreshed.has(post.id)||changed.has(post.id)).map(post=>changed.get(post.id)??post));
@@ -77,6 +77,8 @@ function Group({topic,drafts}:{topic:Topic;drafts:Map<string,ChatDraft>}) {
     if(restoreTop.current){
       list.current.scrollTop=restoreTop.current.top+list.current.scrollHeight-restoreTop.current.height;restoreTop.current=null;
     }else if(atBottom.current)list.current.scrollTop=list.current.scrollHeight;
+    for(const post of pendingFlights.current.splice(0))
+      window.dispatchEvent(new CustomEvent("ff:chat-flight",{detail:post}));
   },[posts,history]);
   async function loadOlder(){
     if(loading||!displayed[0])return;

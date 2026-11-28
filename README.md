@@ -1,10 +1,10 @@
 # FF.AgentCollaboration
 
-当前版本 **Base v1.0.3**。
+当前工作台版本 **Base v1.0.4**。
 
-[下载 Windows、macOS 和 Linux 发布包](https://github.com/1349315448/FF.AgentCollaboration/releases/tag/v1.0.3)
+[下载 Windows x64 和 macOS Intel x64 工作台](https://github.com/1349315448/FF.AgentCollaboration/releases/tag/v1.0.4) · [Linux、Apple Silicon 和信令服务下载](https://github.com/1349315448/FF.AgentCollaboration/releases/tag/v1.0.3)
 
-这一版支持已批准的跨网协作自动续票。Agent 可以在群里交付文件和链接，点击文件在右侧预览或定位，点击网址在新标签页打开。用户也可以单独授权某个 Agent 更新工作台，并在重启后回到原会话继续任务。[更新与重启说明](docs/updates.md)
+在群里点名时，信封从输入框飞向收件人。Agent 互发消息和回给用户时也会显示投递轨迹。单独添加的外部 Agent 与本机 Agent 一起列在话题的「本组成员」里，用链环图标标识。整组合作的成员可在「协作小组」下展开查看。[使用说明](docs/usage.md)
 
 在一个浏览器窗口里，同时使用 Codex、Claude Code、GitHub Copilot 等原生 AI 终端。你可以让一个 Agent 写代码、另一个 Agent 审查，在同一页查看改动和回复。工作台可部署到 Windows、Linux 或 macOS，各 CLI 沿用自己的账号、模型和审批方式。
 

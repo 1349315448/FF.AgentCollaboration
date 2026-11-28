@@ -117,7 +117,6 @@ export function ProjectRail() {
       <div className="project-states" title="本地 Agent 状态汇总"><span data-activity="working">工作 <b>{all.working}</b></span><span data-activity="idle">空闲 <b>{all.idle}</b></span><span data-activity="offline">离线 <b>{all.offline}</b></span></div>
       <footer className="brand">
         <button type="button" className="icon-button" id="open-settings" title="工作台配置与环境检测" aria-label="工作台配置与环境检测"><WorkspaceIcon name="settings"/></button>
-        <span className="connection" id="connection" role="status" title="连接中" aria-label="连接中">连接中</span>
         <PlatformUpdates version={version}/>
       </footer>
     </div>

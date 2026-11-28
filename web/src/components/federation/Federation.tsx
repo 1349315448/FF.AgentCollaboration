@@ -143,11 +143,13 @@ function bindingDenied(remote:Capsule) {
 export function RemoteCapsule({remote:r,tree=false}:{remote:Capsule;tree?:boolean}) {
   const denied=bindingDenied(r), online=remoteOnline(r), status=denied?"无权限":r.status==="approved" ? peerPresence(online,r.connected) : states[r.status];
   const details=()=>open({remoteId:r.id,topicId:r.topicId});
+  const origin=[r.groupName,r.nodeName].filter(Boolean).join(" · "), quota=quotaText(r);
   return <button type="button" data-remote-id={r.id} data-activity={online?"idle":"offline"} className={tree?"tree-remote":"remote-capsule"}
         onClick={event=>{event.stopPropagation();if(event.detail===0) details();else if(tree) void navigation.switchTopic(r.topicId);}}
-        onDoubleClick={details} title={`${r.nodeName || "申请中"} · ${status} · 双击查看详情`}>
+        onDoubleClick={details} title={["外部 Agent @"+r.agentName,origin,status,quota,"双击查看详情"].filter(Boolean).join(" · ")}>
         <WorkspaceIcon name="network"/><span className="nav-dot" aria-hidden="true"/><b>@{r.agentName}</b>
-        {quotaText(r) && <span className="remote-quota">{quotaText(r)}</span>}
+        {tree&&<span className="remote-origin">{origin}</span>}
+        {quota && <span className="remote-quota">{tree?quota.replace(/^上次同步 · /,""):quota}</span>}
         {denied && !tree && <span className="remote-quota">无权限</span>}
         <small>{tree?status:(r.nodeName || states[r.status])+" · "+r.nodeId.slice(0,8)}</small>
       </button>;

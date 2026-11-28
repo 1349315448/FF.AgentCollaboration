@@ -11,6 +11,11 @@ const attachmentRoute = (topic:string,post:string,key:string) =>
   "/topics/"+topic+"/chat/"+encodeURIComponent(post)+"/attachments/"+encodeURIComponent(key);
 const time = (value:string) => new Date(value).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
 
+function addressLabel(name:string) {
+  if (name==="工作台用户" || name==="我") return "我";
+  return name.startsWith("@") ? name : "@"+name;
+}
+
 function Receipts({post}:{post:ChatPost}) {
   const [open,setOpen]=useState(false);
   const received=post.receipts.filter(r=>r.delivery==="delivered"&&!r.acknowledged).length;
@@ -61,13 +66,19 @@ export function ChatThread({topic, posts, busy, loadOlder, hasOlder, pending, me
       const reply=post.replyTo && quoted.get(post.replyTo);
       const sender=post.kind==="human-in" ? undefined : presence.get(post.source);
       const status=sender&&(sender.label??activityLabels[sender.activity]);
-      const recipients=post.recipients??post.receipts.map(r=>r.name);
-      const destination=recipients.length?recipients.join("、"):reply?reply.sender:post.source==="workbench-user"&&!system?"群聊":"";
+      const senderName=system || post.source==="workbench-restart" ? post.sender : addressLabel(post.sender);
+      const recipients=post.recipients??post.receipts.map(r=>post.kind==="incoming" ? names.get(r.target)??r.name : r.name);
+      let destination=recipients.map(addressLabel).join("、");
+      if (!destination && !system) {
+        if (reply) destination=addressLabel(reply.sender);
+        else if (post.source==="workbench-user") destination="群聊";
+        else if (post.kind==="human-in" || (post.recipients==null && post.kind==="post")) destination="我";
+      }
       return <article className="chat-message" key={post.id} data-message={post.id} data-mine={mine} data-system={system}>
         <div className="chat-message-body">
           <header>{sender&&<span className="chat-sender-status" data-activity={sender.activity} title={status} role="img" aria-label={status}><span className="nav-dot"/></span>}
-            <strong>{post.sender}</strong>{destination&&<span className="chat-destination" title={"发给 "+destination}>
-              → {destination}</span>}
+            <strong>{senderName}</strong>{destination&&<span className="chat-destination" title={"发给 "+destination}>
+              → <span className={destination.startsWith("@")?"chat-address":undefined}>{destination}</span></span>}
             {post.topic!==topic&&<small>关联小组</small>}
             <time dateTime={post.createdAt}>{time(post.createdAt)}</time>
             <div className="chat-message-actions">

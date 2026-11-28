@@ -1,20 +1,36 @@
 const assert = require("node:assert/strict");
+const {execFileSync} = require("node:child_process");
 const { chromium } = require("playwright");
 
 const [base, group, member, linked] = process.argv.slice(2);
 
-async function watchFlight(page){
-  await page.emulateMedia({reducedMotion:"no-preference"});
+async function watchFlight(page,reducedMotion="no-preference"){
+  await page.emulateMedia({reducedMotion});
   await page.evaluate(()=>{
+    window.flightObserver?.disconnect();
     window.chatFlightFrames=[];
-    new MutationObserver(records=>{
+    window.flightObserver=new MutationObserver(records=>{
       for(const record of records) for(const node of record.addedNodes){
         if(!node.matches?.(".chat-envelope-flight"))continue;
-        const frames=node.getAnimations()[0].effect.getKeyframes();
-        window.chatFlightFrames.push([frames[0].transform,frames.at(-1).transform]);
+        const motion=node.getAnimations()[0],frames=motion.effect.getKeyframes();
+        const trace=document.querySelector(".chat-flight-trail path");
+        const record=[frames[0].transform,frames.at(-1).transform,trace?.getBoundingClientRect().right];
+        window.chatFlightFrames.push(record);
+        motion.finished.then(()=>{record[1]=motion.effect.getKeyframes().at(-1).transform;});
       }
-    }).observe(document.body,{childList:true});
+    });
+    window.flightObserver.observe(document.body,{childList:true});
   });
+}
+
+function sendAsLeader(args){
+  const result=execFileSync(process.env.FF_CHAT_TEST_HOST,
+    ["workbench-mcp",process.env.FF_CHAT_TEST_STATE,"--notify-port",new URL(base).port],{
+      input:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"send_to_agent",arguments:args}})+"\n",
+      encoding:"utf8",timeout:15000,windowsHide:true
+    });
+  const response=JSON.parse(result).result;
+  assert(!response.isError,JSON.stringify(response.content));
 }
 
 function frameAt(frame,box){
@@ -62,6 +78,16 @@ async function checkInvite(context, provider, requesterUrl, requesterGroup) {
   await accepting.getByLabel("我的小组").selectOption(requesterGroup);
   assert.equal(await accepting.getByLabel("本组参与成员范围").inputValue(),"all");
   await accepting.getByRole("button",{name:"提交本组名单"}).click();
+  await accepting.getByRole("button",{name:"关闭小组合作"}).click();
+  const waitingTeam=requester.locator('[data-nav-topic="'+requesterGroup+'"]');
+  const expand=waitingTeam.locator(".topic-choice").getByRole("button",{name:/展开|收起/});
+  if(await expand.getAttribute("aria-expanded")==="false")await expand.click();
+  const waitingLink=waitingTeam.locator('[data-collab-branch="partners"] button.tree-loan-group');
+  await waitingLink.waitFor();
+  assert((await waitingLink.locator("span").innerText()).length>0);
+  assert.match(await waitingLink.locator("small").innerText(),/申请中|待审批/);
+  await waitingLink.click();
+  await accepting.getByText("常驻接口审阅",{exact:true}).waitFor();
   await asking.getByRole("button",{name:/乙组.*待审批/}).click();
   assert(await asking.getByRole("checkbox",{name:"@甲组组员",exact:true}).isChecked());
   await asking.getByText(/对方参与成员.*@乙组组员/).waitFor();
@@ -186,15 +212,48 @@ async function run() {
     const menu = name => page.locator(".workbench-menu summary").filter({hasText:new RegExp("^"+name+"$")});
     const input = chat.getByRole("textbox", { name: "群聊消息" });
     await page.locator(".brand").getByLabel(/^软件版本 Base v\d+\.\d+\.\d+/).waitFor();
+    const markBox=await page.locator("#project-collapse").boundingBox();
+    const dotBox=await page.locator(".platform-mark #connection").boundingBox();
+    assert(dotBox.x>=markBox.x+markBox.width/2 && dotBox.y>=markBox.y+markBox.height/2);
+    assert(dotBox.x+dotBox.width<=markBox.x+markBox.width && dotBox.y+dotBox.height<=markBox.y+markBox.height);
     if (member==="--external-user") {
       const project=page.locator(".project-select").first();
       if (await project.getAttribute("aria-expanded")==="false") await project.click();
       await page.locator('.topic-choice[data-topic="'+group+'"] .topic-label').click();
+      const branch=page.locator('.topic-choice[data-topic="'+group+'"]').getByRole("button",{name:/展开|收起/});
+      if(await branch.getAttribute("aria-expanded")==="false")await branch.click();
+      const topicTree=page.locator('[data-nav-topic="'+group+'"]');
+      const ownMembers=topicTree.locator('[data-collab-branch="own"]');
+      const contact=ownMembers.locator(".tree-remote").filter({hasText:"@提供组组长"});
+      await contact.locator(".remote-origin").waitFor();
+      assert.equal(await topicTree.getByText("外部 Agent",{exact:true}).count(),0);
+      assert(await contact.locator(":scope > svg").isVisible());
+      assert.equal((await contact.boundingBox()).height,28);
+      assert((await contact.locator(".remote-origin").boundingBox()).y>(await contact.locator("b").boundingBox()).y);
+      const summary=ownMembers.locator(":scope > summary");
+      await summary.click();
+      assert(!(await contact.isVisible()));
+      const textX=await summary.evaluate(node=>{
+        const range=document.createRange();
+        range.selectNodeContents(node);
+        return range.getBoundingClientRect().left;
+      });
+      assert(textX>(await topicTree.locator(".topic-label").boundingBox()).x+8);
+      await summary.click();
+      await contact.waitFor();
       await input.fill("@提供");
       await chat.getByRole("option",{name:/@提供组组长/}).click();
       await page.keyboard.insertText("请核对接口");
       await input.press("Enter");
       await chat.locator(".chat-message").filter({hasText:"@提供组组长 请核对接口"}).locator(".chat-receipts").waitFor();
+      await page.route(url=>url.pathname==="/api/state",async route=>{
+        const response=await route.fetch(), data=await response.json();
+        for(const peer of data.federation.remotes) {peer.connected=false;peer.deniedAgentIds=[];}
+        await route.fulfill({response,json:data});
+      });
+      await page.evaluate(()=>refresh());
+      await contact.getByText("断联",{exact:true}).waitFor();
+      assert.match(await contact.getAttribute("title"),/断联/);
       assert.deepEqual(errors,[]);
       return;
     }
@@ -257,6 +316,13 @@ async function run() {
     assert.equal(await post(note).locator(".chat-text").textContent(),note+"\n第二行");
     assert.equal(await post(note).locator(".chat-receipts").count(),0);
     assert.equal(await post(note).locator(".chat-destination").getAttribute("title"),"发给 群聊");
+    const route=async(text,from,to)=>{
+      const head=post(text).locator(".chat-message-body > header");
+      assert.equal(await head.locator("strong").innerText(),from);
+      assert.equal((await head.locator(".chat-destination").innerText()).trim(),"→ "+to);
+    };
+    await route("组长多选","@组长","@开发、@测试组长");
+    await route("开发完成","@开发","我");
 
     // 该用例由数据库构造成员，工作台不会为这些成员起真实 CLI 进程。在视图边界给一位成员设置在线状态。
     const stateApi=url=>url.pathname==="/api/state";
@@ -301,22 +367,54 @@ async function run() {
     assert.equal(await chat.locator(".chat-editor .chat-address").textContent(),"@开发");
     assert.equal(await chat.locator(".chat-editor .chat-reference").textContent(),"#离线成员");
     await chat.getByRole("button",{name:"发送",exact:true}).waitFor();
+    const localBranch=page.locator('.topic-choice[data-topic="'+group+'"]').getByRole("button",{name:/展开|收起/});
+    if(await localBranch.getAttribute("aria-expanded")==="false") await localBranch.click();
+    const memberRowInGroup=page.locator('[data-nav-topic="'+group+'"] .tree-agent[data-agent="'+member+'"]');
+    const leadRow=page.locator('[data-nav-topic="'+group+'"] .tree-agent').filter({hasText:"@组长"});
+    await watchFlight(page,"reduce");
     await input.press("Enter");
     const inline="请@开发 看看接口测试 请找 #离线成员 核对";
     await post(inline).locator(".chat-receipts").waitFor();
-    assert.equal(await post(inline).locator(".chat-destination").getAttribute("title"),"发给 开发");
+    await route(inline,"我","@开发");
     assert.equal(await post(inline).locator(".chat-text").textContent(),inline);
     assert.equal(await post(inline).locator(".chat-text .chat-address").textContent(),"@开发");
     assert.equal(await post(inline).locator(".chat-text .chat-reference").textContent(),"#离线成员");
     const response = await page.request.get(base+"/api/topics/"+group+"/chat");
     const addressed = (await response.json()).find(item=>item.text===inline);
     assert.deepEqual(addressed.receipts.map(receipt=>receipt.target),[member]);
+    await page.waitForFunction(()=>window.chatFlightFrames.length===1);
+    await page.waitForFunction(()=>!document.querySelector(".chat-flight-trail"));
+    const [outbound]=await page.evaluate(()=>window.chatFlightFrames);
+    const composerBox=await input.boundingBox(),memberBox=await memberRowInGroup.boundingBox();
+    assert(frameAt(outbound[0],composerBox)&&frameAt(outbound[1],memberBox),
+      "composer to chosen member with reduced motion: "+JSON.stringify({outbound,composerBox,memberBox}));
+    assert(outbound[2]>0,"visible path");
+    await page.waitForFunction(()=>!document.querySelector(".chat-flight-trail"));
+    await watchFlight(page);
+    sendAsLeader({target:member,message:"成员间弧线测试"});
+    await post("成员间弧线测试").waitFor();
+    await page.waitForFunction(()=>window.chatFlightFrames.length===1);
+    const [between]=await page.evaluate(()=>window.chatFlightFrames);
+    assert(frameAt(between[0],await leadRow.boundingBox())&&frameAt(between[1],await memberRowInGroup.boundingBox()),"member to member");
+    const rail=await page.locator("#project-tabs").boundingBox();
+    assert(between[2]>rail.x+rail.width,"path leaves the tree before returning");
+    await page.waitForFunction(()=>!document.querySelector(".chat-flight-trail"));
+    await watchFlight(page);
+    sendAsLeader({target:"@工作台用户",message:"新交付回复飞行测试",files:["接口说明.md"]});
+    const replyHead=post("新交付回复飞行测试").locator(".chat-message-body > header");
+    await replyHead.waitFor();
+    await page.waitForFunction(()=>window.chatFlightFrames.length===1);
+    const [inbound]=await page.evaluate(()=>window.chatFlightFrames);
+    assert(frameAt(inbound[0],await leadRow.boundingBox())&&frameAt(inbound[1],await replyHead.boundingBox()),"unsolicited delivery to its new chat message");
+    await page.waitForFunction(()=>!document.querySelector(".chat-flight-trail,.chat-envelope-flight,.chat-flick-hand"));
+    await watchFlight(page);
 
     await input.fill("请记下 #离");
     await chat.getByRole("option",{name:/#离线成员/}).click();
     await input.press("Enter");
     await post("请记下 #离线成员").waitFor();
     assert.equal(await post("请记下 #离线成员").locator(".chat-receipts").count(),0);
+    assert.equal(await page.evaluate(()=>window.chatFlightFrames.length),0,"reference-only post has no flight");
 
     await input.fill("请@开");
     await chat.getByRole("option", {name:/@开发/}).click();
@@ -346,7 +444,7 @@ async function run() {
     const inspector=page.locator("#inspector-shell");
     await inspector.getByRole("img",{name:"截图.png",exact:true}).waitFor();
     const delivery=post("成果清单");
-    assert.equal(await delivery.locator(".chat-destination").getAttribute("title"),"发给 工作台用户");
+    assert.equal(await delivery.locator(".chat-destination").getAttribute("title"),"发给 我");
     await delivery.getByRole("button",{name:"接口说明.md",exact:true}).click();
     await inspector.locator(".markdown-preview").getByText("approved project attachment").waitFor();
     await page.setViewportSize({width:2400,height:900});
@@ -389,19 +487,21 @@ async function run() {
     const target=linkedState.windows.find(w=>w.agent.name==="测试成员").agent.id;
     const partner=page.locator('[data-nav-topic="'+group+'"] [data-remote-id="'+target+'"]');
     await partner.waitFor();
-    const origin=await chat.locator(".chat-heading-title").boundingBox();
+    const origin=await input.boundingBox();
     const endpoint=await partner.boundingBox();
     const linkedStatus=await page.request.post(base+"/api/topics/"+group+"/chat",{
-      data:{text:"左侧跨组动画",targets:[target]}
+      data:{text:"左侧跨组动画",targets:[member,target]}
     });
     assert.equal(linkedStatus.status(),200);
     await post("左侧跨组动画").waitFor();
-    await page.waitForFunction(()=>window.chatFlightFrames.length>0);
-    await page.locator(".chat-envelope-flight").waitFor({state:"detached"});
+    await page.waitForFunction(()=>window.chatFlightFrames.length>=2);
+    await page.waitForFunction(()=>!document.querySelector(".chat-envelope-flight"));
     const frames=await page.evaluate(()=>window.chatFlightFrames);
-    assert.equal(frames.length,1);
-    assert(frameAt(frames[0][0],origin));
-    assert(frameAt(frames[0][1],endpoint));
+    assert.equal(frames.length,2);
+    assert(frames.every(frame=>frameAt(frame[0],origin)));
+    assert(frames.some(frame=>frameAt(frame[1],endpoint)));
+    const localEnd=await memberRowInGroup.boundingBox();
+    assert(frames.some(frame=>frameAt(frame[1],localEnd)));
     const groupRow = page.locator('.topic-choice[data-topic="'+group+'"]');
     const branch = groupRow.getByRole("button",{name:/展开|收起/});
     if (await branch.getAttribute("aria-expanded")==="false") await branch.click();
