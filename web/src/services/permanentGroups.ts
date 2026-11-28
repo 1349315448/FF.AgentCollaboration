@@ -21,5 +21,5 @@ export function openGroupCollaboration(id?:string,tab:"local"|"external"="extern
 
 export function approvedGroupRecipients(groups:GroupCollaborationView[]|undefined,topic:string,actor?:string) {
   return (groups??[]).filter(group=>group.topic===topic && group.status==="approved" &&
-    (!actor||group.members.includes(actor))).flatMap(group=>group.recipients);
+    (!actor||group.members.includes(actor))).flatMap(group=>group.recipients.map(recipient=>({...recipient,connected:group.connected})));
 }

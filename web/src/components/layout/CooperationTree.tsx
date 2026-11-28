@@ -2,7 +2,7 @@ import {useState,type ReactNode} from "react";
 import {useWorkbench,type Topic,type WindowView} from "../../store/workbenchStore";
 import {groupLinkSides,includedMember} from "../../services/groupLinks";
 import {openGroupCollaboration} from "../../services/permanentGroups";
-import {navigation,activityLabels} from "../../services/navigation";
+import {navigation,activityLabels,peerPresence} from "../../services/navigation";
 import {engineNames} from "../../services/engines";
 import {RemoteCapsule,viewReturnContact} from "../federation/Federation";
 import {AgentNavigationItem} from "./AgentNavigationItem";
@@ -69,7 +69,7 @@ export function CooperationTree({topic,members}:{topic:Topic;members:WindowView[
     const open=()=>openGroupCollaboration(group.id);
     const people=group.recipients.filter(person=>person.engine).sort((a,b)=>Number(b.online)-Number(a.online)).map(person=>
       <Person key={person.key} id={person.key} name={person.name} engine={person.engine} leader={person.leader}
-        activity={person.online?"idle":"offline"} status={person.online?"在线":"离线"} open={open}/>);
+        activity={person.online?"idle":"offline"} status={peerPresence(person.online,group.connected)} open={open}/>);
     const owners=!group.requester&&group.memberMode==="selected"&&group.members.length ? group.members : undefined;
     cooperations.push({id:group.id,label,people:people.length?people:
       <li><button type="button" className="text-button" onClick={open}>查看合作</button></li>,owners,open});
@@ -84,7 +84,7 @@ export function CooperationTree({topic,members}:{topic:Topic;members:WindowView[
     const open=()=>viewReturnContact(contact.id);
     cooperations.push({id:contact.grantId??contact.id,label:contact.nodeName,owners:[contact.windowId],open,
       people:<Person id={contact.id} name={contact.name} activity={contact.online?"idle":"offline"}
-        status={contact.online?"在线":"离线"} open={open}/>});
+        status={peerPresence(contact.online,contact.connected)} open={open}/>});
   }
   const own=[...members].sort((a,b)=>Number(b.agent.online)-Number(a.agent.online)).map(view=>
     <OwnMember key={view.agent.id} view={view} cooperations={cooperations.filter(item=>item.owners?.includes(view.agent.id))}/>);

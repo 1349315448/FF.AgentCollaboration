@@ -171,7 +171,7 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
                 query.TryGetValue("topic",out var topic)?WorkbenchInput.Id(topic):null);
         return store.AddRemote(WorkbenchInput.Id(input.TopicId), endpoint.GetLeftPart(UriPartial.Authority), pin, WorkbenchInput.Id(query["node"]),
             WorkbenchInput.Id(query["window"]), WorkbenchInput.AgentName(query["agent"]), share, WorkbenchInput.Text(input.Purpose, "申请用途", 300),
-            input.ContactSelected ? new ContactBinding(WorkbenchInput.Id(input.TopicId),input.AgentId) : null);
+            input.ContactSelected ? new ContactBinding(WorkbenchInput.Id(input.TopicId),input.AgentId) : null, input.ResumeRemoteId);
     }
     public void Dispose() => certificate?.Dispose();
 }

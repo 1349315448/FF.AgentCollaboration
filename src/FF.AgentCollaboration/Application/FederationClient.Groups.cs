@@ -60,6 +60,8 @@ internal sealed partial class FederationClient
                     advertised=push.Exchange.Roster;
                     bool changed=db.ReceiveGroupSession(id,answer.Session);
                     if (answer.Session.Status!="approved") { if(changed) events.Changed(); return; }
+                    if(response.Headers.Contains("X-FF-Rtc-Pairs"))
+                        await ConfirmRtcPair(remote,group:true,client,ct);
                     changed|=db.ReceiveGroupReceipts(id,answer.Receipts);
                     track=answer.Track;
                     acknowledgement=null;

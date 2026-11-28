@@ -38,7 +38,7 @@ internal static class WorkbenchMcp
                     resend = new { type = "string", description = "Original message ID. Omit message and document." },
                     supersedePrevious = new { type = "boolean", @default = true, description = "Replace your earlier pending or uncertain messages to this recipient. Set false for independent tasks." },
                     cancel = new { type = new[] { "string", "boolean" }, description = "Only retract your own unclaimed or uncertain message: its full message ID alone, or true with target to retract the latest eligible message. Does not stop work already started." },
-                    files = new { type = "array", items = new { type = "string" }, description = "Existing files within your project directory. Relative or absolute paths." },
+                    files = new { type = "array", items = new { type = "string" }, description = "Existing project files, up to 20 per message. Deliver user-facing artifacts to @工作台用户. Include replyTo for a group chat request; omit it for an original CLI request." },
                     autoReturnHint = new { type = new[] { "string", "boolean" }, description = "Optional instruction to return results. True asks the recipient to reply using send_to_agent." }
                 },
                 additionalProperties = false
@@ -47,6 +47,12 @@ internal static class WorkbenchMcp
         new { name=CollaborationTools.ReportTask, description="Report starting work, waiting for clarification, or completing a received task. If a reply was requested send the final result with send_to_agent and replyTo instead of completed.",
             inputSchema=new { type="object", properties=new { messageId=new {type="string"}, status=new {type="string", @enum=new[]{"working","need_info","completed"}} },
                 required=new[]{"messageId","status"}, additionalProperties=false } },
+        new { name=CollaborationTools.ResumeAfterRestart, description="Save a task for this Agent's current session. The user must select it for an update or restart. It is delivered only after the new host confirms that operation. Calling again replaces this Agent's unassigned draft.",
+            inputSchema=new {type="object",properties=new {message=new {type="string",maxLength=4000}},
+                required=new[]{"message"},additionalProperties=false} },
+        new { name=CollaborationTools.WorkbenchUpdate,description="Check the configured signed workbench release channel or request a local update/restart. Apply and restart require the user's per-Agent permission. Save your own continuation first with resume_after_restart. Use mode idle to wait for screens to be safe.",
+            inputSchema=new {type="object",properties=new {action=new {type="string",@enum=new[]{"check","apply","restart"}},
+                version=new {type="string"},mode=new {type="string",@enum=new[]{"idle","now"}}},required=new[]{"action"},additionalProperties=false} },
         Mcp.Tool(CollaborationTools.ShowExternalApproval, "Show the human approval dialog for an external collaboration application addressed to this Agent. Use only the application ID from the workbench notice. This tool cannot approve or reject.", "applicationId"),
         new { name=CollaborationTools.SendPeerFiles,
             description="Send files to an authorized external Agent. For a new message use target + message; use attachTo instead to supplement an original message sent by this Agent. Only relative project paths. The workbench asks the user unless this Agent already has permanent approval.",
@@ -124,6 +130,8 @@ internal static class WorkbenchMcp
 
     private static readonly HttpClient Notifications = new(new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false })
         { Timeout = TimeSpan.FromMilliseconds(500) };
+    private static readonly HttpClient Updates = new(new SocketsHttpHandler { AllowAutoRedirect=false, UseProxy=false })
+        { Timeout=TimeSpan.FromSeconds(12) };
 
     internal static Task Serve(string root, int? port)
     {
@@ -160,7 +168,7 @@ internal static class WorkbenchMcp
             }
             string result = Call(root, grant, name, input, ObserveIdentity, port);
             if (port.HasValue && name is CollaborationTools.Send or CollaborationTools.FinishTopic or CollaborationTools.ReportTask or
-                CollaborationTools.ProposeTeam or CollaborationTools.ShowExternalApproval or CollaborationTools.SendPeerFiles or CollaborationTools.UpdateTeam)
+                CollaborationTools.ProposeTeam or CollaborationTools.ShowExternalApproval or CollaborationTools.SendPeerFiles or CollaborationTools.UpdateTeam or CollaborationTools.ResumeAfterRestart)
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/api/events/wake");
                 request.Headers.Add("X-FF-Notify", "1");
@@ -184,6 +192,7 @@ internal static class WorkbenchMcp
                 "需要查询、记录项目知识或索取澄清时，按需调用 read_knowledge_skill。" +
                 "协作收件通过 receive_message 进入当前会话。收到信件编号时调用该工具领取，空结果表示已由其他调用领取或已撤回。" +
                 "用 @名称 或 @话题/名称 寻址。长文通过 document 传 Markdown 路径，message 用简短摘要。" +
+                "向本机用户交付图片、视频、文档、发布包或链接时，用 send_to_agent 向 @工作台用户 发一条清单：文件放 files，完整 HTTP(S) 网址写进 message。只有网址也要发。群聊交办时关联原 MSG_ID，CLI 直接交办时省略 replyTo。跨端按原授权回信。" +
                 "开始收到的任务用 report_task_status(MSG_ID, working)；无须回信用 completed 结案，需回信用 send_to_agent 的 replyTo 关联原 MSG_ID。中途回信加 finalReply=false。更新需求默认 supersedePrevious=true；独立任务设为 false。交接、审核或交付图片时，调用 read_collaboration_skill 读取本窗口的 ff-agent-collab 规范和示例。";
         }, () =>
         {
@@ -248,6 +257,22 @@ internal static class WorkbenchMcp
             if(state.DedicatedReader(caller.Id)) throw new WorkbenchError("专用审阅会话不支持该操作",WorkbenchFailure.Forbidden);
         switch (name)
         {
+            case CollaborationTools.WorkbenchUpdate:
+                if(port==null || state.DedicatedReader(caller.Id))
+                    throw new WorkbenchError("当前终端没有工作台更新通道",WorkbenchFailure.Forbidden);
+                using(var request=new HttpRequestMessage(HttpMethod.Post,$"http://127.0.0.1:{port}/api/updates/agent"))
+                {
+                    request.Headers.Authorization=new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer",grant);
+                    request.Content=System.Net.Http.Json.JsonContent.Create(input);
+                    using var response=Updates.Send(request);
+                    string body=response.Content.ReadAsStringAsync().GetAwaiter().GetResult();
+                    if(!response.IsSuccessStatusCode)
+                        throw new WorkbenchError(body.Length==0?"当前 Agent 无权更新工作台":JsonNode.Parse(body)?["error"]?.GetValue<string>()??"更新请求失败");
+                    return body;
+                }
+            case CollaborationTools.ResumeAfterRestart:
+                return JsonSerializer.Serialize(new { id=state.SaveRestartTask(grant,WorkbenchInput.Text((string?)input["message"],"恢复任务",4000)),
+                    status="awaiting_restart" });
             case CollaborationTools.SendPeerFiles:
                 if (input["files"] is not JsonArray attachments) throw new WorkbenchError("请选择要发送的项目附件");
                 return JsonSerializer.Serialize(state.QueuePeerAttachments(grant, (string?)input["target"], (string?)input["message"],

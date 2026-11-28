@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { request } from "../../services/api";
-import { navigation, remoteOnline } from "../../services/navigation";
+import { navigation, peerPresence, remoteOnline } from "../../services/navigation";
 import { useWorkbench, type Topic } from "../../store/workbenchStore";
 import { approvedGroupRecipients,openGroupCollaboration } from "../../services/permanentGroups";
 import { NavigationName } from "../layout/NavigationName";
@@ -94,13 +94,13 @@ function Group({topic,drafts}:{topic:Topic;drafts:Map<string,ChatDraft>}) {
   for (const remote of snapshot?.federation?.remotes ?? []) {
     if (remote.topicId===topic.id && remote.status==="approved") {
       const online=remoteOnline(remote);
-      presence.set(remote.id,{activity:online?"idle":"offline",label:online?"在线":"离线"});
+      presence.set(remote.id,{activity:online?"idle":"offline",label:peerPresence(online,remote.connected)});
     }
   }
   const pending=new Set(snapshot?.federation?.grants.filter(grant=>grant.status==="pending"&&roster.some(w=>w.agent.id===grant.windowId)).map(g=>g.id)??[]);
   const groupApplications=(snapshot?.federation?.groups??[]).filter(group=>group.topic===topic.id&&!group.requester&&group.status==="pending");
   for(const person of approvedGroupRecipients(snapshot?.federation?.groups,topic.id))
-    if(person.engine)presence.set(person.key,{activity:person.online?"idle":"offline",label:person.online?"在线":"离线"});
+    if(person.engine)presence.set(person.key,{activity:person.online?"idle":"offline",label:peerPresence(person.online,person.connected)});
   const targets=chatTargets(snapshot,topic,links);
   return <section id="group-chat" aria-label="小组群聊">
     <header className="chat-heading">

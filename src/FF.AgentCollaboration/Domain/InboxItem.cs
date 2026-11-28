@@ -5,10 +5,12 @@ internal sealed record InboxItem(string Id, string Target, string From, string T
 {
     internal const string ChatUser = "workbench-user";
     internal const string ChatUserAddress = "@工作台用户";
+    internal const string RestartSource = "workbench-restart";
 
     internal bool ProjectDocument { get; init; }
     public string? FromTopic { get; init; }
     public string? Source { get; init; }
+    public string? Kind => Source == RestartSource ? "resume_after_restart" : null;
     public string? ReplyTo { get; init; }
     public bool? FinalReply { get; init; }
     public bool Acknowledged { get; init; }
@@ -19,6 +21,7 @@ internal sealed record InboxItem(string Id, string Target, string From, string T
     {
         string sender = FromTopic == null ? From : FromTopic + "/" + From;
         var sections = new List<string> { $"MSG_ID: {Id[..8]}", $"FROM_AGENT: {sender}" };
+        if (Kind != null) sections.Add($"TYPE: {Kind}");
         if (Document == null) sections.Add("MSG: " + Text);
         else
         {

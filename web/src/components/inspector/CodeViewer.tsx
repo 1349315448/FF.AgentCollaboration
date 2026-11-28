@@ -6,10 +6,11 @@ import { codeViewport } from "../../runtime/workspaceModes.js";
 import { WorkspaceIcon } from "../layout/WorkspaceIcon";
 import { FileTreeView } from "./FileTreeView";
 import { useGitWorkspace, type GitChange } from "./gitWorkspace";
-import { dirty, fileUrl, useEditor, type FileTab } from "./workspaceFiles";
+import { dirty, fileUrl, useEditor, type FileTab, type FileView } from "./workspaceFiles";
 
 const RichPreview = lazy(()=>import("./RichPreview"));
 const CodeText = lazy(()=>import("./CodeText"));
+const MarkdownBody = lazy(()=>import("./MarkdownBody").then(m=>({default:m.MarkdownBody})));
 function currentAgent() {
   const members=snapshot?.windows.filter(w=>w.agent.topicId===selectedTopicId)??[];
   if (!layout) return;
@@ -40,6 +41,7 @@ export default function CodeViewer({project,openDiff,reveal}:{project:string;ope
   const {tabs,active,session}=useEditor(project);
   const tab=tabs.find(t=>t.path===active), file=tab?.file;
   const [treeOpen,showTree]=useState(true), [notice,setNotice]=useState("");
+  const [located,setLocated]=useState("");
   const [,setLayoutTick]=useState(0);
   useEffect(()=>{
     const update=()=>setLayoutTick(n=>n+1);
@@ -50,14 +52,28 @@ export default function CodeViewer({project,openDiff,reveal}:{project:string;ope
   },[]);
   const agent=currentAgent();
   const open=useCallback(async(path:string)=>{
-    try { setNotice(""); await session.open(path); }
+    try { setLocated("");setNotice(""); await session.open(path); }
     catch(e){setNotice((e as Error).message);}
   },[session]);
   useEffect(()=>{
     if(!reveal)return;
     showTree(true);
-    void open(reveal.path);
-  },[reveal,open]);
+    setLocated(reveal.path);
+    setNotice("");
+    const control=new AbortController();
+    async function preview(path:string) {
+      try {
+        const current=session.read().tabs.find(t=>t.path===path)?.file;
+        const file=current??await request<FileView>(fileUrl(project,path),{signal:control.signal});
+        if(control.signal.aborted)return;
+        if(["large","binary","legacy-ppt"].includes(file.kind)){
+          setNotice("已定位到 "+path+"，此文件不支持预览。");
+        }else await session.open(path,file);
+      } catch(error){if(!control.signal.aborted)setNotice((error as Error).message);}
+    }
+    void preview(reveal.path);
+    return ()=>control.abort();
+  },[reveal,session,project]);
   async function sendPath() {
     const target=currentAgent();
     if (!target?.online || !file) return;
@@ -75,12 +91,12 @@ export default function CodeViewer({project,openDiff,reveal}:{project:string;ope
   return <div className="files-workbench" data-tree={treeOpen} onKeyDown={e=>{
     if (e.key.toLowerCase()==="s" && (e.ctrlKey||e.metaKey)) {e.preventDefault();if(tab && dirty(tab)) void session.save(tab).then(git.refresh);}
   }}>
-    {treeOpen && <FileTreeView {...{project,open,active,openDiff,reveal}}/>}
+    {treeOpen && <FileTreeView {...{project,open,openDiff,reveal}} active={located||active}/>}
     <div className="code-workspace"><div className="file-tabbar">
       <button className="inspector-icon" aria-label={treeOpen?"收起文件树":"展开文件树"} aria-expanded={treeOpen} title={treeOpen?"收起文件树":"展开文件树"} onClick={()=>showTree(v=>!v)}><WorkspaceIcon name="rail"/></button>
       <div role="tablist" aria-label="已打开文件">{tabs.map(t=><div className="file-tab" key={t.path} data-active={active===t.path}
         onMouseDown={e=>{if(e.button===1)e.preventDefault();}} onAuxClick={e=>{if(e.button===1){e.preventDefault();session.close(t.path);}}}>
-        <button type="button" role="tab" aria-selected={active===t.path} title={t.path} onClick={()=>{session.select(t.path);setNotice("");}}>{t.path.split("/").pop()}{dirty(t) && <i className="dirty-dot" aria-label="有未保存的修改"/>}</button>
+        <button type="button" role="tab" aria-selected={active===t.path} title={t.path} onClick={()=>{session.select(t.path);setLocated("");setNotice("");}}>{t.path.split("/").pop()}{dirty(t) && <i className="dirty-dot" aria-label="有未保存的修改"/>}</button>
         <button type="button" aria-label={"关闭 "+t.path} disabled={t.saving} onClick={()=>session.close(t.path)}><WorkspaceIcon name="close"/></button>
       </div>)}</div>
     </div>
@@ -90,7 +106,8 @@ export default function CodeViewer({project,openDiff,reveal}:{project:string;ope
       {!file?(!tab.error && <p className="inspector-empty">正在读取…</p>):file.kind==="text"?
         tab.draft!==undefined?<textarea aria-label="编辑文件内容" className="source-editor" spellCheck={false} value={tab.draft} disabled={tab.saving||tab.loading}
           onChange={e=>session.update(active,{draft:normalizeEdit(e.target.value,tab.draft??"")})}/>:
-        <Suspense fallback={<p className="inspector-empty">正在显示代码…</p>}><CodeText path={active} content={file.content??""}/></Suspense>
+        <Suspense fallback={<p className="inspector-empty">正在打开…</p>}>{located===active && /\.md$/i.test(active)
+          ?<article className="markdown-preview"><MarkdownBody content={file.content??""}/></article>:<CodeText path={active} content={file.content??""}/>}</Suspense>
         :<Suspense fallback={<p className="inspector-empty">正在加载预览…</p>}><RichPreview key={active+file.mtimeUtc} file={file} url={"/api"+fileUrl(project,active)+"&raw=true&v="+encodeURIComponent(file.mtimeUtc)}/></Suspense>}
       {file && <div className="file-actions">
         <button title="复制相对路径" onClick={async()=>{try {await copyText(active);setNotice("已复制相对路径");} catch {setNotice("浏览器未允许复制路径");}}}><WorkspaceIcon name="copy"/>复制路径</button>

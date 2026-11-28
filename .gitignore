@@ -26,6 +26,8 @@ coordinator.lock
 /development-tasks/
 /signaling-keys/
 /FF.AgentCollaboration/signaling-keys/
+.ff-updates/
+signaling-pairings.json
 
 # Historical research notes from the development machine
 /docs/engine-protocol-research.md

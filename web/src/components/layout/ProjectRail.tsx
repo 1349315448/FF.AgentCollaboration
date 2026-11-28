@@ -3,6 +3,7 @@ import { useWorkbench, type Topic, type ProjectTotals } from "../../store/workbe
 import { navigation, projectKey, remoteOnline } from "../../services/navigation";
 import { fitProjectPath } from "../../services/projectPath";
 import {CooperationTree} from "./CooperationTree";
+import {PlatformUpdates} from "./PlatformUpdates";
 import { NavigationName } from "./NavigationName";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import { ProjectKnowledgeDialog } from "../dialogs/ProjectKnowledgeDialog";
@@ -117,7 +118,7 @@ export function ProjectRail() {
       <footer className="brand">
         <button type="button" className="icon-button" id="open-settings" title="工作台配置与环境检测" aria-label="工作台配置与环境检测"><WorkspaceIcon name="settings"/></button>
         <span className="connection" id="connection" role="status" title="连接中" aria-label="连接中">连接中</span>
-        <span className="brand-version" aria-label={"软件版本 "+version}>{version}</span>
+        <PlatformUpdates version={version}/>
       </footer>
     </div>
     {settingsPath && <ProjectKnowledgeDialog key={settingsPath} project={settingsPath} onClose={()=>setSettingsPath(undefined)}/>}

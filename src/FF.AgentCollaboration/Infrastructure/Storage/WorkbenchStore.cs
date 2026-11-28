@@ -68,6 +68,9 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
                     """);
             InitializeManagedMcps();
             InitializeManagedSkills();
+            if (!columns.Contains("auto_start")) Exec("ALTER TABLE windows ADD COLUMN auto_start INTEGER NOT NULL DEFAULT 0");
+            if (!columns.Contains("allow_platform_update")) Exec("ALTER TABLE windows ADD COLUMN allow_platform_update INTEGER NOT NULL DEFAULT 0");
+            InitializeRestartTasks();
             Exec("CREATE TABLE IF NOT EXISTS copilot_session_archives(session TEXT PRIMARY KEY)");
             bool customPaths = CustomPaths;
             // 旧库可能保存了目录但还没有 custom_paths。普通重开应沿用当时的路径与交接模式。

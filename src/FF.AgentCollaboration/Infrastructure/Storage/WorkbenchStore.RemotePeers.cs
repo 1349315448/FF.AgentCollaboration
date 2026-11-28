@@ -5,13 +5,15 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 
 internal sealed partial class WorkbenchStore
 {
-    internal string AddRemote(string topic, string endpoint, string pin, string provider, string window, string agent, string token, string purpose, ContactBinding? binding)
+    internal string AddRemote(string topic, string endpoint, string pin, string provider, string window, string agent, string token, string purpose, ContactBinding? binding,
+        string? resumeRemoteId = null)
     {
         string id = Guid.NewGuid().ToString("N");
         Atomic(() =>
         {
             ExternalLeader(topic, binding?.AgentId);
             if (provider == FedSetting("node_id")) throw new WorkbenchError("这是本工作台的 Agent，不能添加为外部协作 Agent。", WorkbenchFailure.Conflict);
+            if (resumeRemoteId != null) RequireRemoteResume(resumeRemoteId, topic, provider, window, pin);
             var prior = Read("SELECT id,pin FROM fed_remote WHERE provider=$p0 AND window_id=$p1 AND status IN ('applying','pending','approved')",
                 r => (r.GetString(0), r.GetString(1)), provider, window).SingleOrDefault();
             if (prior.Item1 != null)
@@ -28,6 +30,16 @@ internal sealed partial class WorkbenchStore
             if (binding != null) BindContact(id,binding);
         });
         return id;
+    }
+
+    internal void RequireRemoteResume(string id, string topic, string provider, string window, string pin)
+    {
+        var existing = Remote(WorkbenchInput.Id(id));
+        if (existing?.Status != "approved" || existing.Provider != provider || existing.WindowId != window ||
+            !Read("SELECT 1 FROM fed_remote_topic WHERE remote=$p0 AND topic=$p1", _ => true, id, topic).Any())
+            throw new WorkbenchError("请贴入同一个外部 Agent 的新分享链接", WorkbenchFailure.Conflict);
+        if (!string.Equals(existing.Pin, pin, StringComparison.OrdinalIgnoreCase))
+            throw new FederationException(409, "certificate_changed");
     }
 
     internal List<string> ActiveRemotes() => Read("SELECT id FROM fed_remote WHERE status IN ('applying','pending','approved') AND (contacts_published=1 OR id IN (SELECT remote FROM fed_remote_topic))", r => r.GetString(0));

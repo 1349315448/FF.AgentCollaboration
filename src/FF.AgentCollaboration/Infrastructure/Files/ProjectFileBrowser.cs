@@ -137,13 +137,16 @@ internal sealed class ProjectFileBrowser(string root)
         !content.Any(c => char.IsControl(c) && c is not ('\r' or '\n' or '\t' or '\f'));
 
     internal WorkspaceFile Read(string path) => Inspect(Resolve(path), path).File;
-    internal static WorkspaceFile ReadDocument(string authorizedPath) => Inspect(authorizedPath, Path.GetFileName(authorizedPath)).File;
+    internal static WorkspaceFile ReadDocument(string authorizedPath, string? name = null) => Inspect(authorizedPath, name ?? Path.GetFileName(authorizedPath)).File;
     private static int PreviewLimitFor(string path) => Path.GetExtension(path).ToLowerInvariant() is ".mp4" or ".webm"
         ? VideoPreviewLimit : PreviewLimit;
 
-    internal (FileStream Stream, string Mime) OpenPreview(string path, bool imagesOnly)
+    internal (FileStream Stream, string Mime) OpenPreview(string path, bool imagesOnly) =>
+        OpenDocumentPreview(Resolve(path), path, imagesOnly);
+
+    internal static (FileStream Stream, string Mime) OpenDocumentPreview(string authorizedPath, string path, bool imagesOnly = false)
     {
-        var stream = OpenVerified(Resolve(path));
+        var stream = OpenVerified(authorizedPath);
         try
         {
             int limit = PreviewLimitFor(path);

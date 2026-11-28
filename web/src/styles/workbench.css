@@ -725,3 +725,7 @@ dialog.mention-picker {
 #engine-login-status { margin-right:auto; color:var(--muted); }
 
 .new-agent-tabs {display:flex;gap:4px;padding:6px 12px;border-bottom:1px solid var(--line);}.new-agent-tabs button {border:0;border-radius:4px;background:transparent;padding:4px 10px;color:var(--muted);}.new-agent-tabs button[aria-selected=true] {background:var(--raised);color:var(--text);}
+.platform-version { display:inline-flex; align-items:center; gap:4px; }
+.platform-version svg { color:#7dd3fc; }
+.platform-update-dialog { width:min(92vw,540px); }
+.platform-update-notes { white-space:pre-wrap; overflow-wrap:anywhere; max-height:170px; overflow:auto; }

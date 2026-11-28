@@ -32,12 +32,7 @@ internal static class WorkspaceFileEndpoints
         {
             var browser = Browser(project);
             if (image != true && raw != true) return Results.Ok(browser.Read(path));
-            var media = browser.OpenPreview(path, image == true);
-            // 原始 SVG 在直接导航时仍须隔离脚本。只有 PDF 查看器允许被本机工作台嵌入。
-            context.Response.Headers.XContentTypeOptions = "nosniff";
-            context.Response.Headers.ContentSecurityPolicy = media.Mime == "application/pdf"
-                ? "frame-ancestors 'self'; base-uri 'none'" : "sandbox; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'";
-            return Results.File(media.Stream, media.Mime, enableRangeProcessing: true);
+            return Preview(context,browser.OpenPreview(path, image == true));
         });
         files.MapPut("/file", (WorkspaceEdit edit) => Browser(edit.Project).Save(edit))
             .WithMetadata(new RequestSizeLimitAttribute(6 * ProjectFileBrowser.Limit + 64 * 1024));
@@ -51,5 +46,13 @@ internal static class WorkspaceFileEndpoints
             using var store = new WorkbenchStore(startup.Root);
             return ProjectFileBrowser.ReadDocument(store.WorkspaceDocument(WorkbenchInput.Id(topic), WorkbenchInput.Id(id)));
         });
+    }
+
+    internal static IResult Preview(HttpContext context, (FileStream Stream, string Mime) media)
+    {
+        context.Response.Headers.XContentTypeOptions = "nosniff";
+        context.Response.Headers.ContentSecurityPolicy = media.Mime == "application/pdf"
+            ? "frame-ancestors 'self'; base-uri 'none'" : "sandbox; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'";
+        return Results.File(media.Stream, media.Mime, enableRangeProcessing:true);
     }
 }

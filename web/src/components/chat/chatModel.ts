@@ -1,4 +1,4 @@
-import { remoteOnline } from "../../services/navigation";
+import { peerPresence, remoteOnline } from "../../services/navigation";
 import { eligibleLocalGroups, groupLinkSides, includedMember } from "../../services/groupLinks";
 import { engineNames } from "../../services/engines";
 import { approvedGroupRecipients } from "../../services/permanentGroups";
@@ -48,7 +48,7 @@ export function chatTargets(snapshot:Snapshot|undefined,topic:Topic,links:ChatLi
     external.push({key:recipient.key,name:"@"+recipient.name,detail:recipient.topic+" · "+recipient.user,
       engine:recipient.engine?engineNames[recipient.engine]??recipient.engine:undefined,
       activity:recipient.engine?(recipient.online?"idle":"offline"):undefined,
-      status:recipient.engine?(recipient.online?"在线":"离线"):undefined,kind:recipient.engine?"agent":"group-user"});
+      status:recipient.engine?peerPresence(recipient.online,recipient.connected):undefined,kind:recipient.engine?"agent":"group-user"});
   for (const link of topic.leaderWindowId?links:[]) {
     if (!link.leaderId) continue;
     for (const view of snapshot.windows.filter(({agent})=>agent.topicId===link.id&&
@@ -59,7 +59,7 @@ export function chatTargets(snapshot:Snapshot|undefined,topic:Topic,links:ChatLi
     if (remote.topicId!==topic.id || remote.status!=="approved") continue;
     const online = remoteOnline(remote);
     external.push({key:remote.id,name:"@"+remote.agentName,detail:remote.nodeName+" · 外部 Agent",kind:"agent",
-      activity:online?"idle":"offline",status:online?"在线":"离线"});
+      activity:online?"idle":"offline",status:peerPresence(online,remote.connected)});
     if (topic.leaderWindowId&&!remote.deniedAgentIds?.includes(topic.leaderWindowId))
       external.push({key:"remote:"+remote.id,name:"@"+remote.nodeName+" · 用户",detail:"跨端用户",kind:"human"});
   }

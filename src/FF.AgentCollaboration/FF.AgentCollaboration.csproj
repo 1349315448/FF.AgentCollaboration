@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>FF.AgentCollaboration</AssemblyName>
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <RootNamespace>FF.AgentCollaboration</RootNamespace>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
@@ -44,5 +44,9 @@
           CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <Import Project="../Shared/WebRtcPublish.targets" />
+  <ItemGroup>
+    <Compile Include="../Shared/ManagedUpdates.cs" Link="Infrastructure/Updates/ManagedUpdates.cs" />
+    <Compile Include="../Shared/UpdateSupervisor.cs" Link="Infrastructure/Updates/UpdateSupervisor.cs" />
+  </ItemGroup>
   <Import Project="../Shared/UnixPty.targets" />
 </Project>

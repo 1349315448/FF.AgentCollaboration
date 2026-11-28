@@ -9,6 +9,10 @@ export function remoteOnline(remote:{status:string;connected:boolean;online:bool
   return remote.status==="approved" && remote.connected && remote.online;
 }
 
+export function peerPresence(online:boolean, connected?:boolean) {
+  return connected===false ? "连接中断" : online ? "在线" : "离线";
+}
+
 export interface NavigationActions {
   removeProject(path:string):void;
   addTopic(path:string):void;

@@ -1,5 +1,6 @@
 import {useEffect, useState} from "react";
 import {request} from "../../services/api";
+import type {ReleaseStatus} from "../layout/PlatformUpdates";
 import "./federation.css";
 
 interface IceServer { url:string; username:string|null; hasCredential:boolean }
@@ -25,6 +26,9 @@ export function SignalingPreferences() {
   const [iceServers,setIceServers] = useState<IceDraft[]>([]);
   const [busy,setBusy] = useState(false);
   const [feedback,setFeedback] = useState("");
+  const [release,setRelease]=useState<ReleaseStatus>();
+  const [updateId,setUpdateId]=useState<string>();
+  const [maintenanceKey,setMaintenanceKey]=useState("");
 
   function apply(settings:Settings) {
     setSaved(settings);
@@ -42,6 +46,9 @@ export function SignalingPreferences() {
       load?.abort();
       setKey("");
       setRemoveKey(false);
+      setRelease(undefined);
+      setUpdateId(undefined);
+      setMaintenanceKey("");
       setIceServers([]);
       if (!dialog.open) return;
       setSaved(undefined);
@@ -54,6 +61,20 @@ export function SignalingPreferences() {
     dialog.addEventListener("toggle",toggled);
     return ()=>{load?.abort();dialog.removeEventListener("toggle",toggled);};
   },[]);
+
+  useEffect(()=>{
+    if(!updateId)return;
+    const timer=window.setInterval(()=>{
+      void request<ReleaseStatus>(path+"/updates?progress=true").then(next=>{
+        setRelease(next);
+        if(next.last?.id===updateId || next.progress.phase==="failed"){
+          setUpdateId(undefined);
+          setFeedback(next.last?.status==="applied"?"信令服务已更新":next.progress.error??"信令更新失败，已恢复原版");
+        }
+      }).catch(()=>{setFeedback("正在等待信令服务重启…");});
+    },3000);
+    return ()=>window.clearInterval(timer);
+  },[updateId]);
 
   async function perform(action:()=>Promise<void>) {
     setBusy(true);
@@ -118,5 +139,21 @@ export function SignalingPreferences() {
       })}>测试信令连接</button>
     </div>
     <small role="status">{feedback}</small>
+    {configured&&!dirty&&<details className="fed-ice-options">
+      <summary>信令服务更新 {release?.current&&" · v"+release.current}</summary>
+      <label>信令维护密钥<input type="password" autoComplete="off" maxLength={64} value={maintenanceKey} onChange={e=>setMaintenanceKey(e.target.value)}/></label>
+      <button type="button" className="button" disabled={busy||!!updateId} onClick={()=>perform(async()=>{
+        setRelease(await request<ReleaseStatus>(path+"/updates",{headers:{"X-FF-Update-Key":maintenanceKey.trim()}}));
+      })}>检查信令更新</button>
+      {release?.progress.error&&<small role="status">{release.progress.error}</small>}
+      {release&&!release.managed&&<small>服务使用支持更新的启动器后可应用更新。</small>}
+      {release?.managed&&release?.available&&<>
+        <button type="button" className="button" disabled={busy||!!updateId||maintenanceKey.trim().length!==64}
+          onClick={()=>{if(window.confirm("信令服务会短暂重启，跨内网连接随后自动恢复。确认更新？"))void perform(async()=>{
+            const result=await request<{id:string}>(path+"/updates",{method:"POST",body:{adminKey:maintenanceKey.trim(),version:release.available}});
+            setMaintenanceKey("");setUpdateId(result.id);setFeedback("已安排信令更新");
+          });}}>更新信令到 v{release.available}</button>
+      </>}
+    </details>}
   </section>;
 }

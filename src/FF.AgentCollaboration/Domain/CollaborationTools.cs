@@ -5,6 +5,8 @@ internal static class CollaborationTools
     internal const string ListWindows = "list_windows";
     internal const string Send = "send_to_agent";
     internal const string Receive = "receive_message";
+    internal const string ResumeAfterRestart = "resume_after_restart";
+    internal const string WorkbenchUpdate = "workbench_update";
     internal const string ReportTask = "report_task_status";
     internal const string ShowExternalApproval = "show_external_collaboration_approval";
     internal const string SendPeerFiles = "send_peer_files";
@@ -21,6 +23,6 @@ internal static class CollaborationTools
     internal const string ProposeTeam = "propose_team_agents";
     internal const string UpdateTeam = "update_team_context";
     internal static readonly string[] Names =
-        [ListWindows, Send, Receive, ReportTask, ShowExternalApproval, SendPeerFiles, ReadDocument, FinishTopic, ReadSkill,
+        [ListWindows, Send, Receive, ReportTask, ResumeAfterRestart, WorkbenchUpdate, ShowExternalApproval, SendPeerFiles, ReadDocument, FinishTopic, ReadSkill,
          KnowledgeSearch, KnowledgeRead, KnowledgeWrite, KnowledgeTeam, ReadKnowledgeSkill, ReadTeamSkill, AvailableEngines, ProposeTeam, UpdateTeam];
 }

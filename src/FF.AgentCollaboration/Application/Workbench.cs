@@ -171,7 +171,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         };
     }
 
-    internal async Task Start(string id, CancellationToken ct, bool fromInbox = false)
+    internal async Task Start(string id, CancellationToken ct, bool fromInbox = false, bool startupRecovery = false)
     {
         await lifecycle.WaitAsync(ct);
         try
@@ -181,6 +181,15 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             var window = state.Window(id);
             if (terminals.TryGetValue(id, out var existing) && existing.Online) return;
             wakeErrors.TryRemove(id, out _);
+            if (startupRecovery)
+            {
+                if (state.Topic(window.TopicId).Status != "active" || state.DedicatedReader(id)) return;
+                if (window.Session == null || window.NewSessionPending)
+                    throw new WorkbenchError("尚未绑定历史会话，请手动打开并确认会话。");
+                await EngineAuthentication.Require(window.Engine, window.Project, ct);
+                if (!(await catalog.Sessions(window.Engine, window.Project, ct, includeBound:true)).Any(s => s.Id == window.Session && !s.NativeInUse))
+                    throw new WorkbenchError("原会话不可用，请在会话管理中确认。");
+            }
             if (fromInbox && window.Session != null)
             {
                 var account = await EngineAuthentication.Check(window.Engine, window.Project, ct);
@@ -201,12 +210,14 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             if (fromInbox) waking[id] = terminals[id].Generation;
             state.ClearWake(id);
         }
-        catch (Exception error) when (fromInbox && !ct.IsCancellationRequested)
+        catch (Exception error) when ((fromInbox || startupRecovery) && !ct.IsCancellationRequested)
         {
             using var state = new WorkbenchStore(Root);
-            state.ClearWake(id);
+            if (fromInbox) state.ClearWake(id);
             logger.LogWarning("Inbox wake failed for {WindowId}: {Reason}", id, error.GetType().Name);
-            wakeErrors[id] = error is WorkbenchError { Failure: WorkbenchFailure.LoginRequired }
+            wakeErrors[id] = startupRecovery && error is WorkbenchError issue
+                ? "启动恢复失败：" + issue.Message
+                : error is WorkbenchError { Failure: WorkbenchFailure.LoginRequired }
                 ? "自动启动失败，请先登录引擎。消息已保留。"
                 : "自动启动失败，请检查引擎安装与登录状态，再点击电源键。消息已保留。";
         }
@@ -226,7 +237,8 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             bool changingEngine = engine != current.Engine;
             if (state.Windows().Any(w => w.Id != id && w.TopicId == current.TopicId && string.Equals(w.Name,name,StringComparison.OrdinalIgnoreCase)))
                 throw new WorkbenchError("这个话题已有同名 Agent", WorkbenchFailure.Conflict);
-            var updated = current with {Name = name, Role = role};
+            var updated = current with {Name = name, Role = role, AutoStart = input.AutoStart ?? current.AutoStart,
+                AllowPlatformUpdate = input.AllowPlatformUpdate ?? current.AllowPlatformUpdate};
             if (changingEngine)
             {
                 if (EngineExecutable.TryFindExecutable(engine) == null) throw new WorkbenchError("请先安装所选引擎", WorkbenchFailure.Unavailable);
@@ -695,6 +707,8 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await startup.Ready.WaitAsync(stoppingToken);
+        await startup.Listening.WaitAsync(stoppingToken);
+        await RestoreStartupAgents(stoppingToken);
         // 同一连接的 data_version 可识别老版本 MCP 提交或通知丢失的情况。
         using var state = new WorkbenchStore(Root);
         long version = state.DataVersion;

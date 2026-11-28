@@ -22,10 +22,12 @@ internal sealed partial class FederationClient(WorkbenchStartup startup, Workben
     {
         var workers = new Dictionary<string, Task>();
         var groupWorkers = new Dictionary<string,Task>();
+        Task pairingMaintenance=Task.CompletedTask;
         DateTime nextCleanup = DateTime.MinValue;
         try
         {
             await startup.Ready.WaitAsync(ct);
+            pairingMaintenance=MaintainRtcPairs(ct);
             while (!ct.IsCancellationRequested)
             {
                 foreach (var id in workers.Where(p => p.Value.IsCompleted).Select(p => p.Key).ToArray())
@@ -79,7 +81,18 @@ internal sealed partial class FederationClient(WorkbenchStartup startup, Workben
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        finally { await Task.WhenAll(workers.Values.Concat(groupWorkers.Values)); }
+        finally { await Task.WhenAll(workers.Values.Concat(groupWorkers.Values).Append(pairingMaintenance)); }
+    }
+
+    private async Task MaintainRtcPairs(CancellationToken ct)
+    {
+        using var cadence=new PeriodicTimer(TimeSpan.FromSeconds(3));
+        try
+        {
+            while(await cadence.WaitForNextTickAsync(ct))
+                await rtc.CheckPairings(ct);
+        }
+        catch(OperationCanceledException) when(ct.IsCancellationRequested) { }
     }
 
     private HttpClient Connect(RemoteConnection remote)
@@ -306,6 +319,8 @@ internal sealed partial class FederationClient(WorkbenchStartup startup, Workben
                         if (doc.RootElement.TryGetProperty("state", out var state))
                         {
                             ApplySession(db, remote, state.Deserialize<PeerSession>(Json)!, true);
+                            if(response.Headers.Contains("X-FF-Rtc-Pairs"))
+                                await ConfirmRtcPair(remote,group:false,client,ct);
                             if (supportsContacts)
                             {
                                 var contacts = db.AdvertisedContacts(id);
@@ -371,6 +386,9 @@ internal sealed partial class FederationClient(WorkbenchStartup startup, Workben
         WorkbenchInput.AgentName(peer.AgentName);
         if (db.RemoteStatus(remote.Id, peer, stream)) events.RefreshPages();
     }
+
+    private Task ConfirmRtcPair(RemoteConnection remote,bool group,HttpClient client,CancellationToken ct) =>
+        rtc.ConfirmPair(remote,group,(room,proof)=>Request(HttpMethod.Put,"rtc-pairs/"+room,remote.Token!,proof),client,ct);
 
     // 仅在空行结束后消费完整事件；限制行长度与心跳停顿，避免失联胶囊一直显示在线。
     private static async IAsyncEnumerable<string> DataFrames(Stream source, [EnumeratorCancellation] CancellationToken ct)

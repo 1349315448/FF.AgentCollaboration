@@ -25,13 +25,14 @@ internal sealed record PeerMessage(string Id, string Text, string? RequestId = n
 }
 internal sealed record RemoteApplication(string TopicId, string Link, string Purpose)
 {
+    public string? ResumeRemoteId { get; init; }
     private string? agentId;
     public string? AgentId { get => agentId; init { agentId = value; ContactSelected = true; } }
     internal bool ContactSelected { get; private set; }
 }
 internal sealed record ContactBinding(string TopicId, string? AgentId);
 internal sealed record AdvertisedContact(string Key, string Name, bool Online, string? SenderKey = null);
-internal sealed record ReturnContact(string Id, string WindowId, string Name, string NodeName, bool Online, bool CanMention, bool CanRemove, string GrantId);
+internal sealed record ReturnContact(string Id, string WindowId, string Name, string NodeName, bool Online, bool CanMention, bool CanRemove, string GrantId, bool Connected);
 internal sealed record PeerQuota(string Mode, int? Limit, long? Remaining, bool Paused, long? ResetsAt)
 {
     internal static PeerQuota From(PeerGrant grant) =>

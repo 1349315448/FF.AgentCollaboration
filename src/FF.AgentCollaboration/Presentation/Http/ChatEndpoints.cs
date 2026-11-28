@@ -77,22 +77,10 @@ internal static class ChatEndpoints
             using var db = new WorkbenchStore(startup.Root);
             string topic = WorkbenchInput.Id(id);
             var (path,name) = db.ChatFile(topic,message,key);
-            if (view == "text") return Results.Ok(ProjectFileBrowser.ReadDocument(path));
-            var file = ProjectFileBrowser.OpenVerified(path);
+            if (view == "text") return Results.Ok(ProjectFileBrowser.ReadDocument(path,name));
             if (view == "inline")
-            {
-                try
-                {
-                    var format = WorkspacePreviewFormat.Detect(file,path);
-                    if (format == null || format.Value.Kind is not ("image" or "pdf"))
-                        throw new WorkbenchError("此文件请下载后查看");
-                    context.Response.Headers.XContentTypeOptions = "nosniff";
-                    context.Response.Headers.ContentSecurityPolicy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'";
-                    return Results.File(file,format.Value.Mime,enableRangeProcessing:true);
-                }
-                catch { file.Dispose(); throw; }
-            }
-            return Results.File(file,"application/octet-stream",name,enableRangeProcessing:true);
+                return WorkspaceFileEndpoints.Preview(context,ProjectFileBrowser.OpenDocumentPreview(path,name));
+            return Results.File(ProjectFileBrowser.OpenVerified(path),"application/octet-stream",name,enableRangeProcessing:true);
         });
     }
 }

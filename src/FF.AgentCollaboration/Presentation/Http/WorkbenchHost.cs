@@ -4,12 +4,14 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using FF.AgentCollaboration.Application;
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Infrastructure.Files;
 using FF.AgentCollaboration.Infrastructure.Storage;
+using FF.AgentCollaboration.Updates;
 
 namespace FF.AgentCollaboration.Presentation.Http;
 
@@ -74,6 +76,8 @@ internal static class WorkbenchHost
             ContentRootPath = AppContext.BaseDirectory,
             WebRootPath = "wwwroot"
         });
+        if(UpdateSupervisor.InstallHome is string home)
+            builder.Configuration.AddJsonFile(Path.Combine(home,"appsettings.json"),optional:true).AddEnvironmentVariables();
         bool rtcListener = RtcTransport.Executable(builder.Configuration) != null;
         builder.WebHost.ConfigureKestrel(server =>
         {
@@ -97,7 +101,7 @@ internal static class WorkbenchHost
             services.GetRequiredService<IDataProtectionProvider>()));
         builder.Services.AddSingleton(services => new RtcTransport(startup, network, builder.Configuration,
             services.GetRequiredService<SignalingSettings>(),
-            services.GetRequiredService<IHostApplicationLifetime>()));
+            services.GetRequiredService<IHostApplicationLifetime>(),events));
         builder.Services.AddSingleton(services => new FederationClient(startup, events, services.GetRequiredService<RtcTransport>()));
         builder.Services.AddHostedService(services => services.GetRequiredService<FederationClient>());
         builder.Services.AddSingleton(_ => new SessionCatalog(startup));
@@ -202,6 +206,7 @@ internal static class WorkbenchHost
         app.MapPost("/api/events/wake", (HttpRequest request) =>
             request.Headers["X-FF-Notify"] == "1" ? Results.NoContent() : Results.StatusCode(403));
         WorkbenchEndpoints.Map(app, startup, location);
+        UpdateEndpoints.Map(app,startup);
         lanAccess.Map(app);
         federation.Map(app);
         app.Lifetime.ApplicationStopping.Register(() =>
@@ -218,6 +223,8 @@ internal static class WorkbenchHost
         }
         network.Port = new Uri(address).Port;
         events.NotifyPort = new Uri(address).Port;
+        startup.MarkListening();
+        if(startup.Ready.IsCompletedSuccessfully) UpdateSupervisor.Ready(UpdateSupervisor.Version(typeof(WorkbenchHost).Assembly));
         Console.WriteLine($"LX_WORKBENCH {address}");
         if (openBrowser)
         {

@@ -282,31 +282,34 @@ internal sealed partial class WorkbenchStore
         }
     }
 
-    internal InboxItem ReplyToUserChat(string grant, string reference, string body, string[] files, string? document, bool final)
+    internal InboxItem PostToUserChat(string grant, string? reference, string body, string[] files, string? document, bool final)
     {
         string post = Guid.NewGuid().ToString("N");
         string? path = null;
         Atomic(() =>
         {
             var source = Caller(grant);
-            var task = ReceivedTaskFor(source.Id,reference);
-            if (task.Source != InboxItem.ChatUser) throw new WorkbenchError("原消息的发件人不是工作台用户",WorkbenchFailure.Forbidden);
-            var record = Read("SELECT p.id,p.topic FROM chat_post p JOIN chat_delivery d ON d.post=p.id WHERE d.id=$p0",
-                row => (Id:row.GetString(0),Topic:row.GetString(1)), task.Id).Single();
             var topic = Topic(source.TopicId);
-            if (record.Topic != topic.Id)
+            var task = reference == null ? null : ReceivedTaskFor(source.Id,reference);
+            string? replyPost = null;
+            string destination = topic.Id;
+            if (task != null)
             {
-                var original = Topic(record.Topic);
-                if (!GroupRoute(original,InboxItem.ChatUser,topic,source.Id))
+                if (task.Source != InboxItem.ChatUser) throw new WorkbenchError("原消息的发件人不是工作台用户",WorkbenchFailure.Forbidden);
+                (replyPost,destination) = Read("SELECT p.id,p.topic FROM chat_post p JOIN chat_delivery d ON d.post=p.id WHERE d.id=$p0",
+                    row => (row.GetString(0),row.GetString(1)), task.Id).Single();
+                if (destination != topic.Id && !GroupRoute(Topic(destination),InboxItem.ChatUser,topic,source.Id))
                     throw new WorkbenchError("当前小组已不能跨组回信",WorkbenchFailure.Forbidden);
             }
+            else if (topic.Status != "active" || DedicatedReader(source.Id))
+                throw new WorkbenchError("当前 Agent 无法主动向本组交付成果",WorkbenchFailure.Forbidden);
             path = document == null ? null : ProjectMarkdown(source.Project,topic.Folder,document);
             var attachment = files.Select(file => ProjectFolders.Attachment(source.Project,file)).ToArray();
             var origin = ChatOrigin.From(source);
-            SaveChat(post,origin,body,path == null ? attachment : [path,..attachment],record.Id);
-            if (record.Topic != topic.Id)
-                LinkChat(post,post,record.Topic,InboxItem.ChatUser,"我");
-            if (task.ExpectsReply) RecordTaskReply(task,final);
+            SaveChat(post,origin,body,path == null ? attachment : [path,..attachment],replyPost);
+            if (destination != topic.Id)
+                LinkChat(post,post,destination,InboxItem.ChatUser,"我");
+            if (task?.ExpectsReply == true) RecordTaskReply(task,final);
         });
         return new(post,InboxItem.ChatUser,"",body,[],path,null,"delivered");
     }

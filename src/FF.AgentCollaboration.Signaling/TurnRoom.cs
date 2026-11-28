@@ -10,6 +10,7 @@ internal sealed class TurnRoom
 {
     internal string Password { get; } = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
     private readonly Lock gate = new();
+    private readonly CancellationTokenSource revoked = new();
     private bool host, guest;
     private RtcWorker? worker;
     private Lazy<Task<int>>? port;
@@ -19,7 +20,7 @@ internal sealed class TurnRoom
     {
         lock (gate)
         {
-            if (asHost ? host : guest) return null;
+            if (revoked.IsCancellationRequested || (asHost ? host : guest)) return null;
             if (asHost) host = true;
             else guest = true;
             port ??= new Lazy<Task<int>>(() => Start(executable));
@@ -39,8 +40,11 @@ internal sealed class TurnRoom
     internal sealed class Lease(TurnRoom room, bool host, Lazy<Task<int>> port) : IDisposable
     {
         internal Task<int> Port => port.Value;
+        internal CancellationToken Revoked => room.revoked.Token;
         public void Dispose() => room.Release(host);
     }
+
+    internal void Revoke() => revoked.Cancel();
 
     private void Release(bool asHost)
     {
@@ -67,10 +71,11 @@ internal sealed class TurnRoom
         using (lease)
         using (var upstream = new TcpClient(AddressFamily.InterNetwork))
         {
-            var ct = context.RequestAborted;
+            using var stopping=CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted,lease.Revoked);
+            var ct = stopping.Token;
             try
             {
-                await upstream.ConnectAsync(IPAddress.Loopback, await lease.Port, ct);
+                await upstream.ConnectAsync(IPAddress.Loopback, await lease.Port.WaitAsync(ct), ct);
                 using var socket = await context.WebSockets.AcceptWebSocketAsync();
                 await WebSocketStreamPump.Forward(socket, upstream.GetStream(), ct);
             }

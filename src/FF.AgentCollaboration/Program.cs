@@ -3,8 +3,11 @@ using FF.AgentCollaboration.Coordination;
 using FF.AgentCollaboration.Infrastructure.Storage;
 using FF.AgentCollaboration.Presentation.Http;
 using FF.AgentCollaboration.Presentation.McpServer;
+using FF.AgentCollaboration.Updates;
 
 Console.InputEncoding = Console.OutputEncoding = new UTF8Encoding(false);
+if(args is ["workbench-managed",..])
+    return await UpdateSupervisor.Run("workbench",["workbench",..args[1..]]);
 if (args.Length == 0 || (args.Length < 2 && args[0] != "workbench") || args[0] is not ("run" or "init" or "recover" or "resume" or "mcp" or "workbench" or "workbench-mcp"))
 {
     Console.Error.WriteLine("Usage: FF.AgentCollaboration run|init|recover|resume <run-directory> [--disconnect-on-callback] [--copilot-model ID]");

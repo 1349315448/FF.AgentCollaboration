@@ -91,7 +91,9 @@ dotnet publish src/FF.AgentCollaboration -c Release -r win-x64 --self-contained 
 | `GET /api/signaling/v1/rooms/{roomId}/connect` | 持 `hostTicket` 或来宾 `ticket` 升级为 WebSocket |
 | `GET /api/signaling/v1/rooms/{roomId}/relay` | 持同房间票据建立二进制 WebSocket，承载 TURN/TCP；每个角色同时一条连接 |
 
-房间自签发起有效 15 分钟。每个角色可建立一条连接，断线后可在房间有效期内用本角色的票据重连。双方连接时收到 `{"type":"ready"}`，一方断线时另一方收到 `{"type":"peer-offline"}`。重新连齐时由发起方重新发起协商。
+首次邀请自签发起有效 15 分钟。每个角色可建立一条连接。双方完成工作台授权后，信令服务保存配对，两端用各自的续接凭据换取短期票据。双方连接时收到 `{"type":"ready"}`，一方断线时另一方收到 `{"type":"peer-offline"}`。重新连齐时由发起方重新协商。
+
+受管信令服务支持在工作台设置中验证维护密钥并应用签名更新。保留配对文件与原信令证书，服务短重启后已登记的两端自动重连。[更新部署](updates.md)
 
 发起方发送 `{"type":"offer","sdp":"…"}`，加入方发送 `{"type":"answer","sdp":"…"}`。协议也支持 `{"type":"ice","candidate":{…}}` 与 `{"type":"ice-complete"}`。房间票据到期后，已经建立的直连和中继连接可继续传输。信令服务重启会断开内置中继，并清除内存中的房间。需要重新配对时，由提供方生成新分享链接。
 

@@ -42,13 +42,19 @@ internal static class HandoffService
         if (replyTo!=null && hint!=null) throw new WorkbenchError("关联回信不能同时要求对方再次回信");
         if (target == InboxItem.ChatUserAddress)
         {
-            if (replyTo == null || hint != null) throw new WorkbenchError("回复工作台用户时须关联收到的 MSG_ID");
-            return state.ReplyToUserChat(grant,replyTo,message,files,documentValue,finalReply ?? true);
+            if (hint != null || (replyTo == null && files.Length == 0 && documentValue == null && !HasDeliveryLink(message)))
+                throw new WorkbenchError("回复工作台用户时请关联 MSG_ID；主动交付时请附上文件或网址");
+            return state.PostToUserChat(grant,replyTo,message,files,documentValue,finalReply ?? true);
         }
         return state.SendGroupCollaboration(grant,target,message,files,documentValue,hint,supersedePrevious,replyTo,finalReply)
             ?? state.SendFederated(grant,target,message,files,documentValue,hint,supersedePrevious,replyTo,finalReply)
             ?? state.Send(grant, target, message, files, hint, documentValue, supersedePrevious,replyTo,finalReply??true);
     }
+
+    private static bool HasDeliveryLink(string message) =>
+        System.Text.RegularExpressions.Regex.Matches(message, """https?://[^\s<>"«»“”，。！？；、]+""",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+            .Any(m => Uri.TryCreate(m.Value, UriKind.Absolute, out var uri) && uri.Host.Length > 0 && uri.UserInfo.Length == 0);
 
     private static string Message(string? text, string? document, string[] files)
     {

@@ -57,7 +57,12 @@ export const FileTreeView=memo(function FileTreeView(props:Props & {openDiff:(c:
   },[git.status]);
   const [query,setQuery]=useState(""), [ignored,setIgnored]=useState(false), [files,setFiles]=useState<string[]>([]);
   const [status,setStatus]=useState(""), [refresh,setRefresh]=useState(0);
-  useEffect(()=>{if(props.reveal){setQuery("");setIgnored(true);}},[props.reveal]);
+  useEffect(()=>{
+    if(!props.reveal)return;
+    setQuery("");setIgnored(true);
+    // 刚交付的文件可能在已展开的目录加载之后才生成。
+    setRefresh(n=>n+1);
+  },[props.reveal]);
   useEffect(()=>{
     setFiles([]); setStatus("");
     const q=query.trim();

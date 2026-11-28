@@ -1,8 +1,8 @@
 import {pageId} from "./workbenchPage";
 
-interface RequestOptions { method?: string; body?: unknown; signal?: AbortSignal }
-export async function request<T = unknown>(path: string, { method = "GET", body, signal }: RequestOptions = {}): Promise<T> {
-  const headers = new Headers();
+interface RequestOptions { method?: string; body?: unknown; signal?: AbortSignal; headers?:HeadersInit }
+export async function request<T = unknown>(path: string, { method = "GET", body, signal, headers:extraHeaders }: RequestOptions = {}): Promise<T> {
+  const headers = new Headers(extraHeaders);
   const options: RequestInit = { method, signal, headers };
   if (method !== "GET" && pageId) headers.set("X-FF-View", pageId);
   if (body instanceof FormData) {

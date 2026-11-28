@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using FF.AgentCollaboration.Application;
@@ -106,6 +107,33 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
             WorkbenchHost.IsLoopback(context.HttpContext) ? next(context) : ValueTask.FromResult<object?>(Results.StatusCode(403)));
         signalingRoutes.MapGet("", () => SignalingView(signaling.Read()));
         signalingRoutes.MapPut("", (SignalingSettingsInput input) => SignalingView(signaling.Save(input)));
+        signalingRoutes.MapGet("/updates",async (HttpRequest incoming,bool? progress,CancellationToken ct)=>
+        {
+            var trust=signaling.Read().Values.Trust() ?? throw new WorkbenchError("请先保存信令设置");
+            using var client=trust.CreateClient();
+            using var request=new HttpRequestMessage(HttpMethod.Get,progress==true?"updates?progress=true":"updates");
+            string key=incoming.Headers["X-FF-Update-Key"].ToString();
+            if(FederationPolicy.IsSecret(key)) request.Headers.Authorization=new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer",key);
+            using var response=await client.SendAsync(request,ct);
+            if(response.StatusCode==System.Net.HttpStatusCode.NotFound)
+                throw new WorkbenchError("此信令版本尚未提供更新接口");
+            response.EnsureSuccessStatusCode();
+            return await response.Content.ReadFromJsonAsync<FF.AgentCollaboration.Updates.UpdateStatus>(ct);
+        });
+        signalingRoutes.MapPost("/updates",async (SignalUpdate input,CancellationToken ct)=>
+        {
+            if(!FederationPolicy.IsSecret(input.AdminKey))throw new WorkbenchError("请输入信令服务器的维护密钥");
+            var trust=signaling.Read().Values.Trust() ?? throw new WorkbenchError("请先保存信令设置");
+            using var client=trust.CreateClient();
+            using var request=new HttpRequestMessage(HttpMethod.Post,"updates");
+            request.Headers.Authorization=new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer",input.AdminKey);
+            request.Content=System.Net.Http.Json.JsonContent.Create(new {action="apply",input.Version});
+            using var response=await client.SendAsync(request,ct);
+            if(response.StatusCode==System.Net.HttpStatusCode.Unauthorized)
+                throw new WorkbenchError("信令维护密钥不正确或服务器未授权更新",WorkbenchFailure.Forbidden);
+            if(!response.IsSuccessStatusCode)throw new WorkbenchError("信令服务器未接受更新，请重新检查版本和启动方式");
+            return await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>(ct);
+        });
         local.MapPut("/node", (NodeSettings input) =>
         {
             using var db = Store();
@@ -185,6 +213,12 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
         });
 
         var wire = app.MapGroup("/api/federation").WithMetadata(this);
+        wire.MapPut("/rtc-pairs/{room}",async (string room,RtcTransport.PairProof input,HttpContext context,CancellationToken ct) =>
+        {
+            if(!RtcListener(context)) return Results.StatusCode(403);
+            return await rtc.ApprovePair(WorkbenchInput.Id(room),input,Token(context),Node(context),ct)
+                ? Results.NoContent() : Results.StatusCode(409);
+        });
         wire.MapPut("/contacts", (HttpContext c, AdvertisedContact[] contacts) =>
         {
             using var db = Store();
@@ -250,6 +284,7 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
         {
             using var db=Store();
             var result=db.ExchangeGroup(id,Token(c),Node(c),Name(c),input,out bool changed);
+            c.Response.Headers["X-FF-Rtc-Pairs"]="1";
             if (changed) events.Changed();
             return result;
         }).WithMetadata(new GroupExchangeBody());
@@ -266,6 +301,7 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
     private sealed record UploadBody(bool Attachments);
     private sealed record GroupExchangeBody;
     private sealed record GroupLaunch(string TopicId,string Link,string Purpose,GroupSelection Selection);
+    private sealed record SignalUpdate(string? AdminKey,string? Version);
     private async Task<IResult> UploadGroupFile(HttpContext c,string id)
     {
         using var db=Store();
@@ -325,6 +361,7 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
             if (!attached) throw new FederationException(429, "stream_limit");
             events.RefreshPages();
             c.Response.ContentType = "text/event-stream";
+            c.Response.Headers["X-FF-Rtc-Pairs"]="1";
             c.Response.Headers.CacheControl = "no-store";
             bool acceptsContacts = c.Request.Headers["X-FF-Return-Contacts"] == "1";
             bool acceptsRemoval = c.Request.Headers["X-FF-Contact-Removal"] == "1";

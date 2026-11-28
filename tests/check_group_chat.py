@@ -159,6 +159,19 @@ def check(exe, case):
         rows=http(base,f"/api/topics/{team}/chat?refresh={post['id']},{uploaded}")[1]
         assert {row["id"] for row in rows}=={post["id"],uploaded}
         assert not http(base,f"/api/topics/{unlinked}/chat?refresh={post['id']}")[1]
+        package = "src/成果 文件/发布.zip"
+        (project/package).write_bytes(b"PK\x03\x04\0")
+        address = "https://example.org/releases/v1?q=1#download"
+        result=mcp(exe,root,member_grant,"send_to_agent",target="@工作台用户",
+                   message="成果清单\n"+address, files=["接口说明.md",package])
+        assert not result.get("isError"),result
+        result=mcp(exe,root,member_grant,"send_to_agent",target="@工作台用户",message="仅交付网址\n"+address)
+        assert not result.get("isError"),result
+        manifest=next(p for p in history(team) if p["text"].startswith("成果清单"))
+        assert [a["path"] for a in manifest["attachments"]]==["接口说明.md",package]
+        assert not manifest["receipts"] and not manifest["replyTo"]
+        assert mcp(exe,root,member_grant,"send_to_agent",target="@工作台用户",message="纯文本").get("isError")
+        assert mcp(exe,root,member_grant,"send_to_agent",target="@工作台用户",message="越界",files=["../etc"]).get("isError")
         db.close()
         if "--browser" in sys.argv:
             subprocess.run(["node",Path(__file__).with_suffix(".cjs"),base,team,member,linked],check=True,timeout=80)
@@ -227,6 +240,27 @@ def check_peers(exe, case):
         for topic,leader in [(requester_topic,requester_lead),(second,second_lead)]:
             assert http(requester,"/api/peers/remotes/"+remote+"/contact",{"topicId":topic,"agentId":leader},"PUT")[0]==204
         contacts=until(lambda:federation(provider)["contacts"],lambda rows:len(rows)==2)
+        assert all(c["online"] and c["connected"] for c in contacts),contacts
+        with closing(sqlite3.connect(right/"db"/"workbench.sqlite")) as db, db:
+            db.execute("UPDATE windows SET online=0 WHERE id=?",(requester_lead,))
+        def contact_state():
+            return next(c for c in federation(provider)["contacts"] if c["name"]=="请求组组长")
+        until(contact_state,lambda c:c["connected"] and not c["online"])
+        with closing(sqlite3.connect(right/"db"/"workbench.sqlite")) as db, db:
+            db.execute("UPDATE windows SET online=1 WHERE id=?",(requester_lead,))
+        until(contact_state,lambda c:c["connected"] and c["online"])
+        with closing(sqlite3.connect(left/"db"/"workbench.sqlite")) as db, db:
+            db.execute("UPDATE windows SET online=0 WHERE id=?",(lead,))
+        def provider_state():
+            return next(r for r in federation(requester)["remotes"] if r["id"]==remote)
+        until(provider_state,lambda r:r["connected"] and not r["online"])
+        with closing(sqlite3.connect(left/"db"/"workbench.sqlite")) as db, db:
+            db.execute("UPDATE windows SET online=1 WHERE id=?",(lead,))
+        until(provider_state,lambda r:r["connected"] and r["online"])
+        renewal={"topicId":requester_topic,"link":share["link"],"purpose":"续接旧胶囊","resumeRemoteId":remote}
+        assert http(requester,"/api/peers/remotes",dict(renewal,topicId=provider_topic))[0] in (403,404,409)
+        assert http(requester,"/api/peers/remotes",renewal)==(200,{"id":remote})
+        print("PASS direct peer Agent state in both directions and scoped renewal")
         contact=next(c for c in contacts if c["name"]=="另一个请求组组长")
         assert http(provider,route,{"text":"只发到第二个组","humanPeer":recipient+":"+contact["id"]})[0]==200
         until(lambda:http(requester,f"/api/topics/{second}/chat")[1],lambda posts:any(p["text"]=="只发到第二个组" for p in posts))

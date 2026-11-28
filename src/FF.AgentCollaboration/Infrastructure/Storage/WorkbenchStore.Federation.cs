@@ -129,6 +129,48 @@ internal sealed partial class WorkbenchStore
 
     internal string? FedSetting(string key) => Read("SELECT value FROM settings WHERE key=$p0", r => r.GetString(0), key).SingleOrDefault();
     internal List<string> RtcRooms() => Read("SELECT value FROM settings WHERE key GLOB 'rtc_room.*'", r => r.GetString(0));
+    internal void DeleteRtcRoom(string id) => Exec("DELETE FROM settings WHERE key='rtc_room.'||$p0",id);
+    internal void RevokeRtcRemote(string room,bool group,string id) => Atomic(()=>
+    {
+        string endpoint="rtc://"+room;
+        if(group)
+        {
+            if(!Read("SELECT 1 FROM fed_group_link WHERE id=$p0 AND endpoint=$p1",_=>true,id,endpoint).Any())return;
+            StopGroupLink(id,"revoked");
+            Exec("UPDATE fed_group_link SET peer_status='revoked',seen=0 WHERE id=$p0",id);
+        }
+        else if(Read("SELECT 1 FROM fed_remote WHERE id=$p0 AND endpoint=$p1",_=>true,id,endpoint).Any())
+            RemoteFailure(id,"对端已撤销协作","revoked");
+    });
+    internal string AuthorizeRtcBinding(string token,string node,string window,string? group)
+    {
+        if(group==null)
+        {
+            string grant=AuthorizePeer(token,node);
+            if(Grant(grant).WindowId==window) return grant;
+        }
+        else
+        {
+            var link=AuthorizeGroup(group,token,node);
+            if(link.InvitedWindow==window && Grant(link.Id).Status=="approved") return link.Id;
+        }
+        throw new FederationException(403,"invalid_rtc_grant");
+    }
+
+    internal bool RtcBindingActive(string room,bool host,bool group,string id) => host
+        ? Read("""
+            SELECT 1 FROM fed_grant g WHERE g.id=$p0 AND g.status='approved'
+            AND (g.kind='group' OR EXISTS (SELECT 1 FROM fed_share s JOIN windows w ON w.id=s.window_id WHERE w.id=g.window_id AND w.closed=0))
+            """,_=>true,id).Any()
+        : group
+            ? Read("""
+                SELECT 1 FROM fed_group_link l JOIN fed_grant g ON g.id=l.id
+                WHERE l.id=$p0 AND l.endpoint=$p1 AND l.peer_status NOT IN ('revoked','rejected') AND g.status IN ('approved','revoked')
+                """,_=>true,id,"rtc://"+room).Any()
+            : Read("""
+                SELECT 1 FROM fed_remote r WHERE r.id=$p0 AND r.endpoint=$p1 AND r.status='approved'
+                AND (r.contacts_published=1 OR EXISTS(SELECT 1 FROM fed_remote_topic t WHERE t.remote=r.id))
+                """,_=>true,id,"rtc://"+room).Any();
     internal void SetFedSetting(string key, string value) =>
         Exec("INSERT INTO settings VALUES($p0,$p1) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, value);
     internal FederationNode FederationNode() => new(FedSetting("node_id")!, FedSetting("node_name"), FedSetting("node_ip"), FedSetting("node_public_endpoint"));

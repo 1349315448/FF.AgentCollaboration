@@ -9,7 +9,7 @@ internal sealed class WorkbenchLocation
 {
     private sealed record Location(string data_dir, string? previous_data_dir, bool pending_migration = false);
     internal static string LocalData => Environment.GetEnvironmentVariable("LOCALAPPDATA") ??
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData,Environment.SpecialFolderOption.DoNotVerify);
     internal static string LegacyDirectory => Path.Combine(LocalData, "FF.AgentCollaboration", "workbench");
     private static string DataRoot => Path.Combine(Path.GetFullPath(
         Environment.GetEnvironmentVariable("FF_WORKBENCH_HOME") ?? AppContext.BaseDirectory), "workbench-data");

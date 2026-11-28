@@ -4,6 +4,7 @@ from contextlib import closing, contextmanager, ExitStack
 import hashlib
 import json
 import os
+import signal
 from pathlib import Path
 from queue import Queue
 import socket
@@ -16,6 +17,8 @@ import threading
 import time
 from unittest.mock import patch
 from urllib.parse import urlsplit
+from http.client import HTTPSConnection
+import ssl
 
 from check_workbench import host, http, mcp, new_id
 
@@ -52,10 +55,11 @@ def stun_probe():
 
 
 @contextmanager
-def signals(dll, root, key, *, block_udp=False):
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
+def signals(dll, root, key, *, block_udp=False, port=None, processes=None):
+    if port is None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
     endpoint = f"https://127.0.0.1:{port}"
     env = dict(os.environ, InternalService__Key=key, Signaling__PublicOrigin=endpoint,
                Signaling__CertificatePath=str(root / "signal.pfx"))
@@ -65,6 +69,8 @@ def signals(dll, root, key, *, block_udp=False):
             blocked.bind(("127.0.0.1", port))
         process = scope.enter_context(subprocess.Popen(["dotnet", dll, "--urls", endpoint], cwd=root, env=env,
                                       stdout=subprocess.PIPE, text=True, encoding="utf-8"))
+        if processes is not None:
+            processes.append(process)
         lines = Queue()
         def read():
             for line in process.stdout:
@@ -99,6 +105,73 @@ def browser_check(url, mode):
                    check=True, timeout=35)
 
 
+def verify_presence(get, provider, requester, local, remote, p, q, window, member, capsule, proof, link):
+    def set_online(data, agent, online):
+        with closing(sqlite3.connect(data / "workbench.sqlite")) as db, db:
+            db.execute("UPDATE windows SET online=? WHERE id=?", (online, agent))
+
+    assert http(requester, "/api/peers/remotes/" + capsule + "/contact", {"topicId": q, "agentId": member}, "PUT")[0] == 204
+    contact = lambda: next(iter(get(provider)["contacts"]), {})
+    peer = lambda: next(row for row in get(requester)["remotes"] if row["id"] == capsule)
+    until(contact, lambda row: row.get("online"))
+    until(peer, lambda row: row["connected"] and row["online"])
+    set_online(remote, member, 0)
+    set_online(local, window, 0)
+    until(contact, lambda row: row and not row["online"])
+    until(peer, lambda row: row["connected"] and not row["online"])
+    set_online(remote, member, 1)
+    set_online(local, window, 1)
+    until(contact, lambda row: row.get("online"))
+    until(peer, lambda row: row["online"])
+
+    workers = {int(item.name) for item in proof.iterdir()}
+    assert len(workers) == 2, workers
+    for pid in workers:
+        os.kill(pid, signal.SIGTERM)
+    until(peer, lambda row: not row["connected"])
+    until(peer, lambda row: row["connected"] and row["online"])
+    until(contact, lambda row: row.get("online"))
+    assert {int(item.name) for item in proof.iterdir()} - workers, "WebRTC workers were not rebuilt"
+    print("PASS WebRTC transport loss recovers both legacy presence directions while the ticket is valid")
+
+    policy = {"action": "approve", "permissionMode": "read_only", "quotaMode": "unlimited", "allowUpload": True}
+    selection = {"memberMode": "all", "members": [], "policy": policy}
+    status, result = http(requester, "/api/peers/groups",
+                          {"topicId": q, "link": link, "purpose": "同步小组状态", "selection": selection})
+    assert status == 200, result
+    group = result["id"]
+    def roster(node):
+        return next((item for item in get(node)["groups"] if item["id"] == group), {})
+    until(lambda: roster(provider), lambda row: row.get("status") == "pending")
+    assert http(provider, "/api/peers/groups/" + group, selection, "PUT")[0] == 204
+    for base, agent in ((provider, member), (requester, window)):
+        until(lambda: roster(base), lambda row: any(x["window"] == agent and x["online"] for x in row.get("recipients", [])))
+    set_online(remote, member, 0)
+    set_online(local, window, 0)
+    for base, agent in ((provider, member), (requester, window)):
+        until(lambda: roster(base), lambda row: row.get("connected") and
+              any(x["window"] == agent and not x["online"] for x in row["recipients"]))
+    set_online(remote, member, 1)
+    set_online(local, window, 1)
+    for base, agent in ((provider, member), (requester, window)):
+        until(lambda: roster(base), lambda row: any(x["window"] == agent and x["online"] for x in row.get("recipients", [])))
+    print("PASS permanent groups exchange both Agent states over WebRTC")
+
+    status, invite = http(provider, "/api/peers/windows/" + window + "/signaling-invitation", {}, "POST")
+    assert status == 200, invite
+    renewal = {"topicId": q, "link": invite["link"], "purpose": "续接旧胶囊", "resumeRemoteId": capsule}
+    assert http(requester, "/api/peers/remotes", dict(renewal, resumeRemoteId=new_id()))[0] == 409
+    status, renewed = http(requester, "/api/peers/remotes", renewal)
+    assert status == 200 and renewed["id"] == capsule, renewed
+    until(peer, lambda row: row["connected"] and row["online"] and row["contactAgentId"] == member)
+    until(contact, lambda row: row.get("online") and row.get("connected"))
+    print("PASS new invitation reconnects the existing grant and preserves the return contact")
+    assert http(requester,"/api/peers/groups/"+group,dict(selection,policy=dict(policy,action="revoke")),"PUT")[0]==204
+    until(lambda:roster(provider),lambda row:row.get("status")=="revoked")
+    until(lambda:roster(requester),lambda row:row.get("status")=="revoked")
+    print("PASS group revoke reaches both workbenches before old transport is released")
+
+
 def verify(dll, exe, bridge, root, ui, relay_only):
     key = new_id() * 2
     work = root / "project"
@@ -106,7 +179,8 @@ def verify(dll, exe, bridge, root, ui, relay_only):
     proof = root / "relay-workers"
     proof.mkdir()
     local, remote = root / "provider", root / "requester"
-    with stun_probe() as (ice_url, observed), signals(dll, root, key, block_udp=relay_only) as (origin, pin), patch.dict(os.environ,
+    processes = []
+    with stun_probe() as (ice_url, observed), signals(dll, root, key, block_udp=relay_only, processes=processes) as (origin, pin), patch.dict(os.environ,
         LOCALAPPDATA=str(root / "profile"), Signaling__BridgeExecutable=bridge,
         FF_TEST_RELAY_ONLY="1" if relay_only else "0", FF_TEST_RELAY_PROOF=str(proof)), \
         host(exe, local, work) as provider, host(exe, remote, work) as requester:
@@ -132,7 +206,13 @@ def verify(dll, exe, bridge, root, ui, relay_only):
         with closing(sqlite3.connect(local / "workbench.sqlite")) as db:
             db.execute("INSERT INTO windows(id,name,engine,project,topic_id,online,grant_hash) VALUES(?, 'RTC Agent','codex',?,?,1,?)",
                        (window, str(work), p, hashlib.sha256(reviewer.encode()).hexdigest().upper()))
+            db.execute("UPDATE topics SET leader_window_id=? WHERE id=?", (window, p))
             db.commit()
+        member = new_id()
+        with closing(sqlite3.connect(remote / "workbench.sqlite")) as db, db:
+            db.execute("INSERT INTO windows(id,name,engine,project,topic_id,online) VALUES(?, 'Remote Planner','codex',?,?,1)",
+                       (member, str(work), q))
+            db.execute("UPDATE topics SET leader_window_id=? WHERE id=?", (member, q))
         share = "/api/peers/windows/" + window
         status, available = http(provider, share, {"enabled": True}, "PUT")
         assert status == 200 and available["rtc"] and not available["link"], (status, available)
@@ -158,6 +238,40 @@ def verify(dll, exe, bridge, root, ui, relay_only):
             assert observed.is_set(), "the WebRTC workers did not use the STUN server configured in the database"
         else:
             assert len(list(proof.iterdir())) >= 2, "use the worker built with go test -c for --relay-only"
+        if "--renew" in sys.argv:
+            paired = root/"data"/"signaling-pairings.json"
+            def bindings():
+                with closing(sqlite3.connect(remote/"workbench.sqlite")) as db:
+                    return any(item.get("confirmed") for value, in db.execute("SELECT value FROM settings WHERE key GLOB 'rtc_room.*'")
+                               for item in (json.loads(value).get("bindings") or []))
+            until(bindings,bool)
+            assert paired.is_file() and len(json.loads(paired.read_text()))==1
+            room_id=urlsplit(link).path.split("/")[-1]
+            with closing(sqlite3.connect(remote/"workbench.sqlite")) as db:
+                credential=json.loads(db.execute("SELECT value FROM settings WHERE key=?",("rtc_room."+room_id,)).fetchone()[0])
+            workers={int(item.name) for item in proof.iterdir()}
+            processes[0].kill()
+            processes[0].wait(timeout=10)
+            for pid in workers:
+                os.kill(pid,signal.SIGTERM)
+            until(lambda:get(requester)["remotes"],lambda rows:rows and not rows[0]["connected"])
+            with signals(dll,root,key,port=urlsplit(origin).port) as (_,new_pin):
+                assert new_pin==pin
+                until(lambda:get(requester)["remotes"],lambda rows:rows and rows[0]["connected"] and rows[0]["online"])
+                assert {int(item.name) for item in proof.iterdir()}-workers
+                assert http(provider,"/api/peers/grants/"+grant["id"],{"action":"revoke"},"PUT")[0]==200
+                until(lambda:json.loads(paired.read_text()),lambda rows:any(
+                    key.replace("-","")==room_id and data.get("ClosedByHost") is True for key,data in rows.items()))
+                with closing(HTTPSConnection("127.0.0.1",urlsplit(origin).port,context=ssl._create_unverified_context())) as probe:
+                    probe.request("POST",f"/api/signaling/v1/rooms/{room_id}/renew",
+                                  headers={"Authorization":"Bearer "+credential["resumeTicket"]})
+                    assert probe.getresponse().status==410
+                until(lambda:get(requester)["remotes"],lambda rows:rows and rows[0]["status"]=="revoked")
+            print("PASS approved pairing survives signaling restart, obtains fresh tickets and revokes automatically")
+            return
+        if "--presence" in sys.argv:
+            verify_presence(get, provider, requester, local, remote, p, q, window, member, capsule["id"], proof, link)
+            return
         message = new_id()
         status, receipt = http(requester, "/api/peers/remotes/" + capsule["id"] + "/messages",
                                {"id": message, "text": "通过后台 WebRTC 收件"}, timeout=20)
@@ -178,6 +292,7 @@ def verify(dll, exe, bridge, root, ui, relay_only):
             for identity, name, secret in ((sender, "Sender", permission), (other, "Other", other_permission)):
                 db.execute("INSERT INTO windows(id,name,engine,project,topic_id,online,grant_hash) VALUES(?,?,'codex',?,?,1,?)",
                            (identity, name, str(work), q, hashlib.sha256(secret.encode()).hexdigest().upper()))
+            db.execute("UPDATE topics SET leader_window_id=? WHERE id=?", (sender, q))
             db.commit()
         (work / "intro.txt").write_text("checked text", encoding="utf-8")
         (work / "binary.png").write_bytes(b"\x89PNG\r\n\x1a\nexample image bytes")
@@ -208,6 +323,8 @@ def verify(dll, exe, bridge, root, ui, relay_only):
         attachments = http(provider, f"/api/peers/mail/{original['seq']}/attachments")[1]
         assert {item["name"] for item in attachments} == {"intro.txt", "binary.png"}, attachments
         assert send(permission, target=capsule["id"], message="永久授权", files=["intro.txt"])["status"] == "queued"
+        with closing(sqlite3.connect(remote / "workbench.sqlite")) as db, db:
+            db.execute("UPDATE topics SET leader_window_id=? WHERE id=?", (other, q))
         assert send(other_permission, target=capsule["id"], message="另一 Agent", files=["intro.txt"])["status"] == "awaiting_user"
         print("PASS one-time and per-Agent permanent approval, inline attachments and late attachment on original mailbox entry")
 

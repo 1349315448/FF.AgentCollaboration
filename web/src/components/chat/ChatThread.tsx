@@ -1,5 +1,4 @@
-import { useRef, useEffect, useState } from "react";
-import { request } from "../../services/api";
+import { useState } from "react";
 import { activityLabels, navigation } from "../../services/navigation";
 import { copyText } from "../../services/clipboard";
 import { WorkspaceIcon } from "../layout/WorkspaceIcon";
@@ -10,37 +9,7 @@ import { ChatMarkedText,findChatTextMarks } from "./ChatMarkedText";
 const raster = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 const attachmentRoute = (topic:string,post:string,key:string) =>
   "/topics/"+topic+"/chat/"+encodeURIComponent(post)+"/attachments/"+encodeURIComponent(key);
-type SelectedAttachment = {file:Attachment; route:string};
 const time = (value:string) => new Date(value).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
-
-function AttachmentPreview({selected,close}:{selected:SelectedAttachment;close:()=>void}) {
-  const dialog=useRef<HTMLDialogElement>(null);
-  const [text,setText]=useState(""), [error,setError]=useState("");
-  const {file,route}=selected;
-  const inline = raster.test(file.name) || /\.pdf$/i.test(file.name);
-  useEffect(()=>{
-    dialog.current?.showModal();
-    if(inline) return;
-    const control=new AbortController();
-    request<{kind:string;content?:string}>(route+"?view=text",{signal:control.signal})
-      .then(value=>value.kind==="text"?setText(value.content??""):setError("可下载此文件查看。"))
-      .catch(e=>{if(e.name!=="AbortError")setError(e.message);});
-    return ()=>control.abort();
-  },[route,inline]);
-  return <dialog ref={dialog} className="chat-preview" onClose={close} onClick={e=>{if(e.target===e.currentTarget)e.currentTarget.close();}}>
-    <div className="chat-preview-frame">
-      <header><strong>{file.name}</strong><button type="button" className="text-button" aria-label="关闭预览"
-        onClick={()=>dialog.current?.close()}><WorkspaceIcon name="close"/></button></header>
-      <div className="chat-preview-body">
-        {raster.test(file.name)?<img src={"/api"+route+"?view=inline"} alt={file.name} onError={()=>setError("附件已不可用")}/>:
-          inline?<iframe src={"/api"+route+"?view=inline"} title={file.name}/>:
-          <pre>{text || (error?"":"正在读取…")}</pre>}
-        {error && <p className="form-error" role="alert">{error}</p>}
-      </div>
-      <footer><a className="button" download={file.name} href={"/api"+route}>下载附件</a></footer>
-    </div>
-  </dialog>;
-}
 
 function Receipts({post}:{post:ChatPost}) {
   const [open,setOpen]=useState(false);
@@ -73,14 +42,15 @@ export function ChatThread({topic, posts, busy, loadOlder, hasOlder, pending, me
   targets:ChatTarget[];
   onScroll:()=>void; listRef:React.RefObject<HTMLDivElement|null>; notice:(message:string)=>void;
 }) {
-  const [preview,setPreview]=useState<SelectedAttachment>();
   const quoted=new Map(posts.map(post=>[post.id,post]));
   const names=new Map(targets.map(target=>[target.key,target.name]));
   const references=targets.filter(target=>target.kind==="agent").map(target=>"#"+target.name.slice(1));
   for(const post of posts) for(const receipt of post.receipts) quoted.set(receipt.id,post);
   function locate(post:ChatPost,file:Attachment) {
     if(file.project && file.path) window.dispatchEvent(new CustomEvent("ff:locate-file",{detail:{project:file.project,path:file.path}}));
-    else setPreview({file,route:attachmentRoute(topic,post.id,file.key)});
+    else window.dispatchEvent(new CustomEvent("ff:open-chat-files",{detail:{
+      selected:file.key,files:post.attachments.map(f=>({name:f.name,key:f.key,route:attachmentRoute(topic,post.id,f.key)}))
+    }}));
   }
   return <div className="chat-thread" aria-label="群聊消息" ref={listRef} onScroll={onScroll} aria-busy={busy}>
     {hasOlder&&<button className="chat-history text-button" type="button" onClick={loadOlder} disabled={busy}>查看更早消息</button>}
@@ -113,17 +83,15 @@ export function ChatThread({topic, posts, busy, loadOlder, hasOlder, pending, me
             const route=attachmentRoute(topic,post.id,file.key);
             return <div className="chat-attachment" key={file.key}>
               {raster.test(file.name)&&<button type="button" className="chat-image" aria-label={"预览 "+file.name}
-                onClick={()=>setPreview({file,route})}><img loading="lazy" src={"/api"+route+"?view=inline"} alt={file.name}/></button>}
-              <div className="chat-attachment-name" title={file.name}><WorkspaceIcon name="docs"/><span>{file.name}</span></div>
-              <div className="chat-attachment-tools"><button type="button" className="text-button" onClick={()=>setPreview({file,route})}>预览</button>
-                <a download={file.name} href={"/api"+route}>下载</a>
-                <button type="button" className="text-button" onClick={()=>locate(post,file)}>{file.project?"定位文件":"打开附件"}</button></div>
+                onClick={()=>locate(post,file)}><img loading="lazy" src={"/api"+route+"?view=inline"} alt={file.name}/></button>}
+              <button type="button" className="chat-attachment-name" title={file.path??file.name}
+                onClick={()=>locate(post,file)}><WorkspaceIcon name="docs"/><span>{file.name}</span></button>
+              <div className="chat-attachment-tools"><a download={file.name} href={"/api"+route}>下载</a></div>
             </div>;
           })}</div>}
           <Receipts post={post}/>
         </div>
       </article>;
     })}
-    {preview&&<AttachmentPreview key={preview.route} selected={preview} close={()=>setPreview(undefined)}/>}
   </div>;
 }

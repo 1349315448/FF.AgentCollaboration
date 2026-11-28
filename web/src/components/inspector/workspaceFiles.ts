@@ -25,11 +25,11 @@ class EditorSession {
     this.set({...this.state, tabs:this.state.tabs.map(t => t.path === path ? {...t,...fields} : t)});
   }
   select(path:string) { this.set({...this.state,active:path}); }
-  async open(path:string) {
+  async open(path:string, file?:FileView) {
     if (this.state.tabs.some(t => t.path === path)) { this.select(path); return; }
     if (this.state.tabs.length === 8) throw new Error("已打开 8 个文件，请先关闭一个标签");
-    this.set({tabs:[...this.state.tabs,{path}], active:path});
-    await this.load(path);
+    this.set({tabs:[...this.state.tabs,{path,file}], active:path});
+    if(!file) await this.load(path);
   }
   async load(path:string) {
     const key = {};

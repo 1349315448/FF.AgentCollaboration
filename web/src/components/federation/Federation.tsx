@@ -1,5 +1,5 @@
 import {useEffect, useRef, useState} from "react";
-import {navigation, remoteOnline} from "../../services/navigation";
+import {navigation, peerPresence, remoteOnline} from "../../services/navigation";
 import {request} from "../../services/api";
 import {copyText} from "../../services/clipboard";
 import {useWorkbench} from "../../store/workbenchStore";
@@ -16,7 +16,7 @@ export interface Grant {
 }
 interface Capsule {groupName?:string;engine?:string;quota?:{mode:Mode;limit:number|null;remaining:number|null;paused:boolean;resetsAt:number|null}; id:string; topicId:string; agentName:string; nodeName:string; nodeId:string; status:string; connected:boolean; online:boolean; error?:string; contactAgentId?:string|null; deniedAgentIds?:string[]; teamMember?:boolean}
 export interface PeerMail {seq:number;topicId:string;kind:string;source:string;target:string;label:string;text:string;createdAt:string;hasDocument:boolean;workState?:string|null;deliveryState?:string|null;attachmentCount?:number}
-export interface ReturnContact {id:string; windowId:string; name:string; nodeName:string; online:boolean; canMention:boolean; canRemove:boolean; grantId?:string}
+export interface ReturnContact {id:string; windowId:string; name:string; nodeName:string; online:boolean; connected?:boolean; canMention:boolean; canRemove:boolean; grantId?:string}
 interface AttachmentApproval {id:string;agentId:string;agentName:string;recipient:string;files:string[];original?:string}
 export interface Federation {grants:Grant[]; remotes:Capsule[]; sharedWindows:string[]; mail:PeerMail[]; contacts?:ReturnContact[];
   requestedReviews?:string[];attachmentApprovals?:AttachmentApproval[];groups?:GroupCollaborationView[]}
@@ -141,7 +141,7 @@ function bindingDenied(remote:Capsule) {
 }
 
 export function RemoteCapsule({remote:r,tree=false}:{remote:Capsule;tree?:boolean}) {
-  const denied=bindingDenied(r), online=remoteOnline(r), status=denied?"无权限":r.status==="approved" ? (online?"在线":"离线") : states[r.status];
+  const denied=bindingDenied(r), online=remoteOnline(r), status=denied?"无权限":r.status==="approved" ? peerPresence(online,r.connected) : states[r.status];
   const details=()=>open({remoteId:r.id,topicId:r.topicId});
   return <button type="button" data-remote-id={r.id} data-activity={online?"idle":"offline"} className={tree?"tree-remote":"remote-capsule"}
         onClick={event=>{event.stopPropagation();if(event.detail===0) details();else if(tree) void navigation.switchTopic(r.topicId);}}
@@ -257,10 +257,11 @@ function Provider({id,run}:{id:string;run:Run}) {
 export function FederationDialog() {
   const ref=useRef<HTMLDialogElement>(null);
   const [selection,select]=useState<Selection>(),[note,notify]=useState(""),[busy,setBusy]=useState(false);
+  const [resumeLink,setResumeLink]=useState("");
   const {snapshot}=useWorkbench();
   const shown=useRef(new Set<string>());
   useEffect(()=>{
-    const show=(e:Event)=>{select((e as CustomEvent<Selection>).detail);notify("");ref.current?.showModal();};
+    const show=(e:Event)=>{select((e as CustomEvent<Selection>).detail);notify("");setResumeLink("");ref.current?.showModal();};
     window.addEventListener("ff-peer-dialog",show);return ()=>window.removeEventListener("ff-peer-dialog",show);
   },[]);
   useEffect(()=>{
@@ -327,16 +328,23 @@ export function FederationDialog() {
           </div>
         </div>
       : <Provider key={selection.windowId} id={selection.windowId} run={run}/>)}
-    {contact && <><b>{contact.nodeName} · {contact.online?"在线":"离线"}</b>
+    {contact && <><b>{contact.nodeName} · {peerPresence(contact.online,contact.connected)}</b>
       <p>移除后，@{contact.name} 将收到通知，并失去向 @{owner} 请求协作的权限。</p>
       {contact.canRemove ? <button className="button danger" onClick={()=>run(async()=>{
         await request("/peers/windows/"+contact.windowId+"/contacts/"+contact.id,{method:"DELETE"});
         ref.current?.close();
       })}>移除协作</button> : <small>请先将申请方工作台更新到支持按 Agent 移除权限的版本。</small>}</>}
-    {remote && <><b>{remote.nodeName} · {remote.nodeId.slice(0,8)}</b><span>{bindingDenied(remote)?"无权限":states[remote.status]} · {remote.connected?(remote.online?"Agent 在线":"Agent 离线"):"未连接"}</span>
+    {remote && <><b>{remote.nodeName} · {remote.nodeId.slice(0,8)}</b><span>{bindingDenied(remote)?"无权限":states[remote.status]} · {peerPresence(remote.online,remote.connected)}</span>
       {remote.status==="approved" && !bindingDenied(remote) && <span className="remote-quota-detail">{quotaText(remote,true)}</span>}
       {remote.status==="approved" && <ReturnAgentSelect topicId={remote.topicId} value={remote.contactAgentId??""} onChange={agentId=>run(()=>put("remotes/"+remote.id+"/contact",{topicId:remote.topicId,agentId:agentId||null}))}/>}
       {remote.error && <small>{remote.error}</small>}
+      {remote.status==="approved" && !remote.connected && <>
+        <label>同一个 Agent 的新分享链接<input value={resumeLink} autoComplete="off" onChange={event=>setResumeLink(event.target.value)}/></label>
+        <button className="button" disabled={!resumeLink.trim()} onClick={()=>run(async()=>{
+          await request("/peers/remotes",{method:"POST",body:{topicId:remote.topicId,link:resumeLink.trim(),purpose:"恢复协作连接",resumeRemoteId:remote.id}});
+          ref.current?.close();
+        })}>续接协作</button>
+      </>}
       <button className="button" onClick={()=>run(async()=>{await request("/peers/remotes/"+remote.id+"?topic="+remote.topicId,{method:"DELETE"});ref.current?.close();})}>移除本地胶囊</button></>}
     </fieldset>{note && (note.startsWith("已复制")
       ? <p role="status" className={share?"fed-share-feedback":undefined}>{note}</p>

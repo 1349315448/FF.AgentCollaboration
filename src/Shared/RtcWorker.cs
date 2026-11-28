@@ -27,6 +27,8 @@ internal sealed class RtcWorker : IDisposable
     internal bool Online => Volatile.Read(ref disposed) == 0 && !process.HasExited;
     internal int Port { get; private set; }
 
+    internal Task WaitForExit(CancellationToken ct) => process.WaitForExitAsync(ct);
+
     internal async Task Write(object data, CancellationToken ct)
     {
         await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(data, Web).AsMemory(), ct);

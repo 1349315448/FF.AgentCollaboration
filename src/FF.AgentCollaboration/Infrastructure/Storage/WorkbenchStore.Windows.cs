@@ -9,12 +9,12 @@ internal sealed partial class WorkbenchStore
 {
     private const string AgentColumns = """
         id,name,engine,project,model,session,effort,mode,auto_receive,online,topic_id,session_title,approval,receive_mode,role,new_session_pending,
-        EXISTS(SELECT 1 FROM topics t WHERE t.id=windows.topic_id AND t.leader_window_id=windows.id),launch_model_pending
+        EXISTS(SELECT 1 FROM topics t WHERE t.id=windows.topic_id AND t.leader_window_id=windows.id),launch_model_pending,auto_start,allow_platform_update
         """;
 
     private static AgentWindow Agent(SqliteDataReader row) => new(row.GetString(0), row.GetString(1), row.GetString(2),
         row.GetString(3), Optional(row, 4), Optional(row, 5), Optional(row, 6), Optional(row, 7), row.GetBoolean(8), row.GetBoolean(9), row.GetString(10))
-        { SessionTitle = Optional(row, 11), Approval = Optional(row, 12), ReceiveMode = row.GetString(13), Role = Optional(row,14), NewSessionPending = row.GetBoolean(15), IsLeader = row.GetBoolean(16), LaunchModelPending = row.GetBoolean(17) };
+        { SessionTitle = Optional(row, 11), Approval = Optional(row, 12), ReceiveMode = row.GetString(13), Role = Optional(row,14), NewSessionPending = row.GetBoolean(15), IsLeader = row.GetBoolean(16), LaunchModelPending = row.GetBoolean(17), AutoStart = row.GetBoolean(18), AllowPlatformUpdate = row.GetBoolean(19) };
 
     // Copilot 旧表沿用原 ID。Claude 用独立前缀以免两个引擎碰巧使用相同 UUID。
     internal HashSet<string> ArchivedSessions(string engine)
@@ -65,8 +65,8 @@ internal sealed partial class WorkbenchStore
     internal void SaveConfiguration(AgentWindow w) =>
         Exec("""
             UPDATE windows SET name=$p1,role=$p2,engine=$p3,model=$p4,effort=$p5,mode=$p6,approval=$p7,
-                session=$p8,session_title=$p9,new_session_pending=$p10,launch_model_pending=$p11 WHERE id=$p0 AND closed=0
-            """, w.Id,w.Name,w.Role,w.Engine,w.Model,w.Effort,w.Mode,w.Approval,w.Session,w.SessionTitle,w.NewSessionPending,w.LaunchModelPending);
+                session=$p8,session_title=$p9,new_session_pending=$p10,launch_model_pending=$p11,auto_start=$p12,allow_platform_update=$p13 WHERE id=$p0 AND closed=0
+            """, w.Id,w.Name,w.Role,w.Engine,w.Model,w.Effort,w.Mode,w.Approval,w.Session,w.SessionTitle,w.NewSessionPending,w.LaunchModelPending,w.AutoStart,w.AllowPlatformUpdate);
 
     internal void StartConfigured(AgentWindow w, string grant) => Atomic(() => { SaveConfiguration(w); Start(w, grant); });
 

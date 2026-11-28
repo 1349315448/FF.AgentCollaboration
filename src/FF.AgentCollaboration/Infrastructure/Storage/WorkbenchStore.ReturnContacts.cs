@@ -59,10 +59,10 @@ internal sealed partial class WorkbenchStore
 
     internal List<ReturnContact> ReturnContacts(string? window=null) => Read("""
         SELECT c.id,g.window_id,c.name,g.name,c.online AND g.streams>0,
-               g.paused=0 AND NOT EXISTS(SELECT 1 FROM settings WHERE key='peer_reader.'||g.window_id AND value='1'),c.sender IS NOT NULL,g.id
+               g.paused=0 AND NOT EXISTS(SELECT 1 FROM settings WHERE key='peer_reader.'||g.window_id AND value='1'),c.sender IS NOT NULL,g.id,g.streams>0
         FROM fed_return_contact c JOIN fed_grant g ON g.id=c.grant_id JOIN fed_share s ON s.window_id=g.window_id
         WHERE g.status='approved' AND ($p0 IS NULL OR g.window_id=$p0) ORDER BY c.name,c.id
-        """,r=>new ReturnContact(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetBoolean(4),r.GetBoolean(5),r.GetBoolean(6),r.GetString(7)),window);
+        """,r=>new ReturnContact(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetBoolean(4),r.GetBoolean(5),r.GetBoolean(6),r.GetString(7),r.GetBoolean(8)),window);
 
     internal void RemoveReturnContact(string window, string contactId) => Atomic(() =>
     {

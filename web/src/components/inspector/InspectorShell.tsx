@@ -5,6 +5,8 @@ import "../../styles/git.css";
 import { useWorkbench } from "../../store/workbenchStore";
 import { knowledgeModeFor } from "../../services/knowledge";
 import type { GitChange } from "./gitWorkspace";
+import type { ChatFileSelection } from "./ChatFilePreview";
+const ChatFilePreview = lazy(()=>import("./ChatFilePreview"));
 const CodeViewer = lazy(()=>import("./CodeViewer"));
 const CollaborationDocuments = lazy(()=>import("./CollaborationDocuments"));
 const GitPanel = lazy(()=>import("./GitPanel"));
@@ -21,18 +23,25 @@ export function InspectorShell() {
   const [showKnowledge,setShowKnowledge]=useState(false);
   const [diffFile,setDiffFile]=useState<{project:string;change:GitChange}>();
   const [location,locate]=useState<{project:string;path:string;sequence:number}>();
+  const [attachments,setAttachments]=useState<ChatFileSelection>();
   const {snapshot,topic}=useWorkbench();
   const project=topic?.project ?? snapshot?.project;
   const [documentLink,setDocumentLink]=useState({topic:"",id:"",sequence:0});
   useEffect(()=>{
     locate(undefined);
+    setAttachments(undefined);
+    const showFiles=()=>{
+      if(document.getElementById("inspector-shell")?.hidden) document.getElementById("toggle-inspector")?.click();
+      select("files");
+    };
     const reveal=(e:Event)=>{
       const file=(e as CustomEvent<{project:string;path:string}>).detail;
-      if(document.getElementById("inspector-shell")?.hidden) document.getElementById("toggle-inspector")?.click();
-      select("files");locate(previous=>({...file,sequence:(previous?.sequence??0)+1}));
+      showFiles();setAttachments(undefined);locate(previous=>({...file,sequence:(previous?.sequence??0)+1}));
     };
+    const openAttachments=(e:Event)=>{showFiles();setAttachments((e as CustomEvent<ChatFileSelection>).detail);};
+    window.addEventListener("ff:open-chat-files",openAttachments);
     window.addEventListener("ff:locate-file",reveal);
-    return ()=>window.removeEventListener("ff:locate-file",reveal);
+    return ()=>{window.removeEventListener("ff:locate-file",reveal);window.removeEventListener("ff:open-chat-files",openAttachments);};
   },[topic?.id]);
   useEffect(()=>{
     const open=(e:Event)=>{
@@ -79,7 +88,8 @@ export function InspectorShell() {
     <section id="inspector-content" data-section={current} role="tabpanel" aria-labelledby={"inspector-tab-" + current}>
       {!project?<p className="inspector-empty">请先选择项目</p>:
         <Suspense fallback={<p className="inspector-empty">正在打开…</p>}>
-          {current==="changes"?<GitPanel key={project} initial={diffFile?.project===project?diffFile.change:undefined}/>:current==="files"?<CodeViewer key={location?.project??project} project={location?.project??project} reveal={location}
+          {current==="files" && attachments?<ChatFilePreview key={attachments.files.find(f=>f.key===attachments.selected)?.route}
+            selection={attachments} close={()=>setAttachments(undefined)}/>:current==="changes"?<GitPanel key={project} initial={diffFile?.project===project?diffFile.change:undefined}/>:current==="files"?<CodeViewer key={location?.project??project} project={location?.project??project} reveal={location}
             openDiff={change=>{setDiffFile({project,change});select("changes");}}/>:<CollaborationDocuments key={(topic?.id??project)+documentLink.sequence}
             project={project} topic={topic?.id} revision={snapshot?.timelineTopic===topic?.id?snapshot?.timeline?.[0]?.id:undefined}
             mode={knowledgeModeFor(snapshot?.knowledgeModes,project)} showKnowledge={showKnowledge} setShowKnowledge={setShowKnowledge}

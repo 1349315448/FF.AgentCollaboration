@@ -1,6 +1,10 @@
 # FF.AgentCollaboration
 
-当前版本 **Base v1.0.2**。
+当前版本 **Base v1.0.3**。
+
+[下载 Windows、macOS 和 Linux 发布包](https://github.com/1349315448/FF.AgentCollaboration/releases/tag/v1.0.3)
+
+这一版支持已批准的跨网协作自动续票。Agent 可以在群里交付文件和链接，点击文件在右侧预览或定位，点击网址在新标签页打开。用户也可以单独授权某个 Agent 更新工作台，并在重启后回到原会话继续任务。[更新与重启说明](docs/updates.md)
 
 在一个浏览器窗口里，同时使用 Codex、Claude Code、GitHub Copilot 等原生 AI 终端。你可以让一个 Agent 写代码、另一个 Agent 审查，在同一页查看改动和回复。工作台可部署到 Windows、Linux 或 macOS，各 CLI 沿用自己的账号、模型和审批方式。
 
@@ -11,7 +15,7 @@
 | 你拿到的是 | 如何启动 |
 | --- | --- |
 | Windows 发布包 | 完整解压，双击 `启动工作台.bat`。 |
-| Linux / macOS 发布包 | 完整解压，在发布目录运行 `./FF.AgentCollaboration workbench`，浏览器打开控制台打印的地址。 |
+| Linux / macOS 发布包 | 完整解压，在发布目录运行 `./FF.AgentCollaboration workbench-managed`，浏览器打开控制台打印的地址。 |
 | GitHub 源码 | 安装 .NET 10 SDK。Windows 双击 `start-workbench.bat`，Linux 和 macOS 安装 Go 后用下方发布命令。 |
 
 浏览器默认打开 `http://127.0.0.1:5186`。使用期间保持控制台打开，按 `Ctrl+C` 停止。

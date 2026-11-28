@@ -9,9 +9,12 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
     string? knowledge, string? handoffs) : IDisposable
 {
     private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource listening = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly object gate = new();
     private FileStream? owner;
     internal Task Ready => ready.Task;
+    internal Task Listening => listening.Task;
+    internal void MarkListening() => listening.SetResult();
     internal string Root => location.Root;
     private string DefaultArchive => knowledge == null ? location.Defaults.Archive_root! : Path.Combine(knowledge, "development-tasks");
     private string DefaultHandoffs => handoffs ?? location.Defaults.Handoffs!;
