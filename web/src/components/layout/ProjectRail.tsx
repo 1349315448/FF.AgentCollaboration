@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useWorkbench, type Topic, type ProjectTotals } from "../../store/workbenchStore";
 import { navigation, projectKey, remoteOnline } from "../../services/navigation";
 import { fitProjectPath } from "../../services/projectPath";
-import { TopicAgentList } from "./AgentNavigationItem";
+import {CooperationTree} from "./CooperationTree";
 import { NavigationName } from "./NavigationName";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import { ProjectKnowledgeDialog } from "../dialogs/ProjectKnowledgeDialog";
@@ -40,7 +40,7 @@ function TopicBranch({topic}:{topic:Topic}) {
   const online=members.filter(m=>m.agent.online).length + remotes.filter(remoteOnline).length;
   const row=useRef<HTMLDivElement>(null);
   useEffect(()=>{if (selected) row.current?.scrollIntoView({block:"nearest",inline:"nearest"});},[selected]);
-  return <li>
+  return <li data-nav-topic={topic.id}>
     <div ref={row} className="tree-row topic-choice" data-topic={topic.id} data-selected={selected} data-activity={topic.activity}
       onClick={event=>{if (!(event.target as Element).closest("button")) void navigation.switchTopic(topic.id);}}>
       <button type="button" className="tree-arrow" aria-label={(expanded?"收起":"展开")+topic.name+"的 Agent"} aria-expanded={expanded} onClick={toggle}>
@@ -53,7 +53,7 @@ function TopicBranch({topic}:{topic:Topic}) {
         <button type="button" onClick={()=>navigation.archiveTopic(topic.id)}>{topic.status==="finished"?"重开":"归档"}</button>
       </span>
     </div>
-    {expanded && <ul className="tree-members"><TopicAgentList members={members} remotes={remotes} contacts={snapshot?.federation?.contacts} tree/></ul>}
+    {expanded && <CooperationTree topic={topic} members={members}/>}
   </li>;
 }
 
@@ -73,7 +73,7 @@ function ProjectBranch({path,total,topics,onSettings}:{path:string;total:Project
   const topicIds=new Set(topics.map(t=>t.id));
   const remotes=new Map(snapshot?.federation?.remotes.filter(r=>topicIds.has(r.topicId)).map(r=>[r.id,r]));
   const active=total.agents-total.offline + [...remotes.values()].filter(remoteOnline).length;
-  const description=path+" · "+total.topics+" 话题 · 工作 "+total.working+" · 空闲 "+total.idle+" · 离线 "+total.offline;
+  const description=path+" · "+total.topics+" 小组 · 工作 "+total.working+" · 空闲 "+total.idle+" · 离线 "+total.offline;
   return <li data-project={path}>
     <div className="tree-row project-button" data-key={key} id={current?"current-project":undefined}
       data-activity={(total.agents || remotes.size) && !active ? "offline" : total.activity} title={description+(knowledgeUiLocal?" · 双击打开项目设置":"")}
@@ -86,7 +86,7 @@ function ProjectBranch({path,total,topics,onSettings}:{path:string;total:Project
       </button>
       <small className="tree-total">{active}/{total.agents+remotes.size}</small>
       <span className="tree-actions">
-        <button type="button" title="新建话题" aria-label={"在 "+path+" 新建话题"} onClick={()=>navigation.addTopic(path)}>＋</button>
+        <button type="button" title="创建小组" aria-label={"在 "+path+" 创建小组"} onClick={()=>navigation.addTopic(path)}>＋</button>
         <button type="button" id={current?"remove-project":undefined} aria-label={current?"移除当前项目":"移除项目"} title={"移除 "+path} onClick={()=>navigation.removeProject(path)}><WorkspaceIcon name="close"/></button>
       </span>
     </div>
@@ -100,19 +100,25 @@ function ProjectBranch({path,total,topics,onSettings}:{path:string;total:Project
 
 export function ProjectRail() {
   const {snapshot,totals}=useWorkbench();
+  const version=snapshot?.version?"Base v"+snapshot.version:"Base";
   const [settingsPath,setSettingsPath]=useState<string>();
+  useEffect(()=>{
+    const open=(event:Event)=>setSettingsPath((event as CustomEvent<string>).detail);
+    window.addEventListener("ff:project-settings",open);
+    return ()=>window.removeEventListener("ff:project-settings",open);
+  },[]);
   const all=[...totals.values()].reduce((sum,t)=>({working:sum.working+t.working,idle:sum.idle+t.idle,offline:sum.offline+t.offline}),{working:0,idle:0,offline:0});
   return <aside className="project-sidebar" aria-label="项目">
-    <header className="brand">
-      <button type="button" className="icon-button" id="project-collapse" aria-controls="project-rail" aria-expanded="true" aria-label="收起项目栏"><img src="/platform-mark.svg" width="24" height="24" alt=""/></button>
-      <span className="brand-name">Agent Collaboration<br/>Platform <span className="connection" id="connection" role="status" title="连接中" aria-label="连接中">连接中</span></span>
-      <button type="button" className="icon-button" id="open-settings" title="工作台配置与环境检测" aria-label="工作台配置与环境检测">⚙</button>
-    </header>
     <div id="project-rail">
       <div className="project-tools"><strong>项目</strong><button type="button" className="text-button" id="add-project" aria-label="打开项目文件夹" disabled={!snapshot}>＋ 项目</button></div>
-      <nav id="project-tabs" aria-label="项目、话题与 Agent"><ul>{snapshot?.projects.map(path=><ProjectBranch key={projectKey(path)} path={path} total={totals.get(projectKey(path))!} onSettings={()=>setSettingsPath(path)}
+      <nav id="project-tabs" aria-label="项目、小组与 Agent"><ul>{snapshot?.projects.map(path=><ProjectBranch key={projectKey(path)} path={path} total={totals.get(projectKey(path))!} onSettings={()=>setSettingsPath(path)}
         topics={snapshot.topics.filter(t=>projectKey(t.project)===projectKey(path))}/>)}</ul></nav>
-      <footer className="project-states" title="本地 Agent 状态汇总"><span data-activity="working">工作 <b>{all.working}</b></span><span data-activity="idle">空闲 <b>{all.idle}</b></span><span data-activity="offline">离线 <b>{all.offline}</b></span></footer>
+      <div className="project-states" title="本地 Agent 状态汇总"><span data-activity="working">工作 <b>{all.working}</b></span><span data-activity="idle">空闲 <b>{all.idle}</b></span><span data-activity="offline">离线 <b>{all.offline}</b></span></div>
+      <footer className="brand">
+        <button type="button" className="icon-button" id="open-settings" title="工作台配置与环境检测" aria-label="工作台配置与环境检测"><WorkspaceIcon name="settings"/></button>
+        <span className="connection" id="connection" role="status" title="连接中" aria-label="连接中">连接中</span>
+        <span className="brand-version" aria-label={"软件版本 "+version}>{version}</span>
+      </footer>
     </div>
     {settingsPath && <ProjectKnowledgeDialog key={settingsPath} project={settingsPath} onClose={()=>setSettingsPath(undefined)}/>}
   </aside>;

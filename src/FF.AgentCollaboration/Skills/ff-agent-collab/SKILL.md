@@ -13,21 +13,21 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 | 用户想做什么 | 工作台入口及结果 |
 | --- | --- |
 | 添加项目、设置知识库 | 左侧「＋ 项目」→ 打开目录 → 选知识库模式 →「选用此文件夹」；以后双击左侧项目可修改。知识库管理使用运行工作台的电脑。 |
-| 新建或恢复 Agent | 打开所属话题 → 顶栏「＋ Agent」→ 选引擎并按提示登录 → 新建或恢复会话。电源按钮停止或恢复原窗格。 |
+| 新建或恢复 Agent | 打开小组 →「Agent → 添加 Agent」→ 选引擎并按提示登录 → 新建或恢复会话。电源按钮停止或恢复原窗格。 |
 | 更换模型与会话 | 双击 Agent →「基本设置」→「启动模型」→ 保存，下次开启同一 Agent 时应用。改会话用「会话管理」。原生 `/model` 在当前 CLI 会话生效，是否记住由引擎决定。 |
-| 同话题交接、查看结果 | 终端按默认快捷键 `Alt+Shift+A` 选择 Agent，正文写清要做的事再提交。底部「协作信箱」分别显示投递与处理状态。需要回复的任务通过原消息 ID 关联。 |
+| 小组交接、查看结果 | 用户在群聊输入 `@` 并确认收件人，可选多人或附文件。消息下方显示接收和处理进度。Agent 在 CLI 用 `send_to_agent` 指定收件人，回信关联原消息 ID。 |
 | 组长发通知 | 红旗组长从本话题的 `@Agent` 选择器选 `@全部`。用户明确要求群发时调用 `send_to_agent(target="@全部", broadcast=true)`，每位本地组员有自己的消息 ID。只有用户点名的授权外部组员才写入 `externalTargets`。群发保留此前的待办。 |
-| 从另一台电脑请 Agent 帮忙 | 提供方在 Agent 标题栏开启外部协作并复制分享链接。请求方从「＋ Agent → 外部协作 Agent」提交申请，提供方在协作信箱审批权限与额度。看到平台的申请通知后，提醒用户，并用 `show_external_collaboration_approval` 的 `applicationId` 打开待审界面，由用户决定。接收 Agent 用 `send_to_agent` 关联原任务回信。 |
+| 跨端整组合作或借调 | 在「小组 → 小组合作 → 外部小组」创建或接受邀请。默认全组参与，借调时选择指定成员。双方自主设定入站权限、次数、有效期和附件授权，由邀请方最终确认。通过群聊 @ 或 MCP 联系获批成员；正文 # 只引用名称。 |
 | 分工、移交和查任务记录 | 组长按 `read_team_skill` 发起团队提案，由用户确认。点顶栏「知识库」打开总计划与成员任务记录。知识库接口与写权限通过 `read_knowledge_skill` 查看。 |
-| 看文件、Git、MCP 与技能 | 顶栏「代码模式」打开项目文件、差异和只读媒体预览。MCP 管理和 Skills 管理在模式切换下方，按引擎、项目查看或设置。 |
+| 看文件、Git、MCP 与技能 | 「查看 → 代码模式」打开项目文件、差异和只读媒体预览。MCP 管理和 Skills 管理在「工具」菜单，按引擎、项目查看或设置。 |
 
 ## 1. 身份与寻址
 
-用户定义窗口身份、职责及本次授权范围。窗口显示名可以修改；并行任务用消息编号关联。发件身份由本窗口的连接凭据决定。同话题使用 `@名称`，跨话题使用 `@话题/名称`，重名时使用完整窗口或远程胶囊 ID。跨机回信用原信封给出的 `@reply-<route>`。专用审阅窗口只能访问当前授权来信和回信地址。
+用户定义窗口身份、职责及本次授权范围。发件身份由本窗口的连接凭据决定。同组使用 `@名称`。本机跨组要由用户先关联同项目小组，双方获准的成员用 `@小组/名称` 联系。重名时使用完整窗口或远程胶囊 ID。跨机回信用原信封的 `@reply-<route>`。专用审阅窗口只能访问当前授权来信和回信地址。
 
 ## 2. 信封与两类状态
 
-提供方的 `list_windows` 会列出已授权的申请方联系人，并标记 `returnContact: true`。如果来信包含 `RETURN_CONTACT`，该值就是发件 Agent 的联系人 ID。按用户要求主动发送文本结果时，把 ID 传给 `send_to_agent.target`，同名联系人也能准确区分。回应原任务时使用原信封的回信地址和 `replyTo`，可以附 Markdown。
+受限协助的 `list_windows` 会列出已授权的申请方联系人并标记 `returnContact: true`。来信中的 `RETURN_CONTACT` 是发件 Agent 的联系人 ID。常驻协作的对象标记为 `permanentGroup: true`，使用返回的 `target` 精确寻址，避免同名串组。双方选中的成员都可以直接发起协作。回应原任务使用原信封的 `@reply-…` 和 `replyTo`，可附获准的 Markdown。
 
 `MSG_ID` 标识本条消息，`FROM_AGENT` 是来源，`MSG` 是正文。`SUMMARY` 配合 `HANDOFF_DOC` 指向交接文档，`ATTACH_FILES` 列出附带路径，`RETURN_HINT` 说明回送要求。关联回信的 `REPLY_TO` 指向原任务，`REPLY_KIND` 区分进展和最终结果。遇到 `EXTERNAL_COLLAB_POLICY: READ_ONLY`，仅审阅并回信，禁止写文件、提交或推送。
 
@@ -36,6 +36,7 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 ### 投递与接收任务规范
 
 - 发任务时写清项目、模块和入口，以及要完成的目标、范围、约束和验收方式。细节较多时用 `document` 附原文，正文保留摘要。收到「待补充」回信后，补上对方缺少的具体位置或前提。
+- 询问或派任务须指定 `target` 或 `targets`。群聊无 @ 的消息留在本组。工作台用户的提问按 `GROUP_REPLY` 或 `RETURN_HINT` 中指定的地址和原 MSG_ID 回复。本机群聊使用 `@工作台用户`，跨端常驻协作按原信封使用 `@reply-…`。平台自动登记接收状态，省去「收到」回信。
 - 对熟悉的任务，或能顺着入口读源码确定做法的任务，直接推进。只有会话和知识库仍无法确定位置或前提时，才上报 `need_info`，用 `replyTo` 关联原消息并加 `finalReply: false`，请发件人补充。澄清后对原消息重新上报 `working`。
 - 碰到值得复用的新入口、业务规则或排查结论时，调用 `read_knowledge_skill`，按对应层级记录。已有准确记录的内容无需重复归档。
 
@@ -46,9 +47,11 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 | 工具 | 调用参数 | 成功结果 |
 |---|---|---|
 | `list_windows` | `detail?`、`allTopics?` 均为布尔值，默认 false。本地条目含 name、online，按需返回 role 和 leader。detail 增加 id、engine、project；allTopics 增加 topic。当前话题的远程条目含胶囊 id、node，detail 时带 remote。 | 窗口对象数组 |
-| `send_to_agent` | 新消息必填字符串 target、message。可选 document 为项目或所属话题归档内已有 Markdown 路径，此时摘要最多 500 字符。files 为发件项目内已有文件路径数组，最多 20 个；跨端使用单份 document。autoReturnHint 为布尔值或不超过 1000 字符的自定义回信要求。supersedePrevious 默认 true，独立任务显式设 false。replyTo 为原 MSG_ID（8 位或完整）；finalReply 默认 true，仅用于关联回信。 | `{"id":"…","status":"queued","document":null}`，可能附 hint |
+| `send_to_agent` | 新消息必填字符串 target、message。可选 document 为项目或所属话题归档内已有 Markdown 路径，此时摘要最多 500 字符。files 为发件项目内已有文件路径数组，最多 20 个。受限协助使用单份 document，常驻协作使用 document 或已获授权的 files。autoReturnHint 为布尔值或不超过 1000 字符的自定义回信要求。supersedePrevious 默认 true，独立任务显式设 false。replyTo 为原 MSG_ID（8 位或完整）；finalReply 默认 true，仅用于关联回信。 | `{"id":"…","status":"queued","document":null}`，可能附 hint |
 | `send_to_agent` 重发／撤回 | resend 为自己原消息的完整 ID，可附 target 改投；原文档与附件复用。cancel 传完整 ID，或传 true 加 target 撤回最近一条可撤回消息。 | 重发返回新的 queued 编号；撤回返回 id、status 为 cancelled |
-| `send_peer_files` | 新消息传远程 `target` 和 `message`。追加附件传自己已送达的完整 `attachTo` ID。两种方式都传项目内相对路径 `files`，最多 20 个文件、合计 20 MiB。 | 返回 `id` 和 `status`。`awaiting_user` 时提醒用户核对接收方与文件清单，等用户在工作台授权。`queued` 表示已入队。 |
+| `send_to_agent` 多收件人 | 新消息可用 `targets` 指定多个收件地址。默认保留已有待办，可用 `supersedePrevious: true` 覆盖同方向待办。 | 每位收件人有单独的投递编号 |
+| `update_team_context` | 当前组长可传 `goal` 更新小组目标，或传 `roles` 数组更新本组成员职责。每项含 `agentId` 和 `role`。 | `{"status":"updated"}` |
+| `send_peer_files` | 用于受限协助。新消息传远程 `target` 和 `message`，追加附件传原 `attachTo` ID。常驻协作通过 `send_to_agent` 的 `document` 发送 Markdown，普通文件可由工作台用户直接发送，或在 Agent 已获本机发文件授权时通过 `files` 发送。 | `awaiting_user` 时提醒用户核对接收方和文件。`queued` 表示已入队。 |
 | `show_external_collaboration_approval` | `applicationId` 是系统通知给出的完整编号，只能打开本窗口收到的待审申请。 | `status: "awaiting_user"`。请让用户在工作台决定。 |
 | `report_task_status` | 必填 messageId、status，两者为字符串。status 可取 working、need_info 或 completed，作用于本窗口实际收到的任务。 | 返回当前状态，如 `{"status":"need_info"}` |
 | `read_handoff_doc` | 必填字符串 pathOrId，使用实际 HANDOFF_DOC 路径、完整编号或唯一的 8 位 MSG_ID。 | Markdown 正文 |
@@ -77,6 +80,8 @@ description: 在 FF.Agent 工作台使用窗口专属 MCP 查找协作者、交�
 {"name":"send_peer_files","arguments":{"attachTo":"0123456789abcdef0123456789abcdef","files":["docs/cases.xlsx"]}}
 {"name":"send_to_agent","arguments":{"target":"@接口","message":"请核对协议版本与兼容性","document":"docs/protocol.md","autoReturnHint":true}}
 {"name":"send_to_agent","arguments":{"target":"@接口","message":"另查错误码的覆盖范围","supersedePrevious":false}}
+{"name":"send_to_agent","arguments":{"targets":["@接口","@测试"],"message":"核对调试接口与测试覆盖范围。"}}
+{"name":"send_to_agent","arguments":{"target":"@工作台用户","replyTo":"1258ab45","message":"接口验证通过，回归结果已确认。"}}
 {"name":"report_task_status","arguments":{"messageId":"1258ab45","status":"working"}}
 {"name":"report_task_status","arguments":{"messageId":"4b0a542c","status":"need_info"}}
 {"name":"send_to_agent","arguments":{"target":"@发起方","replyTo":"4b0a542c","message":"请补充接口所属项目、路由与复现入口。","finalReply":false}}

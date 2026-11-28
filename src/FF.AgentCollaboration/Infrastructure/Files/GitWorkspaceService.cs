@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using FF.AgentCollaboration.Domain;
-using FF.AgentCollaboration.Infrastructure.Windows;
+using FF.AgentCollaboration.Infrastructure.Processes;
 
 namespace FF.AgentCollaboration.Infrastructure.Files;
 
@@ -29,7 +29,7 @@ internal sealed class GitWorkspaceService(string project)
         return timeout;
     }
 
-    private string? Executable => OperatingSystem.IsWindows() ? WindowsCommand.Dependency("git.exe") : WindowsCommand.OnPath("git");
+    private string? Executable => HostCommand.Git;
     private bool IsRoot => Directory.Exists(metadata);
 
     private async Task Prepare(CancellationToken ct)
@@ -61,8 +61,9 @@ internal sealed class GitWorkspaceService(string project)
         start.Environment["GIT_OPTIONAL_LOCKS"] = "0";
         start.Environment["GIT_ALLOW_PROTOCOL"] = "file:https:http:ssh";
         start.Environment["LC_ALL"] = "C";
+        // Git 2.35.1 及更早版本把布尔值当成钩子程序名。空值在新旧版本中都关闭监视。
         foreach (string arg in new[] {"--no-pager", "--literal-pathspecs", "-c", "safe.directory=", "-c",
-            "safe.directory=" + project.Replace('\\','/'), "-c", "core.quotepath=false", "-c", "core.fsmonitor=false",
+            "safe.directory=" + (OperatingSystem.IsWindows() ? project.Replace('\\','/') : project), "-c", "core.quotepath=false", "-c", "core.fsmonitor=",
             "-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false", "-c", "maintenance.auto=false",
             "-c", "core.sshCommand=ssh -oBatchMode=yes", "-c", "core.askPass=", "--git-dir=" + metadata, "--work-tree=" + project}.Concat(arguments))
             start.ArgumentList.Add(arg);

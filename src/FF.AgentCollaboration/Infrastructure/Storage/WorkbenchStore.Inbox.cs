@@ -59,6 +59,7 @@ internal sealed partial class WorkbenchStore
             {
                 var source = Caller(grant);
                 var target = Recipient(source, targetAddress);
+                RequireGroupRoute(source,target);
                 string? parent = null;
                 if (replyTo != null)
                 {
@@ -67,7 +68,7 @@ internal sealed partial class WorkbenchStore
                     RecordTaskReply(task, finalReply);
                     parent = task.Id;
                 }
-                record = EnqueueLocal(source, target, message, files, returnHint, document, supersedePrevious, parent, finalReply, createdDocuments);
+                record = EnqueueLocal(ChatOrigin.From(source), target, message, files, returnHint, document, supersedePrevious, parent, finalReply, createdDocuments);
             });
             return record!;
         }
@@ -85,33 +86,12 @@ internal sealed partial class WorkbenchStore
             throw new WorkbenchError("只有进行中话题的组长可以 @全部", WorkbenchFailure.Forbidden);
     }
 
-    internal InboxItem[] BroadcastLocal(string grant, string message, IReadOnlyList<string> files, string? returnHint, string? document)
+    private InboxItem EnqueueLocal(ChatOrigin source, AgentWindow target, string message, IReadOnlyList<string> files,
+        string? returnHint, string? document, bool supersedePrevious, string? parent, bool finalReply, List<string> createdDocuments,
+        IReadOnlyList<string>? uploaded = null)
     {
-        var records = new List<InboxItem>();
-        var createdDocuments = new List<string>();
-        try
-        {
-            Atomic(() =>
-            {
-                var source = Caller(grant);
-                RequireBroadcastLeader(source);
-                foreach (var target in Windows().Where(window => window.TopicId == source.TopicId && window.Id != source.Id))
-                    records.Add(EnqueueLocal(source, target, message, files, returnHint, document, false, null, true, createdDocuments));
-            });
-            return records.ToArray();
-        }
-        catch
-        {
-            foreach (string path in createdDocuments) File.Delete(path);
-            throw;
-        }
-    }
-
-    private InboxItem EnqueueLocal(AgentWindow source, AgentWindow target, string message, IReadOnlyList<string> files,
-        string? returnHint, string? document, bool supersedePrevious, string? parent, bool finalReply, List<string> createdDocuments)
-    {
-        string? reference = document == null ? null : ProjectMarkdown(source.Project, Topic(source.TopicId).Folder, document);
-        string[] attachments = files.Select(file => ProjectFolders.Attachment(source.Project, file)).ToArray();
+        string? reference = document == null ? null : ProjectMarkdown(source.Project, Topic(source.Topic).Folder, document);
+        string[] attachments = files.Select(file => ProjectFolders.Attachment(source.Project,file)).Concat(uploaded ?? []).ToArray();
         string id = Guid.NewGuid().ToString("N");
         string summary = message;
         bool longMessage = reference == null && Encoding.UTF8.GetByteCount(message) > 2048;
@@ -140,7 +120,7 @@ internal sealed partial class WorkbenchStore
             """, id, source.Id, target.Id, source.Name, summary, JsonSerializer.Serialize(attachments), longMessage, returnHint,
             managedReference ?? reference, target.TopicId, target.AutoReceive && Topic(target.TopicId).Status == "active", parent == null ? "queued" : null, parent, parent == null ? null : (bool?)finalReply);
         return new(id, target.Id, source.Name, summary, attachments, longMessage ? createdDocuments[^1] : reference, returnHint, "pending")
-        { ProjectDocument = reference != null, QueueHint = QueueHint(target), ReplyTo = parent, FinalReply = parent == null ? null : finalReply };
+        { ProjectDocument = reference != null, Source = source.Id, QueueHint = QueueHint(target), ReplyTo = parent, FinalReply = parent == null ? null : finalReply };
     }
 
     private static string DocumentPath(string directory, string reference) =>
@@ -186,6 +166,7 @@ internal sealed partial class WorkbenchStore
             var original = Read($"SELECT {InboxColumns} FROM inbox WHERE id=$p0 AND source=$p1",
                 ReadInboxItem(), originalId, source.Id).SingleOrDefault() ?? throw new WorkbenchError("只能重发自己发出的消息", WorkbenchFailure.Forbidden);
             var recipient = target == null ? Window(original.Target) : Recipient(source, target);
+            RequireGroupRoute(source,recipient);
             if (original.ProjectDocument) ProjectMarkdown(source.Project, Topic(source.TopicId).Folder, original.Document!);
             if (supersedePrevious && original.ReplyTo == null) Supersede(source.Id, recipient.Id);
             string id = Guid.NewGuid().ToString("N");
@@ -283,8 +264,16 @@ internal sealed partial class WorkbenchStore
 
     // 后台话题的消息可能在相邻两次快照之间送达。动画仅需要最近的收发端和状态。
     internal List<HandoffRoute> RecentHandoffs() => Read("""
-        SELECT id,source,target,state,acknowledged FROM inbox ORDER BY rowid DESC LIMIT 30
-        """, row => new HandoffRoute(row.GetString(0), row.GetString(1), row.GetString(2), row.GetString(3), row.GetBoolean(4)));
+        SELECT i.id,i.source,i.target,i.state,i.acknowledged,coalesce(p.topic,w.topic_id),i.topic_id,p.id
+        FROM (SELECT * FROM inbox ORDER BY rowid DESC LIMIT 30) i
+        LEFT JOIN windows w ON w.id=i.source
+        LEFT JOIN chat_delivery d ON d.id=i.id AND d.remote=0 LEFT JOIN chat_post p ON p.id=d.post
+        UNION ALL
+        SELECT p.id,p.source,$p0,'delivered',0,p.topic,original.topic,p.id
+        FROM (SELECT id,source,topic,reply_to FROM chat_post ORDER BY rowid DESC LIMIT 30) p
+        JOIN chat_post original ON original.id=p.reply_to WHERE p.topic<>original.topic
+        """, row => new HandoffRoute(row.GetString(0), row.GetString(1), row.GetString(2), row.GetString(3),
+            row.GetBoolean(4),Optional(row,5),Optional(row,6),Optional(row,7)),InboxItem.ChatUser);
 
     // 当前话题的收件及各发件窗口各取指定条数，合并后按插入顺序展示。
     internal List<TimelineEntry> Timeline(string topic, int recent) => Read("""
@@ -395,6 +384,11 @@ internal sealed partial class WorkbenchStore
 
     private bool ClaimPending(InboxItem item)
     {
+        if (item.Source=="peer-mailbox" && !GroupTerminalAllowed(item))
+        {
+            Exec("UPDATE inbox SET acknowledged=1,wake_requested=0 WHERE id=$p0 AND state='pending'",item.Id);
+            return false;
+        }
         bool reader = item.Source == "peer-mailbox" && DedicatedReader(item.Target);
         if (reader && CurrentPeerRequest(item.Target) != null) return false;
         Exec("UPDATE inbox SET state='writing',wake_requested=0 WHERE id=$p0",item.Id);

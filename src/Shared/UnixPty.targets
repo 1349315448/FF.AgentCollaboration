@@ -1,0 +1,35 @@
+<Project>
+  <PropertyGroup>
+    <_PtyRID Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_PtyRID>
+    <_PtyRID Condition="'$(_PtyRID)' == ''">$(NETCoreSdkRuntimeIdentifier)</_PtyRID>
+    <_PtyOS Condition="$(_PtyRID.StartsWith('linux-'))">linux</_PtyOS>
+    <_PtyOS Condition="$(_PtyRID.StartsWith('osx-'))">darwin</_PtyOS>
+    <_PtyArch Condition="$(_PtyRID.EndsWith('-x64'))">amd64</_PtyArch>
+    <_PtyArch Condition="$(_PtyRID.EndsWith('-arm64'))">arm64</_PtyArch>
+    <_PtySource>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '../FF.AgentCollaboration.Pty'))</_PtySource>
+    <_PtyOutputDirectory>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(BaseIntermediateOutputPath)', 'pty', '$(_PtyRID)'))</_PtyOutputDirectory>
+    <_PtyBinary>FF.AgentCollaboration.Pty</_PtyBinary>
+    <_PtyOutput>$(_PtyOutputDirectory)$(_PtyBinary)</_PtyOutput>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(_PtyOS)' != ''">
+    <None Include="$(_PtyOutput)" Link="$(_PtyBinary)" CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <None Include="$(_PtySource)LICENSE.pty" Link="licenses/creack-pty.txt" CopyToPublishDirectory="PreserveNewest" />
+    <_PtyBuildInputs Include="$(_PtySource)*.go;$(_PtySource)go.mod;$(_PtySource)go.sum" />
+  </ItemGroup>
+  <Target Name="BuildUnixPty" BeforeTargets="GetCopyToOutputDirectoryItems;ComputeFilesToPublish"
+          Condition="'$(_PtyOS)' != ''" Inputs="@(_PtyBuildInputs)" Outputs="$(_PtyOutput)">
+    <Error Condition="'$(_PtyArch)' == ''" Text="Unix PTY 支持 x64 和 arm64。" />
+    <MakeDir Directories="$(_PtyOutputDirectory)" />
+    <Exec WorkingDirectory="$(_PtySource)" EnvironmentVariables="GOOS=$(_PtyOS);GOARCH=$(_PtyArch);CGO_ENABLED=0"
+          Command="go build -mod=readonly -buildvcs=false -trimpath -o &quot;$(_PtyOutput)&quot; ." />
+  </Target>
+  <Target Name="SetUnixPtyExecutable" AfterTargets="Build"
+          Condition="'$(_PtyOS)' != '' and !$([MSBuild]::IsOSPlatform('Windows'))">
+    <Exec Command="chmod +x &quot;$(TargetDir)$(_PtyBinary)&quot;" />
+  </Target>
+  <Target Name="SetPublishedUnixExecutables" AfterTargets="Publish"
+          Condition="'$(_PtyOS)' != '' and !$([MSBuild]::IsOSPlatform('Windows'))">
+    <Exec Command="chmod +x &quot;$(PublishDir)$(_PtyBinary)&quot; &quot;$(PublishDir)FF.AgentCollaboration.WebRtc&quot;" />
+  </Target>
+</Project>

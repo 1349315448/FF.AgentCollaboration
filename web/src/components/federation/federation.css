@@ -1,31 +1,5 @@
 #federation-dialog { width:min(440px,92vw); }
 #peer-mailbox-icon,.remote-capsule { display:inline-flex; position:relative; }
-.fed-filters { display:flex; gap:6px; padding:0 8px 4px; }
-.fed-filters [aria-pressed=true]{color:var(--accent);}
-#collab-log:has(#log-toggle[aria-expanded=false]) .fed-filters { display:none; }
-.timeline-entry>.log-time {display:flex;align-items:center;gap:4px;}
-.timeline-entry>.log-time svg {width:12px;height:12px;flex:none;}
-#collab-log {container-type:inline-size;--mail-status-width:52px;--mail-gap:10px;}
-#topic-timeline,.fed-filters {scrollbar-gutter:stable;}
-.fed-filters {overflow-y:hidden;padding-right:38px;}
-.mail-column-labels {margin-left:auto;display:grid;grid-template-columns:repeat(2,var(--mail-status-width));gap:var(--mail-gap);text-align:right;color:var(--muted);font-size:11px;align-self:center;}
-.log-document-row .timeline-entry {gap:var(--mail-gap);grid-template-columns:minmax(0,calc(19ch + 16px)) minmax(0,clamp(8ch,20%,28ch)) minmax(0,1fr) repeat(2,var(--mail-status-width));}
-.log-work-state {text-align:right;color:var(--faint);font-size:11px;}
-.log-work-state[data-work=working] {color:var(--accent);}
-.log-work-state[data-work=need_info] {color:var(--amber);}
-.log-work-state:is([data-work=completed],[data-work=replied]) {color:var(--emerald);}
-@container (max-width:560px) {
-  .log-document-row .timeline-entry {grid-template-columns:minmax(0,7ch) minmax(0,8ch) minmax(0,1fr) repeat(2,var(--mail-status-width));}
-}
-.fed-mail-row[data-kind=audit] {color:var(--danger);}
-.fed-mail-row[data-kind=blocked] {color:var(--muted);}
-.fed-mail-approvals {padding:6px 10px;}
-.fed-application-row {display:flex;align-items:center;gap:8px;min-height:26px;border-bottom:1px solid var(--line-soft);}
-.fed-application-row svg {width:14px;height:14px;flex:none;}
-.fed-application-row b,.fed-application-row span {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.fed-application-row span {flex:1;color:var(--muted);}
-.fed-application-row button,.pending-application > .text-button {color:var(--accent);}
-.log-document-row.pending-application {grid-template-columns:minmax(0,1fr) auto;}
 #federation-dialog fieldset { border:0; margin:0; max-height:70vh; overflow:auto; min-width:0; }
 .fed-share-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
 .fed-share-option { display:grid; align-content:start; gap:6px; }

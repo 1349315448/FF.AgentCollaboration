@@ -1,7 +1,5 @@
-import { Fragment } from "react";
-import { navigation, remoteOnline } from "../../services/navigation";
+import { navigation } from "../../services/navigation";
 import type { WindowView } from "../../store/workbenchStore";
-import { RemoteCapsule, viewReturnContact, type Federation } from "../federation/Federation";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import { LeaderFlag } from "./LeaderFlag";
 import { NavigationName } from "./NavigationName";
@@ -10,7 +8,7 @@ import { useEngineQuota } from "../../services/engineQuota";
 
 const states = {working:"工作", idle:"待命", waiting:"待处理", offline:"离线", finished:"已结束"};
 
-function AgentNavigationItem({view, tree = false}:{view:WindowView; tree?:boolean}) {
+export function AgentNavigationItem({view, tree = false}:{view:WindowView; tree?:boolean}) {
   const {agent, activity, inbox} = view;
   const quota=useEngineQuota(agent.engine);
   const engine=engineNames[agent.engine] ?? agent.engine;
@@ -33,29 +31,4 @@ function AgentNavigationItem({view, tree = false}:{view:WindowView; tree?:boolea
       <WorkspaceIcon name="envelope"/>{count}</span>}
     {tree && <small className="tree-agent-state">{states[activity]}</small>}
   </span>;
-}
-
-export function TopicAgentList({members, remotes, contacts=[], tree = false}:{
-  members:WindowView[]; remotes:Federation["remotes"]; contacts?:Federation["contacts"]; tree?:boolean;
-}) {
-  const entries = [
-    ...members.map(view => ({
-      key:"local-"+view.agent.id, online:view.agent.online, item:<AgentNavigationItem view={view} tree={tree}/>,
-      children:tree?contacts.filter(c=>c.windowId===view.agent.id):[]
-    })),
-    ...remotes.map(remote => ({
-      key:"remote-"+remote.id, online:remoteOnline(remote), item:<RemoteCapsule remote={remote} tree={tree}/>, children:[]
-    }))
-  ];
-  entries.sort((a,b) => Number(b.online) - Number(a.online));
-  const Row = tree ? "li" : Fragment;
-  return entries.map(entry => <Row key={entry.key}>{entry.item}
-    {entry.children.length>0 && <ul className="tree-return-contacts" aria-label="申请方 Agent">{entry.children.map(c=>
-      <li key={c.id} data-contact={c.id}><button type="button" data-activity={c.online?"idle":"offline"}
-        onClick={e=>{if(e.detail===0)viewReturnContact(c.id);}} onDoubleClick={()=>viewReturnContact(c.id)}
-        title={`@${c.name} · ${c.nodeName} · 双击管理协作`}>
-        <WorkspaceIcon name="network"/><span aria-hidden="true" className="nav-dot"/><span>@{c.name}</span><small>{c.nodeName}</small>
-        <small className="tree-agent-state">{c.online?"在线":"离线"}</small></button>
-      </li>)}</ul>}
-  </Row>);
 }

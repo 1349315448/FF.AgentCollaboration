@@ -17,8 +17,7 @@ internal sealed partial class WorkbenchStore
             Exec("DELETE FROM fed_contact_binding WHERE remote=$p0 AND topic=$p1",remote,input.TopicId);
             return;
         }
-        var agent = Window(WorkbenchInput.Id(input.AgentId));
-        if (agent.TopicId != input.TopicId) throw new WorkbenchError("请选择当前话题的回信 Agent");
+        var agent = ExternalLeader(input.TopicId,WorkbenchInput.Id(input.AgentId));
         // 换人即换地址，断线期间寄给前任的消息不能投给新联系人。
         Exec("""
             INSERT INTO fed_contact_binding(remote,topic,agent,key) VALUES($p0,$p1,$p2,lower(hex(randomblob(16))))
@@ -28,7 +27,8 @@ internal sealed partial class WorkbenchStore
 
     internal List<AdvertisedContact> AdvertisedContacts(string remote) => Read("""
         SELECT b.key,w.name,w.online,w.id FROM fed_contact_binding b JOIN windows w ON w.id=b.agent AND w.topic_id=b.topic
-        JOIN topics t ON t.id=b.topic WHERE b.remote=$p0 AND w.closed=0 AND t.status='active' ORDER BY b.key
+        JOIN topics t ON t.id=b.topic WHERE b.remote=$p0 AND w.closed=0 AND t.status='active'
+        AND t.leader_window_id=w.id ORDER BY b.key
         """,r=>new AdvertisedContact(r.GetString(0),r.GetString(1),r.GetBoolean(2),ScopedContactId(remote,r.GetString(3))),remote);
 
     internal string? SenderContactKey(string remote,string agent) =>
@@ -59,10 +59,10 @@ internal sealed partial class WorkbenchStore
 
     internal List<ReturnContact> ReturnContacts(string? window=null) => Read("""
         SELECT c.id,g.window_id,c.name,g.name,c.online AND g.streams>0,
-               g.paused=0 AND NOT EXISTS(SELECT 1 FROM settings WHERE key='peer_reader.'||g.window_id AND value='1'),c.sender IS NOT NULL
+               g.paused=0 AND NOT EXISTS(SELECT 1 FROM settings WHERE key='peer_reader.'||g.window_id AND value='1'),c.sender IS NOT NULL,g.id
         FROM fed_return_contact c JOIN fed_grant g ON g.id=c.grant_id JOIN fed_share s ON s.window_id=g.window_id
         WHERE g.status='approved' AND ($p0 IS NULL OR g.window_id=$p0) ORDER BY c.name,c.id
-        """,r=>new ReturnContact(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetBoolean(4),r.GetBoolean(5),r.GetBoolean(6)),window);
+        """,r=>new ReturnContact(r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetBoolean(4),r.GetBoolean(5),r.GetBoolean(6),r.GetString(7)),window);
 
     internal void RemoveReturnContact(string window, string contactId) => Atomic(() =>
     {
@@ -130,8 +130,9 @@ internal sealed partial class WorkbenchStore
         var address = Read("""
             SELECT b.agent,b.topic,r.name,r.agent FROM fed_contact_binding b
             JOIN fed_remote r ON r.id=b.remote JOIN windows w ON w.id=b.agent AND w.closed=0 AND w.topic_id=b.topic
-            JOIN topics t ON t.id=b.topic AND t.status='active'
+            JOIN topics t ON t.id=b.topic AND t.status='active' AND t.leader_window_id=b.agent
             WHERE b.remote=$p0 AND b.key=$p1
+              AND NOT EXISTS(SELECT 1 FROM fed_remote_denial d WHERE d.remote=b.remote AND d.agent=b.agent)
             """,r=>(Agent:r.GetString(0),Topic:r.GetString(1),Label:r.GetString(3)+" · "+r.GetString(2)),remote,item.RequestId).SingleOrDefault();
         if (address.Agent == null) return;
         string id = Guid.NewGuid().ToString("N");

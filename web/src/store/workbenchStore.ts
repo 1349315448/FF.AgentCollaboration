@@ -10,10 +10,13 @@ export interface Agent { role?: string|null; id: string; name: string; topicId: 
 export interface Message { id: string; state: string; from: string; fromTopic?: string; acknowledged?: boolean }
 export interface WindowView { agent: Agent; activity: Activity; inbox: Message[]; terminal?: string; exitCode?: number; wakeError?: string }
 export interface TimelineEntry { id: string; source?:string; state: string; from: string; to: string; summary: string; acknowledged?: boolean; createdAt?: string; hasDocument?:boolean; workState?:string|null }
-export interface HandoffRoute { id: string; source: string; target: string; state: string; acknowledged: boolean }
-export interface Snapshot { project?: string; projects: string[]; topics: Topic[]; windows: WindowView[]; timelineTopic?: string; timeline: TimelineEntry[]; recentHandoffs?: HandoffRoute[]; federation?: Federation; knowledgeModes?: Record<string,KnowledgeMode>; teamProposals?: TeamProposal[] }
+export interface HandoffRoute { id: string; source: string; target: string; state: string; acknowledged: boolean; sourceTopic?:string|null; targetTopic?:string|null; post?:string|null }
+export interface GroupPair { first:string; second:string; firstMembers?:string[]; secondMembers?:string[]; firstMode?:string; secondMode?:string }
+export interface Snapshot { project?: string; projects: string[]; topics: Topic[]; windows: WindowView[]; timelineTopic?: string; timeline: TimelineEntry[]; recentHandoffs?: HandoffRoute[]; federation?: Federation; knowledgeModes?: Record<string,KnowledgeMode>; teamProposals?: TeamProposal[];groupLinks?:GroupPair[]; version?:string }
 export interface Layout {
-  primaryWindowId: string | null; activeWindowId: string | null; collapsedIds: string[]; splitRatio: number;
+  chatRatio?: number;
+  primaryWindowId: string | null; activeWindowId: string | null; openedIds: string[];
+  focusedWindowId: string | null; splitRatio: number;
   workspaceMode: "agent" | "code"; agentInspectorOpen: boolean; agentInspectorRatio: number;
   codeAgentRatio: number; codeAgentHidden: boolean; codeActiveWindowId: string | null;
 }

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>FF.AgentCollaboration</AssemblyName>
+    <Version>1.0.2</Version>
     <RootNamespace>FF.AgentCollaboration</RootNamespace>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
@@ -21,7 +22,7 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <None Include="../../LICENSE" Link="LICENSE" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Include="../../docs/licenses/YamlDotNet.txt" Link="licenses/YamlDotNet.txt" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
-    <None Update="启动工作台.bat" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <None Update="启动工作台.bat" Condition="'$(ConPtyWindowsRuntime)' == 'true'" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <None Update="Skills/ff-agent-collab/SKILL.md" TargetPath="ff-agent-collab/SKILL.md"
           CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
@@ -43,4 +44,5 @@
           CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <Import Project="../Shared/WebRtcPublish.targets" />
+  <Import Project="../Shared/UnixPty.targets" />
 </Project>

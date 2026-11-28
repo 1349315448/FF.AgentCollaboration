@@ -1,4 +1,4 @@
-import { animateMessages, attachLogControls } from "./activity.js";
+import { animateGroupHandoffs } from "./activity.js";
 import { request } from "../services/api";
 import { pageRetired } from "../services/workbenchPage";
 import { byId, feedback, setBusy } from "./dom.js";
@@ -25,12 +25,12 @@ function refresh() {
     const query = selectedTopicId ? "?topic=" + encodeURIComponent(selectedTopicId) + "&recent=30" : "";
     refreshing = request("/state" + query).then(data => {
       if (pageRetired || selectedTopicId !== requestedTopic) return;
-      const previous = snapshot;
       const formOpen = isDialogOpen("new-dialog");
       const samePanes = data.windows.length === panes.size && data.windows.every(w => {
         const pane = panes.get(w.agent.id);
         return pane && pane.generation === w.terminal && pane.view.agent.online === w.agent.online;
       });
+      const previousHandoffs = snapshot?.recentHandoffs;
       setSnapshot(data);
       applyMentionShortcut(data.mentionShortcut);
       if (formOpen && samePanes) {
@@ -40,8 +40,8 @@ function refresh() {
         normalizeActivities(data);
         render();
         if (picking) renderPeers();
-        if (!formOpen) animateMessages(previous, data);
       }
+      animateGroupHandoffs(data, previousHandoffs);
       byId("connection").textContent = "已连接";
       byId("connection").title = "已连接";
       byId("connection").setAttribute("aria-label", "已连接");
@@ -122,7 +122,6 @@ function startWorkbench() {
   if (!document.body.hasAttribute("data-starting")) return;
   document.body.removeAttribute("data-starting");
   attachTopicControls();
-  attachLogControls();
   attachLayoutControls();
   refresh();
   listenForChanges();

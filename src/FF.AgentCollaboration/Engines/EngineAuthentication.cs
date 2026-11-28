@@ -1,8 +1,8 @@
+using FF.AgentCollaboration.Infrastructure.Processes;
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FF.AgentCollaboration.Domain;
-using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Engines;
 
@@ -48,7 +48,7 @@ internal static class EngineAuthentication
 
     internal static async Task<(int Code, string Output)> RunCommand(string executable, string project, string[] args, CancellationToken ct)
     {
-        var start = WindowsCommand.Resolve(executable, args);
+        var start = HostCommand.Resolve(executable, args);
         start.WorkingDirectory = project;
         start.RedirectStandardInput = start.RedirectStandardOutput = start.RedirectStandardError = true;
         using var process = Process.Start(start)!;

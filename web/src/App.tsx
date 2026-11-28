@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { TopBar } from "./components/layout/TopBar";
 import { ProjectRail } from "./components/layout/ProjectRail";
 
@@ -6,7 +5,7 @@ import { WorkspaceLayout } from "./components/workspace/WorkspaceLayout";
 import { InspectorShell } from "./components/inspector/InspectorShell";
 import { GitWorkspace } from "./components/inspector/gitWorkspace";
 import { EmptyWorkspace } from "./components/workspace/EmptyWorkspace";
-import { CollabLogSection } from "./components/workspace/CollabLogSection";
+import { GroupChat } from "./components/chat/GroupChat";
 import { AgentConfigDialog } from "./components/dialogs/AgentConfigDialog";
 import { TopicDialog } from "./components/dialogs/TopicDialog";
 import { NewAgentDialog } from "./components/dialogs/NewAgentDialog";
@@ -19,14 +18,14 @@ import { ShortcutsDialog } from "./components/dialogs/ShortcutsDialog";
 import { FilesDialog } from "./components/dialogs/FilesDialog";
 import { PreviewDialog } from "./components/dialogs/PreviewDialog";
 import { FederationDialog } from "./components/federation/Federation";
+import { GroupCollaborationDialog } from "./components/federation/GroupCollaboration";
 
 export function App() {
-  const [toolbar, setToolbar] = useState<HTMLDivElement | null>(null);
   return (
     <GitWorkspace>
       <div id="topic-shell" className="topic-shell">
         <ProjectRail />
-        <TopBar toolbarRef={setToolbar} />
+        <TopBar />
         <main className="workspace" aria-label="终端工作区">
           <p id="mention-notice" className="banner" role="status" hidden></p>
           <p id="connection-error" className="banner" role="alert" hidden></p>
@@ -34,13 +33,17 @@ export function App() {
           <div id="workspace-stage">
             <section className="topic-workspace" id="agent-stage">
               <div id="terminal-parking" hidden />
-              <WorkspaceLayout />
+              <div id="group-workspace">
+                <GroupChat />
+                <div id="chat-divider" className="pane-divider" role="separator" tabIndex={0} aria-orientation="vertical"
+                  aria-label="调整群聊宽度" aria-controls="group-chat workspace-layout" aria-valuemin={0} aria-valuemax={100} hidden />
+                <WorkspaceLayout />
+              </div>
               <EmptyWorkspace />
-              <CollabLogSection />
             </section>
             <div id="inspector-divider" className="pane-divider" role="separator" tabIndex={0} aria-orientation="vertical"
               aria-label="调整 Agent 与代码面板宽度" aria-controls="agent-stage inspector-shell" aria-valuemin={22} aria-valuemax={45} aria-valuenow={30} hidden/>
-            <InspectorShell toolbarHost={toolbar} />
+            <InspectorShell />
           </div>
         </main>
       </div>
@@ -56,6 +59,7 @@ export function App() {
       <FilesDialog />
       <PreviewDialog />
       <FederationDialog />
+      <GroupCollaborationDialog />
     </GitWorkspace>
   );
 }

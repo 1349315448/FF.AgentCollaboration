@@ -1,8 +1,8 @@
+using FF.AgentCollaboration.Infrastructure.Processes;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Engines;
 
@@ -19,7 +19,7 @@ internal sealed class RpcPipe : IDisposable
     {
         this.contentLength = contentLength;
         this.bareEnvelope = bareEnvelope;
-        var start = WindowsCommand.Resolve(executable, args.ToArray());
+        var start = HostCommand.Resolve(executable, args.ToArray());
         start.WorkingDirectory = cwd;
         start.RedirectStandardInput = start.RedirectStandardOutput = start.RedirectStandardError = true;
         start.StandardInputEncoding = new UTF8Encoding(false);

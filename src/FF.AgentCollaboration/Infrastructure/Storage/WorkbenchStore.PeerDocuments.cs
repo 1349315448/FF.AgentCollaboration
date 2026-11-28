@@ -147,8 +147,7 @@ internal sealed partial class WorkbenchStore
     private static byte[] ReadPeerBytes(string path)
     {
         using var guard = WorkspaceDirectoryGuard.Open(Path.GetDirectoryName(path)!);
-        using var file = File.OpenRead(path);
-        WorkspaceDirectoryGuard.VerifyFile(file.SafeFileHandle, path);
+        using var file = guard.Read(path);
         return PeerBytes(file, CancellationToken.None).GetAwaiter().GetResult();
     }
 
@@ -191,5 +190,6 @@ internal sealed partial class WorkbenchStore
             )
             """);
         Exec("DELETE FROM fed_attachment WHERE file NOT IN (SELECT id FROM fed_file)");
+        Exec("DELETE FROM fed_group_upload WHERE file NOT IN (SELECT id FROM fed_file)");
     }
 }

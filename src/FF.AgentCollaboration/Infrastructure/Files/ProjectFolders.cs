@@ -10,8 +10,8 @@ internal sealed record ProjectFileListing(IReadOnlyList<string> Files, bool Trun
 internal static class ProjectFolders
 {
     private static readonly HashSet<string> Excluded = new([".git", "bin", "obj", "node_modules"], StringComparer.OrdinalIgnoreCase);
-    internal static bool Same(string left, string right) => string.Equals(left, right,
-        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+    internal static StringComparer Comparer { get; } = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    internal static bool Same(string? left, string? right) => Comparer.Equals(left, right);
 
     internal static string Resolve(string? path)
     {
@@ -40,6 +40,12 @@ internal static class ProjectFolders
     {
         if (path == null)
         {
+            if (!OperatingSystem.IsWindows())
+            {
+                string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                return new(null, null, new[] { home, "/" }.Distinct(Comparer)
+                    .Where(Directory.Exists).Select(folder => new FolderEntry(folder, folder)).ToArray());
+            }
             var drives = DriveInfo.GetDrives().Where(drive => drive.DriveType != DriveType.Network && drive.IsReady)
                 .Select(drive => new FolderEntry(drive.Name, drive.RootDirectory.FullName)).ToArray();
             return new(null, null, drives);

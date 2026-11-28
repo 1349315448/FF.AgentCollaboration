@@ -7,7 +7,7 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 
 internal sealed partial class WorkbenchStore
 {
-    internal int LogCount() => Read("SELECT count(*) FROM inbox", row => row.GetInt32(0)).Single();
+    internal int LogCount() => Read("SELECT (SELECT count(*) FROM inbox)+(SELECT count(*) FROM chat_post)", row => row.GetInt32(0)).Single();
 
     internal object CleanLogs(int? days)
     {
@@ -26,6 +26,11 @@ internal sealed partial class WorkbenchStore
                 if (IsManagedLogFile(path, directory)) Exec("INSERT OR IGNORE INTO handoff_cleanup(path) VALUES($p0)", path);
             }
             deleted = Exec("DELETE FROM inbox WHERE " + expired, cutoff);
+            deleted += Exec("""
+                DELETE FROM chat_post WHERE ($p0 IS NULL OR julianday(created_at)<julianday($p0))
+                AND NOT EXISTS(SELECT 1 FROM chat_delivery d JOIN inbox i ON d.id=i.id WHERE d.post=chat_post.id AND i.state='writing')
+                """, cutoff);
+            Exec("DELETE FROM chat_delivery WHERE NOT EXISTS(SELECT 1 FROM chat_post p WHERE p.id=chat_delivery.post)");
         });
         Atomic(() =>
         {
@@ -37,7 +42,7 @@ internal sealed partial class WorkbenchStore
             foreach (var path in Read("SELECT DISTINCT document,coalesce(document_ref,id) FROM inbox WHERE document=1 OR document_ref IS NOT NULL",
                          row => row.GetBoolean(0) ? DocumentPath(directory, row.GetString(1)) : row.GetString(1)))
                 referenced.Add(path);
-            foreach (var paths in Read("SELECT DISTINCT files FROM inbox WHERE files<>'[]'", row => row.GetString(0)))
+            foreach (var paths in Read("SELECT files FROM inbox WHERE files<>'[]' UNION SELECT files FROM chat_post WHERE files<>'[]'", row => row.GetString(0)))
                 referenced.UnionWith(JsonSerializer.Deserialize<string[]>(paths)!);
             foreach (var path in candidates)
             {

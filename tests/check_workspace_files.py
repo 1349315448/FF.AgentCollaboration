@@ -51,6 +51,13 @@ def verify(exe, case):
                 assert get("file", path=path)[0] in (400, 403), path
                 assert save(path, "bad", "2020-01-01T00:00:00Z")[0] in (400, 403), path
             assert get("tree", path="linked")[0] == 403
+            def open_folder(path, root=project):
+                route = "/api/workspace/open-folder?" + urlencode(dict(project=root, path=path))
+                return http(url, route, method="POST")[0]
+
+            for path in ("../outside", str(external), "linked", "src/../src", "raw.bin", "missing"):
+                assert open_folder(path) in (400, 403, 404), path
+            assert open_folder(".", external) == 403
             assert get("file", project=external, path="outside.txt")[0] == 403
             version = get("file", path="src/Example.cs")[1]["mtimeUtc"]
             with ThreadPoolExecutor(max_workers=2) as pool:

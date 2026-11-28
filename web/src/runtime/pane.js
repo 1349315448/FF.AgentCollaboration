@@ -4,7 +4,7 @@ import { framedInputBounds } from "./framedPrompt.js";
 import { manualInboxDelivery } from "./manualDraft.js";
 import { byId, feedback } from "./dom.js";
 import { openFiles } from "./files.js";
-import { fitPaneToolbar, focusAgent, isLayoutAnimating, renderLayout, saveLayout, togglePrimary } from "./layout.js";
+import { fitPaneToolbar, focusAgent, isLayoutAnimating, renderLayout, saveLayout, togglePaneFocus, togglePrimary } from "./layout.js";
 import { finishPicker, labelMentionButton, mentionChord, mentionPicker, openPeers, picking } from "./mentions.js";
 import { activityLabels } from "../services/navigation";
 import { showPreview } from "./preview.js";
@@ -38,11 +38,11 @@ function makePane(agent) {
   const collapse = element.querySelector(".toggle-collapse");
   collapse.setAttribute("aria-controls", surface.id);
   collapse.onclick = () => {
-    if (layout.workspaceMode === "code" || layout.collapsedIds.includes(agent.id)) return focusAgent(agent.id);
-    layout.collapsedIds.push(agent.id);
+    if (layout.workspaceMode === "code" || surface.hidden) return focusAgent(agent.id);
+    layout.openedIds = layout.openedIds.filter(id => id !== agent.id);
+    layout.focusedWindowId = null;
     saveLayout();
     renderLayout(pane);
-    collapse.focus({preventScroll:true});
   };
   const actions = element.querySelector(".terminal-actions"), more = actions.querySelector(".pane-more");
   const moreMenu = actions.querySelector(".pane-more-menu");
@@ -160,7 +160,15 @@ function makePane(agent) {
   });
   element.querySelector(".set-primary").addEventListener("click", () => togglePrimary(pane));
   element.querySelector(".pane-sessions").addEventListener("click", () => openPaneSessions(pane));
-  element.querySelector(".rename-agent").onclick = () => openPaneSessions(pane, "basic");
+  const title = element.querySelector(".terminal-title");
+  title.onclick = event => {
+    if (layout.workspaceMode === "code") openPaneSessions(pane, "basic");
+    else if (event.detail === 0) togglePaneFocus(pane);
+  };
+  element.querySelector(".pane-header").ondblclick = event => {
+    const control = event.target.closest("button, a, [popover]");
+    if (!control || control === title) togglePaneFocus(pane);
+  };
   element.querySelector(".pane-quota").addEventListener("click", () => loadQuota(agent.engine, true));
   const approval = element.querySelector(".pane-approval");
   approval.onclick = () => chooseApproval(pane).catch(error => feedback(element.querySelector(".pane-error"), error.message));

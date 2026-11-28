@@ -65,7 +65,8 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
         c.Items["peerNode"] = WorkbenchInput.Id(c.Request.Headers["X-FF-Node-Id"]);
         c.Items["peerName"] = FederationPolicy.Name(Uri.UnescapeDataString(c.Request.Headers["X-FF-Node-Name"].ToString()));
         int bodyLimit = c.GetEndpoint()?.Metadata.GetMetadata<UploadBody>() is { } upload
-            ? (upload.Attachments ? WorkbenchStore.PeerBinaryLimit : WorkbenchStore.PeerFileLimit) : 65536;
+            ? (upload.Attachments ? WorkbenchStore.PeerBinaryLimit : WorkbenchStore.PeerFileLimit)
+            : c.GetEndpoint()?.Metadata.GetMetadata<GroupExchangeBody>()!=null ? 131072 : 65536;
         if (c.Request.ContentLength > bodyLimit) throw new FederationException(413, "body_too_large");
         var size = c.Features.Get<IHttpMaxRequestBodySizeFeature>();
         if (size is { IsReadOnly: false }) size.MaxRequestBodySize = bodyLimit;
@@ -159,6 +160,29 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
             return Results.NoContent();
         });
         local.MapPost("/remotes/{id}/messages", (string id, PeerMessage input, FederationClient client, CancellationToken ct) => client.Send(id, input, ct));
+        local.MapPost("/groups", async (GroupLaunch input,CancellationToken ct)=>
+        {
+            if (input.Selection?.Policy is null) throw new WorkbenchError("请选择常驻协作的成员及权限");
+            var application=new RemoteApplication(input.TopicId,input.Link,input.Purpose);
+            string id;
+            if (application.Link?.Length<=1500 && Uri.TryCreate(application.Link,UriKind.Absolute,out var uri) &&
+                uri.AbsolutePath.StartsWith("/signal/",StringComparison.Ordinal))
+                id=await rtc.Join(application,uri,ct,input.Selection);
+            else
+            {
+                using var db=Store();
+                id=FederationNetwork.AddRemote(db,application,input.Selection);
+            }
+            events.Changed();
+            return new { id };
+        });
+        local.MapPut("/groups/{id}",(string id,GroupSelection selection)=>
+        {
+            using var db=Store();
+            db.DecideGroupCollaboration(WorkbenchInput.Id(id),selection);
+            events.Changed();
+            return Results.NoContent();
+        });
 
         var wire = app.MapGroup("/api/federation").WithMetadata(this);
         wire.MapPut("/contacts", (HttpContext c, AdvertisedContact[] contacts) =>
@@ -188,10 +212,79 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
             using var db = Store();
             return db.AcceptPeerMessage(Token(c), Node(c), Name(c), input, events.Changed);
         });
+        wire.MapPost("/chat", (HttpContext c,PeerHumanChat input) =>
+        {
+            using var db = Store();
+            var result = db.AcceptHumanChat(Token(c),Node(c),input);
+            events.Changed();
+            return result;
+        });
+        wire.MapPost("/chat/{id}/received", (HttpContext c,string id,PeerHumanReceipt input) =>
+        {
+            using var db = Store();
+            db.ConfirmHumanChat(Token(c),Node(c),id,input.Delivered);
+            events.Changed();
+            return new { state = "delivered" };
+        });
         wire.MapGet("/events", Stream);
+        wire.MapPost("/groups", (HttpContext c,GroupApplication input)=>
+        {
+            using var db=Store();
+            var result=db.ApplyGroupCollaboration(Token(c),Node(c),Name(c),c.Connection.RemoteIpAddress!.ToString(),input);
+            events.Changed();
+            return result;
+        });
+        wire.MapGet("/groups/{id}/application",(HttpContext c,string id)=>
+        {
+            using var db=Store();
+            return db.ClaimGroupCollaboration(id,Token(c),Node(c));
+        });
+        wire.MapPost("/groups/{id}/withdraw",(HttpContext c,string id)=>
+        {
+            using var db=Store();
+            var session=db.ClaimGroupCollaboration(id,Token(c),Node(c),withdraw:true);
+            events.Changed();
+            return session;
+        });
+        wire.MapPost("/groups/{id}/exchange",(HttpContext c,string id,GroupExchange input)=>
+        {
+            using var db=Store();
+            var result=db.ExchangeGroup(id,Token(c),Node(c),Name(c),input,out bool changed);
+            if (changed) events.Changed();
+            return result;
+        }).WithMetadata(new GroupExchangeBody());
+        wire.MapGet("/groups/{id}/files/{file}",(HttpContext c,string id,string file)=>
+        {
+            using var db=Store();
+            var item=db.GroupOutboundFile(id,Token(c),Node(c),file);
+            return Results.File(item.Bytes,"application/octet-stream",item.Name);
+        });
+        wire.MapPost("/groups/{id}/files",(Func<HttpContext,string,Task<IResult>>)UploadGroupFile)
+            .WithMetadata(new UploadBody(true));
     }
 
     private sealed record UploadBody(bool Attachments);
+    private sealed record GroupExchangeBody;
+    private sealed record GroupLaunch(string TopicId,string Link,string Purpose,GroupSelection Selection);
+    private async Task<IResult> UploadGroupFile(HttpContext c,string id)
+    {
+        using var db=Store();
+        string token=Token(c), node=Node(c);
+        string name=WorkbenchStore.SafePeerName(Uri.UnescapeDataString(c.Request.Headers["X-FF-File-Name"].ToString()));
+        string? Actor(string field)
+        {
+            var value=c.Request.Headers[field];
+            return value.Count==0?null:WorkbenchInput.Id(value.ToString());
+        }
+        var route=new GroupFileRoute(WorkbenchInput.Id(c.Request.Headers["X-FF-Group-Message"].ToString()),
+            Actor("X-FF-Group-Sender"),Actor("X-FF-Group-Recipient"));
+        void Check() => db.CheckGroupUpload(id,token,node,route);
+        Check();
+        var bytes=await WorkbenchStore.PeerAttachmentBytes(c.Request.Body,name,c.RequestAborted);
+        var receipt=db.SavePeerFile(id,node,c.Request.Headers["X-FF-Upload-Key"].ToString(),name,bytes,Check);
+        db.StageGroupUpload(id,route,receipt.UploadId);
+        return Results.Ok(receipt);
+    }
     private sealed record AttachmentDecision(string Action);
     private async Task<IResult> Upload(HttpContext c, bool attachments)
     {
@@ -235,6 +328,7 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
             c.Response.Headers.CacheControl = "no-store";
             bool acceptsContacts = c.Request.Headers["X-FF-Return-Contacts"] == "1";
             bool acceptsRemoval = c.Request.Headers["X-FF-Contact-Removal"] == "1";
+            bool acceptsHumanChat = c.Request.Headers["X-FF-Human-Chat"] == "1";
             if (acceptsContacts) c.Response.Headers["X-FF-Return-Contacts"] = "1";
             using var stop = CancellationTokenSource.CreateLinkedTokenSource(c.RequestAborted,
                 c.RequestServices.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>().ApplicationStopping);
@@ -248,7 +342,7 @@ internal sealed class FederationEndpoints(WorkbenchStartup startup, FederationNe
                     // 吊销、关闭共享、移除窗口对已连接的 SSE 同样生效。
                     try { state = db.PeerStatus(Token(c), Node(c)); }
                     catch (Exception e) when (e is FederationException or WorkbenchError) { return; }
-                    items = db.PeerEvents(state.Id, cursor, acceptsContacts,acceptsRemoval);
+                    items = db.PeerEvents(state.Id, cursor, acceptsContacts,acceptsRemoval,acceptsHumanChat);
                 }
                 await c.Response.WriteAsync("data: " + JsonSerializer.Serialize(new { state }, Json) + "\n\n", ct);
                 foreach (var item in items)

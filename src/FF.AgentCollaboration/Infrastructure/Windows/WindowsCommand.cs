@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using FF.AgentCollaboration.Domain;
-using FF.AgentCollaboration.Infrastructure.Terminal;
+using System.Text;
 
 namespace FF.AgentCollaboration.Infrastructure.Windows;
 
@@ -47,7 +47,7 @@ internal static class WindowsCommand
                 var node = NodeRuntime.ForCodeBuddy(directory);
                 var command = new ProcessStartInfo(node) { UseShellExecute = false, CreateNoWindow = true };
                 args.Insert(0, entry);
-                command.Arguments = string.Join(' ', args.Select(TerminalSession.QuoteArgument));
+                command.Arguments = string.Join(' ', args.Select(QuoteArgument));
                 command.Environment["PATH"] = Path.GetDirectoryName(node) + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
                 return command;
             }
@@ -70,35 +70,25 @@ internal static class WindowsCommand
         {
             // /c 与批处理的 %* 转发各解析一次。先按 Win32 argv 编码，再分别转义两层 CMD 元字符。
             static string Escape(string value) => Regex.Replace(value, @"[()%!\^""<>&| ,;*?\[\]]", "^$0");
-            string payload = Escape(executable) + " " + string.Join(' ', args.Select(arg => Escape(Escape(TerminalSession.QuoteArgument(arg)))));
+            string payload = Escape(executable) + " " + string.Join(' ', args.Select(arg => Escape(Escape(QuoteArgument(arg)))));
             start.FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe");
             start.Arguments = "/d /s /v:off /c \"" + payload + "\"";
         }
-        else start.Arguments = string.Join(' ', args.Select(TerminalSession.QuoteArgument));
+        else start.Arguments = string.Join(' ', args.Select(QuoteArgument));
         return start;
     }
 
-    internal static async Task<string?> Version(string? path, CancellationToken ct)
+    internal static string QuoteArgument(string argument)
     {
-        if (path == null) return null;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(5));
-        try
+        var quoted = new StringBuilder("\"");
+        int slashes = 0;
+        foreach (char character in argument)
         {
-            var start = Resolve(path, ["--version"]);
-            start.RedirectStandardOutput = start.RedirectStandardError = true;
-            using var process = Process.Start(start)!;
-            var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var errors = process.StandardError.ReadToEndAsync(timeout.Token);
-            try
-            {
-                await Task.WhenAll(output, errors, process.WaitForExitAsync(timeout.Token));
-                if (process.ExitCode != 0) return null;
-                return (await output).Trim().Split('\n')[0].Trim();
-            }
-            finally { if (!process.HasExited) process.Kill(true); }
+            if (character == '\\') { slashes++; continue; }
+            quoted.Append('\\', character == '"' ? slashes * 2 + 1 : slashes).Append(character);
+            slashes = 0;
         }
-        catch (Exception error) when (!ct.IsCancellationRequested && error is WorkbenchError or OperationCanceledException or IOException or System.ComponentModel.Win32Exception)
-        { return null; }
+        return quoted.Append('\\', slashes * 2).Append('"').ToString();
     }
+
 }

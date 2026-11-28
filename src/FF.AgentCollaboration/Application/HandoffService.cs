@@ -11,39 +11,18 @@ internal static class HandoffService
     internal static object Broadcast(WorkbenchStore state, string grant, string? text, string? document, string[] files,
         string? hint, string[] externalTargets)
     {
-        var source = state.Caller(grant);
-        state.RequireBroadcastLeader(source);
-        var external = externalTargets.Select(WorkbenchInput.Id).Distinct().ToArray();
-        var authorized = state.ExternalTeamMembers(source.TopicId, source.Id).Where(member => member.Authorized)
-            .Select(member => member.Id).ToHashSet();
-        if (external.Any(id => !authorized.Contains(id)))
-            throw new WorkbenchError("请选择本话题内已授权的外部组员", WorkbenchFailure.Forbidden);
-        if (external.Length != 0 && files.Length != 0)
-            throw new WorkbenchError("跨端收件支持一份 Markdown，请通过 document 传入");
-        string message = Message(text, document, files);
-        hint = NormalizeHint(hint);
-        var local = state.BroadcastLocal(grant, message, files, hint, document);
-        if (local.Length == 0 && external.Length == 0) throw new WorkbenchError("本话题没有其他组员");
-        var deliveries = new List<object>(local.Select(item => new { item.Id, item.Target, status = "queued" }));
-        foreach (string target in external)
-        {
-            try
-            {
-                var item = state.SendFederated(grant, target, message, [], document, hint, false, null, null, topicBroadcast:true)
-                    ?? throw new WorkbenchError("该外部组员的授权已变更");
-                deliveries.Add(new { item.Id, item.Target, status = "queued" });
-            }
-            catch (WorkbenchError error)
-            {
-                deliveries.Add(new { target, status = "failed", error = error.Message });
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-            {
-                deliveries.Add(new { target, status = "failed", error = "无法读取外部投递的交接文档，请检查文件权限或占用情况" });
-            }
-        }
-        return new { deliveries };
+        var local = state.PostAgentChat(grant,[],Message(text,document,files),files,document,NormalizeHint(hint),
+            allMembers:true,external:externalTargets.Select(WorkbenchInput.Id).ToArray());
+        return DeliveryList(local);
     }
+
+    internal static object SendGroup(WorkbenchStore state, string grant, string[] targets, string? text, string? document,
+        string[] files, string? hint, bool supersede) => DeliveryList(state.PostAgentChat(grant, targets.Select(target =>
+            WorkbenchInput.Text(target,"收件 Agent",160)).ToArray(),Message(text,document,files),files,document,NormalizeHint(hint),
+            allMembers:false,external:[],supersede:supersede));
+
+    private static object DeliveryList(InboxItem[] items) =>
+        new { deliveries = items.Select(item => new { item.Id, item.Target, status = "queued" }).ToArray() };
 
     internal static InboxItem Send(WorkbenchStore state, string grant, string? targetValue, string? messageValue,
         string? documentValue, string? resendValue, string[] files, string? hint, bool supersedePrevious, string? replyTo=null, bool? finalReply=null)
@@ -61,7 +40,13 @@ internal static class HandoffService
         hint = NormalizeHint(hint);
         if (finalReply.HasValue && replyTo==null) throw new WorkbenchError("请用 replyTo 指定回信对应的 MSG_ID");
         if (replyTo!=null && hint!=null) throw new WorkbenchError("关联回信不能同时要求对方再次回信");
-        return state.SendFederated(grant,target,message,files,documentValue,hint,supersedePrevious,replyTo,finalReply)
+        if (target == InboxItem.ChatUserAddress)
+        {
+            if (replyTo == null || hint != null) throw new WorkbenchError("回复工作台用户时须关联收到的 MSG_ID");
+            return state.ReplyToUserChat(grant,replyTo,message,files,documentValue,finalReply ?? true);
+        }
+        return state.SendGroupCollaboration(grant,target,message,files,documentValue,hint,supersedePrevious,replyTo,finalReply)
+            ?? state.SendFederated(grant,target,message,files,documentValue,hint,supersedePrevious,replyTo,finalReply)
             ?? state.Send(grant, target, message, files, hint, documentValue, supersedePrevious,replyTo,finalReply??true);
     }
 

@@ -1,4 +1,4 @@
-import { animateMessages, flyMessage, messageAnchor } from "./activity.js";
+import { flyMessage, messageAnchor } from "./activity.js";
 import { byId, feedback, folderName } from "./dom.js";
 import { folderListing } from "./folders.js";
 import { layoutKey, renderLayout, setLayoutProbe } from "./layout.js";
@@ -40,7 +40,6 @@ const probes = {
   get fitPane() { return fitPane; },
   get replayReports() { return replayReports; },
   get messageAnchor() { return messageAnchor; },
-  get animateMessages() { return animateMessages; },
   get flyMessage() { return flyMessage; },
   get openPeers() { return openPeers; },
   get mentionShortcut() { return mentionShortcut; },

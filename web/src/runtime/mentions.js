@@ -7,6 +7,8 @@ import { isDialogOpen, mentionShortcut, setMentionShortcut, snapshot } from "../
 import { sendControl } from "./terminal.js";
 import { refresh } from "./workbench.js";
 import { remoteOnline } from "../services/navigation";
+import { approvedGroupRecipients } from "../services/permanentGroups";
+import { eligibleLocalGroups, includedMember, groupLinkSides } from "../services/groupLinks";
 
 const mentionPicker = byId("agents-dialog");
 const peerSearch = byId("peer-search");
@@ -115,17 +117,28 @@ function renderPeers(reset = false) {
   if (!mentionPicker.open) return;
   const query = [...peerSearch.value.trim().toLocaleLowerCase().replace(/^@/, "")];
   const topics = new Map(snapshot.topics.map(t => [t.id, t.name]));
-  const locals = snapshot.windows.filter(w => w.agent.online && w.agent.id !== pane.agent.id).map(({agent,terminal}) => {
+  const leader = pane.agent.isLeader;
+  const source = snapshot.topics.find(topic=>topic.id===pane.agent.topicId);
+  const allowedGroups = new Set(source?.leaderWindowId ? eligibleLocalGroups(snapshot,source)
+    .filter(group=>group.leaderWindowId).map(group=>group.id) : []);
+  const linked = new Map(groupLinkSides(snapshot.groupLinks,pane.agent.topicId)
+    .filter(link=>allowedGroups.has(link.id)&&includedMember(link.mode,link.members,pane.agent.id,leader)).map(link=>[link.id,link]));
+  const locals = snapshot.windows.filter(w => w.agent.online && w.agent.id !== pane.agent.id &&
+    (w.agent.topicId===pane.agent.topicId || linked.has(w.agent.topicId) &&
+      includedMember(linked.get(w.agent.topicId).peerMode,linked.get(w.agent.topicId).peerMembers,w.agent.id,w.agent.isLeader))).map(({agent,terminal}) => {
     const topic = topics.get(agent.topicId) ?? "", same = agent.topicId === pane.agent.topicId;
     return {id:agent.id, terminal, name:agent.name, title:agent.sessionTitle || "", topic, same,
       address:"@" + (same ? "" : topic + "/") + agent.name};
   });
-  const remotes = (snapshot.federation?.remotes ?? []).filter(r => r.topicId === pane.agent.topicId && remoteOnline(r) && !r.deniedAgentIds?.includes(pane.agent.id))
+  const remotes = (snapshot.federation?.remotes ?? []).filter(r => leader && r.topicId === pane.agent.topicId && remoteOnline(r) && !r.deniedAgentIds?.includes(pane.agent.id))
     .map(r => ({id:r.id, name:r.agentName, title:r.nodeName, topic:topics.get(r.topicId) ?? "", same:true,
       address:"@" + r.agentName, label:"外部 · " + r.nodeName}));
-  const contacts = (snapshot.federation?.contacts ?? []).filter(c=>c.windowId===pane.agent.id && c.online && c.canMention)
+  const contacts = (snapshot.federation?.contacts ?? []).filter(c=>leader && c.windowId===pane.agent.id && c.online && c.canMention)
     .map(c=>({id:c.id,name:c.name,title:c.nodeName,topic:"",same:true,address:"@"+c.name,label:"回信 · "+c.nodeName}));
-  const rows = [...locals, ...remotes, ...contacts].filter(row => [row.name,row.title,row.topic,row.address].some(field => matchesPeer(field, query)))
+  const groupMembers=approvedGroupRecipients(snapshot.federation?.groups,pane.agent.topicId,pane.agent.id)
+    .filter(member=>member.online&&member.engine).map(member=>({id:member.key,name:member.name,title:member.user,topic:member.topic,
+      same:false,address:"@"+member.key,label:member.topic+" · "+member.user}));
+  const rows = [...locals, ...remotes, ...contacts, ...groupMembers].filter(row => [row.name,row.title,row.topic,row.address].some(field => matchesPeer(field, query)))
     .sort((a,b) => Number(b.same) - Number(a.same));
   if (snapshot.topics.some(topic=>topic.id===pane.agent.topicId && topic.leaderWindowId===pane.agent.id && topic.status==="active")
       && matchesPeer("全部", query))

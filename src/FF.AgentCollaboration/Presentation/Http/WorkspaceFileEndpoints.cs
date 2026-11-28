@@ -22,6 +22,12 @@ internal static class WorkspaceFileEndpoints
             new { entries = Browser(project).Tree(path, showIgnored == true, ct) });
         files.MapGet("/search", (string project, string? q, bool? showIgnored, CancellationToken ct) =>
             Browser(project).Search(q, showIgnored == true, ct));
+        files.MapPost("/open-folder", (HttpContext context, string project, string path) =>
+        {
+            if (!WorkbenchHost.IsLoopback(context)) return Results.StatusCode(403);
+            Browser(project).OpenFolder(path);
+            return Results.NoContent();
+        });
         files.MapGet("/file", (HttpContext context, string project, string path, bool? image, bool? raw) =>
         {
             var browser = Browser(project);

@@ -48,7 +48,7 @@ internal sealed class KnowledgeIndex : IDisposable
 
     internal static T Open<T>(KnowledgeFiles files, Func<KnowledgeIndex, T> operation)
     {
-        string directory = Path.Combine(files.Root, ".index");
+        string directory = files.IndexDirectory;
         KnowledgeFiles.EnsureDirectory(directory);
         using var guard = WorkspaceDirectoryGuard.Open(directory);
         string path = Path.Combine(directory, "knowledge.db");

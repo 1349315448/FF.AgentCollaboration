@@ -6,6 +6,7 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 // [01、03、04] 窗口启动配置、Grant 及收件均由同一个本机 SQLite 数据库管理。
 internal sealed partial class WorkbenchStore(string root, bool create = false, string? databaseFile = null) : LocalState(databaseFile ?? Path.Combine(root, "workbench.sqlite"), create)
 {
+    internal string DataDirectory => root;
     private string LegacyHandoffs => Path.Combine(root, "handoffs");
     internal long DataVersion => Read("PRAGMA data_version", row => row.GetInt64(0)).Single();
     private string? handoffDirectory;
@@ -56,6 +57,7 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
             if (Exec("INSERT OR IGNORE INTO settings VALUES('native_inbox_v2','1')") == 1)
                 Exec("UPDATE windows SET auto_receive=1 WHERE closed=0 AND engine IN ('qwen','codebuddy','zcode')");
             InitializeTopics();
+            InitializeChat();
             InitializeTeamProposals();
             if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("role"))
                 Exec("ALTER TABLE windows ADD COLUMN role TEXT; ALTER TABLE windows ADD COLUMN new_session_pending INTEGER NOT NULL DEFAULT 0");
@@ -79,6 +81,7 @@ internal sealed partial class WorkbenchStore(string root, bool create = false, s
             if (!Read("PRAGMA table_info(inbox)", row => row.GetString(1)).Contains("wake_requested"))
                 Exec("ALTER TABLE inbox ADD COLUMN wake_requested INTEGER NOT NULL DEFAULT 0");
             InitializeFederation();
+            InitializeGroupCollaboration();
             Exec("CREATE INDEX IF NOT EXISTS inbox_wake_target ON inbox(target) WHERE wake_requested=1 AND state='pending' AND acknowledged=0");
             Exec("CREATE INDEX IF NOT EXISTS inbox_topic_recent ON inbox(topic_id); CREATE INDEX IF NOT EXISTS inbox_source_recent ON inbox(source)");
             if (!customPaths) ConfigureHandoffs(keepHandoffs ? CurrentHandoffs(handoffs) : handoffs);

@@ -7,10 +7,10 @@ namespace FF.AgentCollaboration.Infrastructure.Storage;
 
 internal sealed partial class WorkbenchStore
 {
-    private void Mail(string topic, string kind, string source, string target, string label, string text, string? upload = null, string? taskId=null)
+    private void Mail(string topic, string kind, string source, string target, string label, string text, string? upload = null, string? taskId=null, string? replyTo=null)
     {
-        Exec("INSERT INTO fed_mail(topic,kind,source,target,label,body,task_id) VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6)",
-            topic, kind, source, target, label, text, taskId);
+        Exec("INSERT INTO fed_mail(topic,kind,source,target,label,body,task_id,reply_to) VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6,$p7)",
+            topic, kind, source, target, label, text, taskId, replyTo);
         if (upload != null) Exec("INSERT INTO fed_mail_file VALUES(last_insert_rowid(),$p0)", upload);
     }
 
@@ -24,9 +24,10 @@ internal sealed partial class WorkbenchStore
     internal string MailBody(long seq) => Read("SELECT body FROM fed_mail WHERE seq=$p0", row=>row.GetString(0), seq)
         .SingleOrDefault() ?? throw new WorkbenchError("消息不存在", WorkbenchFailure.NotFound);
 
-    private List<PeerMail> RecentPeerMail() => Read("""
+    private List<PeerMail> RecentPeerMail(string? topic = null, long[]? sequences = null) => Read("""
         WITH recent AS MATERIALIZED (
-            SELECT * FROM fed_mail ORDER BY seq DESC LIMIT 100
+            SELECT * FROM fed_mail WHERE ($p0 IS NULL OR topic=$p0)
+            AND ($p1 IS NULL OR seq IN (SELECT value FROM json_each($p1))) ORDER BY seq DESC LIMIT 100
         ), receipts AS MATERIALIZED (
             SELECT m.*, i.work_state, i.acknowledged, i.state AS local_delivery, o.state AS dispatch,
                    (SELECT substr(e.body,6) FROM fed_received e WHERE e.remote=m.target AND e.request_id=m.task_id
@@ -52,7 +53,8 @@ internal sealed partial class WorkbenchStore
                CASE WHEN kind='incoming' THEN (SELECT count(*) FROM fed_attachment a JOIN fed_file f ON f.id=a.file WHERE a.local=m.task_id) ELSE 0 END
         FROM receipts m ORDER BY seq DESC
         """, r => new PeerMail(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5),
-            r.GetString(6), r.GetString(7), r.GetBoolean(8), Optional(r,9), Optional(r,10), r.GetInt32(11)));
+            r.GetString(6), r.GetString(7), r.GetBoolean(8), Optional(r,9), Optional(r,10), r.GetInt32(11)),topic,
+            sequences == null ? null : JsonSerializer.Serialize(sequences));
 
     internal bool DedicatedReader(string window) => FedSetting("peer_reader." + window) == "1";
     internal string? CurrentPeerRequest(string window) => Read("""
@@ -95,7 +97,10 @@ internal sealed partial class WorkbenchStore
         string? contactKey = input.ContactKey == null ? null : WorkbenchInput.Id(input.ContactKey);
         if (contactKey != null) header += "[RETURN_CONTACT: " + ScopedContactId(grant.Id,contactKey) + "] ";
         Exec("INSERT INTO fed_incoming(local,grant_id,request,upload,contact_key) VALUES($p0,$p1,$p2,$p3,$p4)", id, grant.Id, input.Id, input.UploadId, contactKey);
-        QueueIncoming(id, window, "peer-mailbox", label, header + body, path, input.ExpectsReply ? "请用 send_to_agent 向 @reply-" + id + " 回信，replyTo 填本条 MSG_ID，可附 Markdown 文档。" : null);
+        string reply = "用 send_to_agent 向 @reply-" + id + " 回信，replyTo 填本条 MSG_ID，可附 Markdown 文档。";
+        QueueIncoming(id, window, "peer-mailbox", label,
+            header + body + (input.ExpectsReply ? "" : "\nGROUP_REPLY: 如需答复，请" + reply),
+            path, input.ExpectsReply ? "请" + reply : null);
         var files = BindAttachments(grant, input.Id, input.Id, id, input.AttachmentIds ?? []);
         if (files.Length > 0) Exec("UPDATE inbox SET files=$p1 WHERE id=$p0", id, JsonSerializer.Serialize(files));
         Exec("UPDATE inbox SET work_state='queued' WHERE id=$p0",id);
@@ -167,18 +172,19 @@ internal sealed partial class WorkbenchStore
         return published;
     }
 
-    internal InboxItem? SendFederated(string callerGrant, string address, string body, string[] files, string? document, string? hint, bool supersede, string? replyTo, bool? finalReply, bool topicBroadcast = false)
+    internal InboxItem? SendFederated(string callerGrant, string address, string body, string[] files, string? document, string? hint, bool supersede, string? replyTo, bool? finalReply)
     {
         var caller = Caller(callerGrant);
         string name = address.TrimStart('@');
         bool replying = name.StartsWith("reply-", StringComparison.Ordinal) && Guid.TryParseExact(name[6..], "N", out _);
-        if (!replying && !topicBroadcast)
+        if (!replying)
         {
             var contacts = ReturnContacts(caller.Id);
             var contact = ReservedContactName(name) ? contacts.FirstOrDefault(c=>c.Id==name)
                 : contacts.FirstOrDefault(c=>c.Name.Equals(name,StringComparison.OrdinalIgnoreCase));
             if (contact != null)
             {
+                RequireExternalLeader(caller);
                 if (name != contact.Id && ContactNameCollides(caller,contact))
                     throw new WorkbenchError("收件人重名，请使用联系人 ID 或完整的本地话题地址");
                 if (replyTo == null) return SendContactNotice(callerGrant,caller,contact,body,document,files,hint);
@@ -195,6 +201,7 @@ internal sealed partial class WorkbenchStore
             throw new WorkbenchError("专用审阅会话仅可向当前外部来信地址回信", WorkbenchFailure.Forbidden);
         var remote = replying ? null : RemoteAddress(caller, address);
         if (!replying && remote == null) return null;
+        RequireExternalLeader(caller);
         if (replyTo!=null && (!replying || ReceivedTaskFor(caller.Id,replyTo).Id!=name[6..]))
             throw new WorkbenchError("回信目标必须对应原外部任务",WorkbenchFailure.Forbidden);
         if (files.Length != 0) throw new WorkbenchError("跨端收件支持一份 Markdown，请通过 document 传入");
@@ -222,7 +229,7 @@ internal sealed partial class WorkbenchStore
             var g = Grant(route.Item1);
             void Check()
             {
-                Caller(callerGrant);
+                RequireExternalLeader(Caller(callerGrant));
                 var current = Grant(g.Id);
                 if (DedicatedReader(caller.Id) && CurrentPeerRequest(caller.Id) != name[6..])
                     throw new FederationException(403, "request_finished");
@@ -237,12 +244,7 @@ internal sealed partial class WorkbenchStore
         Atomic(() =>
         {
             var current = Caller(callerGrant);
-            if (topicBroadcast)
-            {
-                RequireBroadcastLeader(current);
-                if (!ExternalTeamMembers(current.TopicId, current.Id).Any(member => member.Id == remote.Id && member.Authorized))
-                    throw new WorkbenchError("该外部组员的授权已变更", WorkbenchFailure.Forbidden);
-            }
+            RequireExternalLeader(current);
             if (!RemoteRecipients(caller.TopicId,caller.Id).Any(r => r.Id == remote.Id)) throw new WorkbenchError("外部授权已失效");
             if (supersede) SupersedePeer(caller.Id, remote.Id);
             Exec("INSERT INTO fed_outbox(id,remote,window_id,body,name,content,expects_reply) VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6)",
@@ -250,6 +252,28 @@ internal sealed partial class WorkbenchStore
             Mail(caller.TopicId, "outgoing", caller.Id, remote.Id, remote.AgentName + " · " + remote.NodeName, body,taskId:id);
         });
         return new(id, remote.Id, caller.Name, body, [], null, hint, "queued");
+    }
+
+    private InboxItem QueueFederatedChat(AgentWindow caller, RemoteCapsule remote, string body, string? document,
+        string? hint, string post, bool supersede)
+    {
+        RequireExternalLeader(caller);
+        string id = Guid.NewGuid().ToString("N");
+        string? name = document == null ? null : Path.GetFileName(document);
+        byte[]? bytes = document == null ? null : ReadPeerBytes(document);
+        if (bytes == null && Encoding.UTF8.GetByteCount(body) > 2048)
+        {
+            bytes = Encoding.UTF8.GetBytes(body);
+            name = "handoff.md";
+            body = body[..Math.Min(body.Length,220)] + "…";
+        }
+        if (hint != null) body += "\n" + hint;
+        if (supersede) SupersedePeer(caller.Id, remote.Id);
+        Exec("INSERT INTO fed_outbox(id,remote,window_id,body,name,content,expects_reply) VALUES($p0,$p1,$p2,$p3,$p4,$p5,$p6)",
+            id,remote.Id,caller.Id,body,name,bytes,hint != null);
+        Mail(caller.TopicId,"outgoing",caller.Id,remote.Id,remote.AgentName,body,taskId:id);
+        LinkChat(id,post,caller.TopicId,remote.Id,remote.AgentName,true);
+        return new(id,remote.Id,caller.Name,body,[],document,hint,"queued");
     }
 
     internal List<PeerDispatch> Dispatches() => Read("""
@@ -299,6 +323,7 @@ internal sealed partial class WorkbenchStore
         var prior = Read("SELECT remote,body,name,content IS NOT NULL FROM fed_outbox WHERE id=$p0 AND window_id=$p1",
             r => (Remote: r.GetString(0), Body: r.GetString(1), Name: Optional(r, 2), Available: r.GetBoolean(3)), original, caller.Id).SingleOrDefault();
         if (prior.Remote == null) return null;
+        RequireExternalLeader(caller);
         if (prior.Name != null && !prior.Available) throw new WorkbenchError("原附件已过期，请重新提供文档");
         var remote = RemoteAddress(caller, address ?? prior.Remote) ?? throw new WorkbenchError("请指定已批准的远程胶囊");
         string id = Guid.NewGuid().ToString("N");
@@ -325,7 +350,8 @@ internal sealed partial class WorkbenchStore
             if (Exec("UPDATE fed_outbox SET state=$p1 WHERE id=$p0 AND state='sending'", d.Id, status) == 0) return;
             if (status != "accepted")
             {
-                var topic = Read("SELECT topic_id FROM windows WHERE id=$p0", r => r.GetString(0), d.Window).FirstOrDefault();
+                var topic = UserDispatchOrigin(d.Remote,d.Id).Topic ??
+                    Read("SELECT topic_id FROM windows WHERE id=$p0", r => r.GetString(0), d.Window).FirstOrDefault();
                 if (topic != null) Mail(topic, "blocked", d.Window, d.Remote, "外部投递被拦截", status);
             }
         });

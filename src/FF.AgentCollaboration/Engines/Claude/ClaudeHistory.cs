@@ -17,7 +17,7 @@ internal static class ClaudeHistory
     {
         string parent = Path.Combine(Home, "projects");
         if (!Directory.Exists(parent)) yield break;
-        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var candidates = new HashSet<string>(ProjectFolders.Comparer);
         void Add(string path)
         {
             string key = Regex.Replace(path, "[^a-zA-Z0-9]", "-");
@@ -27,7 +27,7 @@ internal static class ClaudeHistory
         Add(project);
         // Windows 的 TEMP 等变量可能只有路径前缀使用 8.3 短名。Claude 会用启动时的原始拼写生成目录名。
         var buffer = new StringBuilder(32768);
-        if (GetShortPathName(project, buffer, buffer.Capacity) > 0)
+        if (OperatingSystem.IsWindows() && GetShortPathName(project, buffer, buffer.Capacity) > 0)
         {
             var parts = project.Split(Path.DirectorySeparatorChar);
             var shortParts = buffer.ToString().Split(Path.DirectorySeparatorChar);

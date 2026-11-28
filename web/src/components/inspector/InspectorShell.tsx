@@ -1,4 +1,3 @@
-import { createPortal } from "react-dom";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { WorkspaceIcon } from "../layout/WorkspaceIcon";
 import "../../styles/inspector.css";
@@ -17,13 +16,24 @@ const primarySections = [
 
 type SectionId = (typeof primarySections)[number]["id"] | "changes";
 
-export function InspectorShell({toolbarHost}:{toolbarHost:HTMLDivElement | null}) {
+export function InspectorShell() {
   const [current, select] = useState<SectionId>("files");
   const [showKnowledge,setShowKnowledge]=useState(false);
   const [diffFile,setDiffFile]=useState<{project:string;change:GitChange}>();
+  const [location,locate]=useState<{project:string;path:string;sequence:number}>();
   const {snapshot,topic}=useWorkbench();
   const project=topic?.project ?? snapshot?.project;
   const [documentLink,setDocumentLink]=useState({topic:"",id:"",sequence:0});
+  useEffect(()=>{
+    locate(undefined);
+    const reveal=(e:Event)=>{
+      const file=(e as CustomEvent<{project:string;path:string}>).detail;
+      if(document.getElementById("inspector-shell")?.hidden) document.getElementById("toggle-inspector")?.click();
+      select("files");locate(previous=>({...file,sequence:(previous?.sequence??0)+1}));
+    };
+    window.addEventListener("ff:locate-file",reveal);
+    return ()=>window.removeEventListener("ff:locate-file",reveal);
+  },[topic?.id]);
   useEffect(()=>{
     const open=(e:Event)=>{
       const {topic:owner,id}=(e as CustomEvent<{topic:string;id:string}>).detail;
@@ -52,8 +62,8 @@ export function InspectorShell({toolbarHost}:{toolbarHost:HTMLDivElement | null}
     select(target);
     document.getElementById("inspector-tab-" + target)?.focus();
   };
-  return <>
-    {toolbarHost && createPortal(<div className="inspector-header">
+  return <aside id="inspector-shell" aria-label="代码工作台" hidden>
+    <div id="inspector-toolbar-host" className="inspector-header">
       <div role="tablist" aria-label="代码工作台视图">{primarySections.map(section =>
         <button key={section.id} id={"inspector-tab-" + section.id} type="button" role="tab" aria-controls="inspector-content"
           tabIndex={section.id === current ? 0 : -1} aria-selected={section.id === current} onClick={() => select(section.id)}
@@ -65,17 +75,16 @@ export function InspectorShell({toolbarHost}:{toolbarHost:HTMLDivElement | null}
         </button>
       </div>
       <button id="inspector-panel-action" type="button" className="text-button"><WorkspaceIcon name="panel"/><span>收起面板</span></button>
-    </div>, toolbarHost)}
-    <aside id="inspector-shell" aria-label="代码工作台" hidden>
+    </div>
     <section id="inspector-content" data-section={current} role="tabpanel" aria-labelledby={"inspector-tab-" + current}>
       {!project?<p className="inspector-empty">请先选择项目</p>:
         <Suspense fallback={<p className="inspector-empty">正在打开…</p>}>
-          {current==="changes"?<GitPanel key={project} initial={diffFile?.project===project?diffFile.change:undefined}/>:current==="files"?<CodeViewer key={project} project={project}
+          {current==="changes"?<GitPanel key={project} initial={diffFile?.project===project?diffFile.change:undefined}/>:current==="files"?<CodeViewer key={location?.project??project} project={location?.project??project} reveal={location}
             openDiff={change=>{setDiffFile({project,change});select("changes");}}/>:<CollaborationDocuments key={(topic?.id??project)+documentLink.sequence}
             project={project} topic={topic?.id} revision={snapshot?.timelineTopic===topic?.id?snapshot?.timeline?.[0]?.id:undefined}
             mode={knowledgeModeFor(snapshot?.knowledgeModes,project)} showKnowledge={showKnowledge} setShowKnowledge={setShowKnowledge}
             initial={documentLink.topic===topic?.id?documentLink.id:""}/>}
         </Suspense>}
     </section>
-  </aside></>;
+  </aside>;
 }

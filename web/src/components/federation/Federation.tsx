@@ -6,6 +6,7 @@ import {useWorkbench} from "../../store/workbenchStore";
 import {WorkspaceIcon} from "../layout/WorkspaceIcon";
 import "./federation.css";
 import {ReturnAgentSelect} from "./ReturnAgentSelect";
+import {openGroupCollaboration,type GroupCollaborationView} from "../../services/permanentGroups";
 
 type Mode = "unlimited" | "daily" | "hourly" | "total";
 export interface Grant {
@@ -13,12 +14,12 @@ export interface Grant {
   permissionMode:string; quotaMode:Mode; quotaLimit:number|null; used:number; blocked:number; paused:boolean;
   allowUpload:boolean; connected:boolean; lastReceived:number|null;
 }
-interface Capsule {quota?:{mode:Mode;limit:number|null;remaining:number|null;paused:boolean;resetsAt:number|null}; id:string; topicId:string; agentName:string; nodeName:string; nodeId:string; status:string; connected:boolean; online:boolean; error?:string; contactAgentId?:string|null; deniedAgentIds?:string[]; teamMember?:boolean}
+interface Capsule {groupName?:string;engine?:string;quota?:{mode:Mode;limit:number|null;remaining:number|null;paused:boolean;resetsAt:number|null}; id:string; topicId:string; agentName:string; nodeName:string; nodeId:string; status:string; connected:boolean; online:boolean; error?:string; contactAgentId?:string|null; deniedAgentIds?:string[]; teamMember?:boolean}
 export interface PeerMail {seq:number;topicId:string;kind:string;source:string;target:string;label:string;text:string;createdAt:string;hasDocument:boolean;workState?:string|null;deliveryState?:string|null;attachmentCount?:number}
-export interface ReturnContact {id:string; windowId:string; name:string; nodeName:string; online:boolean; canMention:boolean; canRemove:boolean}
+export interface ReturnContact {id:string; windowId:string; name:string; nodeName:string; online:boolean; canMention:boolean; canRemove:boolean; grantId?:string}
 interface AttachmentApproval {id:string;agentId:string;agentName:string;recipient:string;files:string[];original?:string}
 export interface Federation {grants:Grant[]; remotes:Capsule[]; sharedWindows:string[]; mail:PeerMail[]; contacts?:ReturnContact[];
-  requestedReviews?:string[];attachmentApprovals?:AttachmentApproval[]}
+  requestedReviews?:string[];attachmentApprovals?:AttachmentApproval[];groups?:GroupCollaborationView[]}
 interface Share {enabled:boolean; permissionMode:string; dedicatedReadOnly:boolean; link:string|null; restarted:boolean; rtc?:boolean;rtcBlockReason?:string|null;attachmentAllowed?:boolean}
 interface NodeInfo {nodeId:string; nodeName:string; selectedIp:string|null; activeIp:string|null; addresses:string[]; publicEndpoint:string|null; restartRequired:boolean}
 type Selection = {windowId:string;share?:Share} | {remoteId:string;topicId:string} | {grantId:string} | {contactId:string} | {attachmentId:string};
@@ -38,6 +39,7 @@ const errorText = (error:unknown)=>error instanceof Error ? error.message : "操
 
 export const viewApplication=(grantId:string)=>open({grantId});
 export const viewReturnContact=(contactId:string)=>open({contactId});
+export const openShareSettings=(windowId:string)=>open({windowId});
 
 export function NodePreferences() {
   const [node,setNode]=useState<NodeInfo>(),[name,setName]=useState(""),[ip,setIp]=useState(""),[note,setNote]=useState("");
@@ -111,6 +113,8 @@ export function PeerBadge({id}:{id:string}) {
       await put<Share>(path,{enabled:!enabled,permissionMode:"read_only",dedicatedReadOnly:false,restartTerminal:restart});
     } catch(e){setNote(errorText(e));} finally {setBusy(false);}
   }
+  const windowView=snapshot?.windows.find(w=>w.agent.id===id);
+  if(windowView && !windowView.agent.isLeader) return <button type="button" className="text-button" onClick={()=>openGroupCollaboration(undefined,"external",id)}>邀请此 Agent 参与合作</button>;
   return <div className="fed-controls" role="group" aria-label="外部协作">
     <button type="button" className="text-button fed-badge" data-enabled={enabled} title="管理外部协作权限与申请" onClick={()=>open({windowId:id})}>
       <WorkspaceIcon name="network"/><span>外部协作{enabled?"已开启":"未开启"}</span>{pending>0 && <small>{pending} 待审</small>}</button>

@@ -1,9 +1,9 @@
+using FF.AgentCollaboration.Infrastructure.Processes;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Infrastructure.Files;
-using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Engines;
 
@@ -64,7 +64,7 @@ internal sealed class CodeBuddyEngine(string cwd) : ConfiguredTerminalEngine
     internal override async Task<EngineAccount> Account(CancellationToken ct)
     {
         // 配置凭据也须能启动本机 CLI，否则建窗应显示依赖错误，而不是要求重新登录。
-        WindowsCommand.Resolve(EngineExecutable.FindExecutable("codebuddy"), LoginArguments);
+        HostCommand.Resolve(EngineExecutable.FindExecutable("codebuddy"), LoginArguments);
         var home = Environment.GetEnvironmentVariable("CODEBUDDY_CONFIG_DIR") ?? Path.Combine(
             Environment.GetEnvironmentVariable("USERPROFILE") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codebuddy");
         foreach (var path in new[] { Path.Combine(cwd, ".codebuddy", "settings.local.json"), Path.Combine(cwd, ".codebuddy", "settings.json"), Path.Combine(home, "settings.json") })

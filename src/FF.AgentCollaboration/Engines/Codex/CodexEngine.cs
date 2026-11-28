@@ -15,7 +15,7 @@ internal sealed class CodexEngine(string cwd, string executable = "codex") : Rpc
         // TRAE's queue talks to its shared daemon. This workbench starts its TUI with --no-daemon.
         if (executable != "codex") return launch;
         string binary = EngineExecutable.FindExecutable(executable);
-        if (!Guid.TryParseExact(window.Session, "D", out _) || !Path.GetExtension(binary).Equals(".exe", StringComparison.OrdinalIgnoreCase))
+        if (!Guid.TryParseExact(window.Session, "D", out _) || (OperatingSystem.IsWindows() && !Path.GetExtension(binary).Equals(".exe", StringComparison.OrdinalIgnoreCase)))
             return launch;
         string session = window.Session!;
         var (status, commands) = await EngineAuthentication.RunCommand(binary, cwd, ["--help"], ct);

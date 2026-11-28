@@ -69,8 +69,7 @@ export function PaneHeader() {
         <TerminalPowerButton />
         <span className="nav-dot agent-light" title={pane?.status} aria-hidden="true"></span>
         <span className="pane-name">
-          <button type="button" className="tile-name agent-name rename-agent" aria-label="修改 Agent 名称"
-            title={pane && "修改 @" + pane.name + " 的名称 · " + pane.engine + " · " + pane.project}>{pane && "@" + pane.name}</button>
+          <button type="button" className="tile-name agent-name terminal-title">{pane && "@" + pane.name}</button>
           {pane?.isLeader && <LeaderFlag />}
         </span>
         {pane && !compact && <TopicLeaderButton agentId={pane.id} />}

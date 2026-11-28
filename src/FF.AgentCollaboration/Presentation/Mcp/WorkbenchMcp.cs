@@ -27,6 +27,8 @@ internal static class WorkbenchMcp
                 properties = new
                 {
                     target = new { type = "string", description = "@name, @topic/name, window ID, or @全部 with broadcast=true for the current topic leader." },
+                    targets = new { type = "array", items = new { type = "string" }, minItems = 1, maxItems = 50,
+                        description = "Send one group message to selected recipients with independent receipts. Use this in place of target." },
                     broadcast = new { type = "boolean", description = "Set true only when the user explicitly requests notifying the whole current topic. Use target=@全部." },
                     externalTargets = new { type = "array", items = new { type = "string" }, description = "With @全部 only. Include the specified authorized external team members only when the user explicitly chooses them. Use IDs from kb_team_context." },
                     message = new { type = "string" },
@@ -60,6 +62,14 @@ internal static class WorkbenchMcp
                 channelReceipt = new {type="string",description="Copy the receipt from the native channel notification when present."} }, additionalProperties = false }
         },
         Mcp.Tool(CollaborationTools.FinishTopic, "Finish your current topic with a short completion summary.", "summary"),
+        new { name = CollaborationTools.UpdateTeam,
+            description = "Current leader only. Update this topic's existing goal and optional role prompts of members. Does not restart terminals.",
+            inputSchema = new { type = "object", properties = new {
+                goal = new { type = new[] { "string", "null" }, maxLength = 2000 },
+                roles = new { type = "array", maxItems = 50, items = new { type = "object", properties = new {
+                    agentId = new { type = "string" }, role = new { type = new[] { "string", "null" }, maxLength = 200 }
+                }, required = new[] { "agentId", "role" }, additionalProperties = false } }
+            }, additionalProperties = false } },
         Mcp.Tool(CollaborationTools.ReadSkill, "Read workbench UI instructions for answering user questions, plus collaboration tools and examples for this FF.CP window."),
         Mcp.Tool(CollaborationTools.ReadKnowledgeSkill, "Read the ff-acp-knowledge skill for finding and preserving knowledge and requesting clarification."),
         Mcp.Tool(CollaborationTools.ReadTeamSkill, "Read this window's current leader or member guide for team assignments, shared and personal records, and leadership handover."),
@@ -150,7 +160,7 @@ internal static class WorkbenchMcp
             }
             string result = Call(root, grant, name, input, ObserveIdentity, port);
             if (port.HasValue && name is CollaborationTools.Send or CollaborationTools.FinishTopic or CollaborationTools.ReportTask or
-                CollaborationTools.ProposeTeam or CollaborationTools.ShowExternalApproval or CollaborationTools.SendPeerFiles)
+                CollaborationTools.ProposeTeam or CollaborationTools.ShowExternalApproval or CollaborationTools.SendPeerFiles or CollaborationTools.UpdateTeam)
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}/api/events/wake");
                 request.Headers.Add("X-FF-Notify", "1");
@@ -194,7 +204,7 @@ internal static class WorkbenchMcp
         });
     }
 
-    private static string Notice(string id) => $"协作信箱有新消息，请调用 receive_message，messageId 填 {id}。";
+    private static string Notice(string id) => $"群聊有人 @ 你，请调用 receive_message，messageId 填 {id}。";
 
     private static string ChannelReceipt(string grant,string id) => Convert.ToHexString(
         System.Security.Cryptography.HMACSHA256.HashData(System.Text.Encoding.UTF8.GetBytes(grant),System.Text.Encoding.UTF8.GetBytes(id)))[..24];
@@ -282,7 +292,7 @@ internal static class WorkbenchMcp
                         ? JsonSerializer.Serialize(new[]{new {name="@reply-"+route,online=true}}) : "[]";
                 bool all = (bool?)input["allTopics"] == true;
                 var topics = state.Topics().ToDictionary(t => t.Id, t => t.Name);
-                var peers = state.Windows().Where(a => a.Id != caller.Id && (all || a.TopicId == caller.TopicId));
+                var peers = state.Windows().Where(a => (all || a.TopicId == caller.TopicId) && state.CanContact(caller,a));
                 return JsonSerializer.Serialize(peers.Select(a =>
                 {
                     var item = new Dictionary<string, object>
@@ -300,15 +310,32 @@ internal static class WorkbenchMcp
                         item["project"] = a.Project;
                     }
                     return item;
-                }).Concat(state.RemoteRecipients(caller.TopicId,caller.Id).Select(r =>
+                }).Concat((caller.IsLeader ? state.RemoteRecipients(caller.TopicId,caller.Id) : []).Select(r =>
                 {
                     var item = new Dictionary<string,object> { ["name"]="@"+r.AgentName, ["online"]=r.Online, ["id"]=r.Id, ["node"]=r.NodeName };
                     if ((bool?)input["detail"]==true) { item["remote"]=true; item["teamMember"]=r.TeamMember; }
                     return item;
-                }).Concat(state.ReturnContacts(caller.Id).Select(c=>new Dictionary<string,object> {
+                }).Concat((caller.IsLeader ? state.ReturnContacts(caller.Id) : []).Select(c=>new Dictionary<string,object> {
                     ["name"]="@"+c.Name, ["online"]=c.Online, ["id"]=c.Id, ["node"]=c.NodeName, ["returnContact"]=true
+                })).Concat(state.GroupRecipients(caller.TopicId,caller.Id).Select(member=>new Dictionary<string,object> {
+                    ["name"]="@"+member.Name,["id"]=member.Key,["target"]="@"+member.Key,["topic"]=member.Topic,
+                    ["node"]=member.User,["engine"]=member.Engine??"",["online"]=member.Online,["leader"]=member.Leader,
+                    ["remote"]=true,["permanentGroup"]=true
                 }))));
+            case CollaborationTools.UpdateTeam:
+                state.UpdateTeamContext(grant,input.AsObject().ContainsKey("goal"),(string?)input["goal"],
+                    input["roles"]?.Deserialize<TeamRoleEdit[]>(KnowledgeJson) ?? []);
+                return "{\"status\":\"updated\"}";
             case CollaborationTools.Send:
+                if (input["targets"] is JsonArray)
+                {
+                    if (input["target"] != null || input["cancel"] != null || input["resend"] != null || input["replyTo"] != null ||
+                        input["finalReply"] != null || input["broadcast"] != null || input["externalTargets"] != null)
+                        throw new WorkbenchError("targets 用于向选定成员发送一条新消息");
+                    return JsonSerializer.Serialize(HandoffService.SendGroup(state,grant,input["targets"]!.Deserialize<string[]>()!,
+                        (string?)input["message"],(string?)input["document"],input["files"]?.Deserialize<string[]>() ?? [],
+                        ReturnHint(input),(bool?)input["supersedePrevious"] ?? false),KnowledgeJson);
+                }
                 if ((bool?)input["broadcast"] == true)
                 {
                     if (((string?)input["target"])?.Trim() != HandoffService.AllMembers)
@@ -369,6 +396,6 @@ internal static class WorkbenchMcp
             ? reply.ToString() : (string?)input["autoReturnHint"];
 
     private static string Queued(InboxItem delivery) =>
-        delivery.QueueHint == null ? JsonSerializer.Serialize(new { id = delivery.Id, status = "queued", document = delivery.Document })
+        delivery.QueueHint == null ? JsonSerializer.Serialize(new { id = delivery.Id, status = delivery.State == "delivered" ? "delivered" : "queued", document = delivery.Document })
         : JsonSerializer.Serialize(new { id = delivery.Id, status = "queued", document = delivery.Document, hint = delivery.QueueHint });
 }

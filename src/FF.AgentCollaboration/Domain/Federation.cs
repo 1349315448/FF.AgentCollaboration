@@ -31,15 +31,15 @@ internal sealed record RemoteApplication(string TopicId, string Link, string Pur
 }
 internal sealed record ContactBinding(string TopicId, string? AgentId);
 internal sealed record AdvertisedContact(string Key, string Name, bool Online, string? SenderKey = null);
-internal sealed record ReturnContact(string Id, string WindowId, string Name, string NodeName, bool Online, bool CanMention, bool CanRemove);
+internal sealed record ReturnContact(string Id, string WindowId, string Name, string NodeName, bool Online, bool CanMention, bool CanRemove, string GrantId);
 internal sealed record PeerQuota(string Mode, int? Limit, long? Remaining, bool Paused, long? ResetsAt)
 {
     internal static PeerQuota From(PeerGrant grant) =>
         new(grant.QuotaMode, grant.QuotaLimit, grant.QuotaLimit is int limit ? Math.Max(0L, limit - grant.Used) : null,
             grant.Paused, grant.ResetAt);
 }
-internal sealed record PeerSession(string Id, string Status, string NodeId, string NodeName, string AgentName, bool Online, string WindowId, string? Token = null, PeerQuota? Quota = null);
-internal sealed record PeerEvent(long Id, string Kind, string RequestId, string Text, string? DocumentId = null, string? FileName = null, bool? FinalReply = null);
+internal sealed record PeerSession(string Id, string Status, string NodeId, string NodeName, string AgentName, bool Online, string WindowId, string? Token = null, PeerQuota? Quota = null,string? GroupName=null,string? Engine=null);
+internal sealed record PeerEvent(long Id, string Kind, string RequestId, string Text, string? DocumentId = null, string? FileName = null, bool? FinalReply = null, string? ChatTo = null);
 internal sealed record PeerMail(long Seq, string TopicId, string Kind, string Source, string Target, string Label, string Text, string CreatedAt, bool HasDocument, string? WorkState, string? DeliveryState, int AttachmentCount);
 internal sealed record PeerDispatch(string Id, string Remote, string Window, string Text, string? FileName, byte[]? Content, bool ExpectsReply, string? AttachTo);
 internal sealed record OutgoingAttachment(string Id, string Name, byte[] Content);
@@ -49,12 +49,12 @@ internal sealed record PeerGrant(string Id, string WindowId, string NodeId, stri
     string Status, string PermissionMode, string QuotaMode, int? QuotaLimit, bool Paused, bool AllowUpload, long Used,
     long? ResetAt, long? LastReceived, long Blocked, bool Connected);
 internal sealed record RemoteCapsule(string Id, string TopicId, string NodeId, string NodeName, string AgentName,
-    string Status, bool Online, bool Connected, string? LastReply, string? Error, PeerQuota? Quota, string? ContactAgentId, string[] DeniedAgentIds, bool TeamMember);
+    string Status, bool Online, bool Connected, string? LastReply, string? Error, PeerQuota? Quota, string? ContactAgentId, string[] DeniedAgentIds, bool TeamMember,string? GroupName,string? Engine);
 internal sealed record RemoteConnection(string Id, string WindowId, string Endpoint, string Pin, string Provider, string? Share,
     string Claim, string? Token, string Status, string Purpose, long Cursor, bool Detached);
 internal sealed record FederationSummary(IReadOnlyList<PeerGrant> Grants, IReadOnlyList<RemoteCapsule> Remotes,
     IReadOnlyList<string> SharedWindows, IReadOnlyList<PeerMail> Mail, IReadOnlyList<ReturnContact> Contacts,
-    IReadOnlyList<string> RequestedReviews, IReadOnlyList<PeerAttachmentApproval> AttachmentApprovals);
+    IReadOnlyList<string> RequestedReviews, IReadOnlyList<PeerAttachmentApproval> AttachmentApprovals, IReadOnlyList<GroupView> Groups);
 
 internal sealed class FederationException(int status, string code, object? details = null) : Exception(code)
 {

@@ -1,12 +1,9 @@
 using System.Diagnostics;
 using System.Collections.Concurrent;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
-using Microsoft.Win32.SafeHandles;
 using FF.AgentCollaboration.Domain;
-using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Infrastructure.Terminal;
 
@@ -27,12 +24,9 @@ internal sealed partial class TerminalSession : IDisposable
     private bool automaticDeliveryInProgress;
     private readonly Dictionary<int, long> ready = new();
     private readonly Dictionary<int, (long Revision, string Message, long ObservedAt, string? Tail, int? FoldedChars, long StableSince)> visibleDrafts = new();
-    private readonly FileStream input;
-    private readonly FileStream output;
-    private readonly SafeProcessHandle process;
-    private readonly TerminalJob job;
+    private readonly ITerminalProcess process;
+    private Stream input => process.Input;
     private readonly Task drain;
-    private nint console;
     private long revision;
     private long nextPromptRevision;
     private long pasteRevision = -1;
@@ -89,40 +83,9 @@ internal sealed partial class TerminalSession : IDisposable
         workingWithoutPrompt = engine is "codex" or "copilot";
         columns = cols;
         lines = rows;
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763))
-            throw new WorkbenchError("真终端需要支持 ConPTY 的 Windows");
-        if (!Native.CreatePipe(out var consoleInput, out var hostInput, 0, 0))
-            throw Native.Error("无法创建终端输入管道");
-        using var inputSide = consoleInput;
-        if (!Native.CreatePipe(out var hostOutput, out var consoleOutput, 0, 0))
-        {
-            hostInput.Dispose();
-            throw Native.Error("无法创建终端输出管道");
-        }
-        using var outputSide = consoleOutput;
-        try
-        {
-            job = new TerminalJob();
-            Marshal.ThrowExceptionForHR(Native.CreatePseudoConsole(new((short)cols, (short)rows), consoleInput, consoleOutput, 0, out console));
-            input = new FileStream(hostInput, FileAccess.Write, bufferSize: 1);
-            output = new FileStream(hostOutput, FileAccess.Read, bufferSize: 4096);
-            drain = Task.Factory.StartNew(Drain, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-            process = Launch(executable, arguments, cwd, grant, environment);
-            lock (outputLock) quietTimer = new Timer(_ => QuietElapsed(), null, Quiet, Timeout.InfiniteTimeSpan);
-        }
-        catch
-        {
-            job?.Dispose();
-            inputSide.Dispose();
-            outputSide.Dispose();
-            if (console != 0) Native.ClosePseudoConsole(console);
-            input?.Dispose();
-            drain?.GetAwaiter().GetResult();
-            output?.Dispose();
-            hostInput.Dispose();
-            hostOutput.Dispose();
-            throw;
-        }
+        process = TerminalProcess.Start(executable, arguments, cwd, grant, cols, rows, environment);
+        drain = Task.Factory.StartNew(Drain, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        lock (outputLock) quietTimer = new Timer(_ => QuietElapsed(), null, Quiet, Timeout.InfiniteTimeSpan);
     }
 
     internal string Generation { get; } = Guid.NewGuid().ToString("N");
@@ -131,25 +94,21 @@ internal sealed partial class TerminalSession : IDisposable
     private bool unsubmittedNewSession;
     internal bool CanReopenEmpty { get { lock (outputLock) return unsubmittedNewSession; } }
     // 调用方在终端释放前注销等待。登录 CLI 可能先退出，ConPTY 的输出管道仍然打开。
-    internal WaitHandle ExitSignal() => new EventWaitHandle(false, EventResetMode.ManualReset) {
-        SafeWaitHandle = new SafeWaitHandle(process.DangerousGetHandle(), ownsHandle:false)
-    };
+    internal Task WaitForExitAsync(CancellationToken ct) => process.WaitForExitAsync(ct);
     internal uint? ExitCode
     {
         get
         {
             lock (outputLock)
-                return disposed == 0 ? ReadExitCode() : exitCode;
+                return disposed == 0 ? process.ExitCode : exitCode;
         }
     }
 
-    private uint? ReadExitCode() =>
-        Native.WaitForSingleObject(process, 0) == 0 && Native.GetExitCodeProcess(process, out uint code) ? code : null;
     internal bool Online
     {
         get
         {
-            lock (outputLock) return !ended && Volatile.Read(ref disposed) == 0 && Native.WaitForSingleObject(process, 0) == 258;
+            lock (outputLock) return !ended && Volatile.Read(ref disposed) == 0 && process.ExitCode is null;
         }
     }
 
@@ -159,7 +118,7 @@ internal sealed partial class TerminalSession : IDisposable
         try
         {
             int size;
-            while ((size = output.Read(buffer)) > 0)
+            while ((size = process.Output.Read(buffer)) > 0)
             {
                 lock (outputLock)
                 {
@@ -423,7 +382,7 @@ internal sealed partial class TerminalSession : IDisposable
                 Touch();
                 NotifyView();
             }
-            Marshal.ThrowExceptionForHR(Native.ResizePseudoConsole(console, new((short)cols, (short)rows)));
+            process.Resize(cols, rows);
             columns = cols;
             lines = rows;
         }
@@ -927,145 +886,20 @@ internal sealed partial class TerminalSession : IDisposable
     {
         lock (consoleLock)
         {
-            if (job.Handle.IsClosed) return;
-            if (disposed == 0)
+            if (disposed != 0) return;
+            lock (outputLock)
             {
-                lock (outputLock)
-                {
-                    exitCode = ReadExitCode();
-                    Volatile.Write(ref disposed, 1);
-                    quietTimer?.Dispose();
-                    ResetTypedLine();
-                }
-                Native.ClosePseudoConsole(console);
-                // 保持输出读取线程运行，让 CLI 有机会完成原生关闭和历史落盘。
-                Native.WaitForSingleObject(process, 2000);
+                exitCode = process.ExitCode;
+                Volatile.Write(ref disposed, 1);
+                quietTimer?.Dispose();
+                ResetTypedLine();
             }
-            job.TerminateRemaining();
-            input.Dispose();
-            drain.GetAwaiter().GetResult();
-            output.Dispose();
-            process.Dispose();
-            job.Dispose();
-        }
-    }
-
-    private SafeProcessHandle Launch(string executable, IReadOnlyList<string> arguments, string cwd, string grant,
-        IReadOnlyDictionary<string, string>? overrides)
-    {
-        nint size = 0;
-        Native.InitializeProcThreadAttributeList(0, 2, 0, ref size);
-        nint attributes = Marshal.AllocHGlobal(size + IntPtr.Size);
-        nint jobList = attributes + size;
-        bool initialized = false;
-        nint environment = 0;
-        try
-        {
-            if (!Native.InitializeProcThreadAttributeList(attributes, 2, 0, ref size))
-                throw Native.Error("无法初始化终端进程属性");
-            initialized = true;
-            if (!Native.UpdateProcThreadAttribute(attributes, 0, 0x00020016, console, IntPtr.Size, 0, 0))
-                throw Native.Error("无法将进程连接到 ConPTY");
-            // PROC_THREAD_ATTRIBUTE_JOB_LIST 在创建进程时生效，消除创建与加入 Job 之间宿主退出的窗口。
-            Marshal.WriteIntPtr(jobList, job.Handle.DangerousGetHandle());
-            if (!Native.UpdateProcThreadAttribute(attributes, 0, 0x0002000D, jobList, IntPtr.Size, 0, 0))
-                throw Native.Error("无法将进程绑定到窗格");
-
-            var start = WindowsCommand.Resolve(executable, arguments);
-            var variables = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var pair in start.Environment)
-                if (pair.Value != null) variables[pair.Key] = pair.Value;
-            if (overrides != null)
-                foreach (var pair in overrides) variables[pair.Key] = pair.Value;
-            variables["FF_P0_WINDOW_GRANT"] = variables["LX_P0_WINDOW_GRANT"] = grant;
-            variables["TERM"] = "xterm-256color";
-            environment = Marshal.StringToHGlobalUni(string.Join('\0', variables.Select(pair => $"{pair.Key}={pair.Value}")) + "\0\0");
-            var startup = new Native.StartupInfoEx
+            try
             {
-                // Windows 10 宿主重定向标准流时，显式传空句柄让 ConPTY 分配控制台标准流。
-                Info = new Native.StartupInfo { Size = Marshal.SizeOf<Native.StartupInfoEx>(), Flags = 0x00000100 },
-                AttributeList = attributes
-            };
-            executable = start.FileName;
-            var command = new StringBuilder(QuoteArgument(executable) + " " + start.Arguments);
-            if (!Native.CreateProcess(executable, command, 0, 0, false, 0x00080000 | 0x00000400,
-                environment, cwd, ref startup, out var handles))
-                throw Native.Error("无法启动原生 CLI");
-            using var initialThread = new SafeFileHandle(handles.Thread, ownsHandle: true);
-            return new SafeProcessHandle(handles.Process, ownsHandle: true);
+                process.Stop();
+                drain.GetAwaiter().GetResult();
+            }
+            finally { process.Dispose(); }
         }
-        finally
-        {
-            if (initialized) Native.DeleteProcThreadAttributeList(attributes);
-            Marshal.FreeHGlobal(attributes);
-            if (environment != 0) Marshal.FreeHGlobal(environment);
-        }
-    }
-
-    internal static string QuoteArgument(string argument)
-    {
-        var quoted = new StringBuilder("\"");
-        int slashes = 0;
-        foreach (char character in argument)
-        {
-            if (character == '\\') { slashes++; continue; }
-            quoted.Append('\\', character == '"' ? slashes * 2 + 1 : slashes).Append(character);
-            slashes = 0;
-        }
-        return quoted.Append('\\', slashes * 2).Append('"').ToString();
-    }
-
-    private static class Native
-    {
-        [StructLayout(LayoutKind.Sequential)]
-        internal readonly record struct Coord(short X, short Y);
-
-        [StructLayout(LayoutKind.Sequential)]
-        internal struct StartupInfo
-        {
-            internal int Size;
-            internal nint Reserved, Desktop, Title;
-            internal int X, Y, XSize, YSize, XCountChars, YCountChars, FillAttribute, Flags;
-            internal ushort ShowWindow, ReservedLength;
-            internal nint ReservedBytes, Input, Output, Error;
-        }
-        [StructLayout(LayoutKind.Sequential)]
-        internal struct StartupInfoEx
-        {
-            internal StartupInfo Info;
-            internal nint AttributeList;
-        }
-        [StructLayout(LayoutKind.Sequential)]
-        internal struct ProcessInfo
-        {
-            internal nint Process, Thread;
-            internal int ProcessId, ThreadId;
-        }
-
-        internal static Exception Error(string action) =>
-            new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), action);
-        [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern bool CreatePipe(out SafeFileHandle read, out SafeFileHandle write, nint attributes, int size);
-        // 优先使用随程序分发的 Microsoft.Windows.Console.ConPTY（conpty.dll + OpenConsole.exe），
-        // 绕开 Windows 10 自带 conhost.exe 在长中文粘贴时的 0xc0000409 崩溃。
-        [DllImport("conpty.dll", EntryPoint = "ConptyCreatePseudoConsole")]
-        internal static extern int CreatePseudoConsole(Coord size, SafeFileHandle input, SafeFileHandle output, uint flags, out nint console);
-        [DllImport("conpty.dll", EntryPoint = "ConptyResizePseudoConsole")]
-        internal static extern int ResizePseudoConsole(nint console, Coord size);
-        [DllImport("conpty.dll", EntryPoint = "ConptyClosePseudoConsole")]
-        internal static extern void ClosePseudoConsole(nint console);
-        [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern bool InitializeProcThreadAttributeList(nint list, int count, int flags, ref nint size);
-        [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern bool UpdateProcThreadAttribute(nint list, uint flags, nuint attribute, nint value, nint size, nint previous, nint returned);
-        [DllImport("kernel32.dll")]
-        internal static extern void DeleteProcThreadAttributeList(nint list);
-        [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", CharSet = CharSet.Unicode, SetLastError = true)]
-        internal static extern bool CreateProcess(string application, StringBuilder command, nint processAttributes, nint threadAttributes,
-            bool inheritHandles, uint flags, nint environment, string directory, ref StartupInfoEx startup, out ProcessInfo process);
-        [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern uint WaitForSingleObject(SafeProcessHandle process, uint milliseconds);
-        [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern bool GetExitCodeProcess(SafeProcessHandle process, out uint code);
     }
 }

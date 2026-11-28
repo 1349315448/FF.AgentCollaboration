@@ -25,7 +25,7 @@ internal sealed partial class WorkbenchStore
         string? selected = ProjectSetting();
         associated ??= Read("SELECT project FROM topics UNION ALL SELECT project FROM windows WHERE closed=0", row => row.GetString(0));
         var paths = Projects(selected == null ? associated : associated.Prepend(selected));
-        return (paths.FirstOrDefault(path => string.Equals(path, selected, StringComparison.OrdinalIgnoreCase)) ?? paths.FirstOrDefault(), paths);
+        return (paths.FirstOrDefault(path => ProjectFolders.Same(path, selected)) ?? paths.FirstOrDefault(), paths);
     }
 
     private string[] SavedProjects()
@@ -49,7 +49,7 @@ internal sealed partial class WorkbenchStore
         var removed = Read("SELECT value FROM settings WHERE key GLOB 'removed_project:*'", row => row.GetString(0));
         return SavedProjects().Concat(candidates).Where(path => !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path))
             .Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)))
-            .Except(removed, StringComparer.OrdinalIgnoreCase)
+            .Except(removed, ProjectFolders.Comparer)
             .Where(Directory.Exists).ToArray();
     }
 
@@ -59,13 +59,13 @@ internal sealed partial class WorkbenchStore
     {
         // 保留话题、窗口与磁盘原件，同时阻止旧话题的项目路径被重新补回侧栏。
         Exec("INSERT OR REPLACE INTO settings(key,value) VALUES($p0,$p1)", RemovedProjectKey(project), project);
-        var remaining = SavedProjects().Where(path => !string.Equals(path, project, StringComparison.OrdinalIgnoreCase));
+        var remaining = SavedProjects().Where(path => !ProjectFolders.Same(path, project));
         Exec("UPDATE settings SET value=$p0 WHERE key='projects'", JsonSerializer.Serialize(remaining));
-        if (string.Equals(ProjectSetting(), project, StringComparison.OrdinalIgnoreCase))
+        if (ProjectFolders.Same(ProjectSetting(), project))
             Exec("DELETE FROM settings WHERE key='project'");
     });
 
-    private static string RemovedProjectKey(string path) => "removed_project:" + path.ToUpperInvariant();
+    private static string RemovedProjectKey(string path) => "removed_project:" + (OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path);
 
     private void SaveProject(string project)
     {

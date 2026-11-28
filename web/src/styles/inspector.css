@@ -1,8 +1,8 @@
 #inspector-shell { container-type:inline-size; }
 #inspector-content:is([data-section="files"],[data-section="docs"]) { display:flex; flex-direction:column; align-items:stretch; text-align:left; min-height:0; padding:0; gap:0; color:var(--text); }
 .files-workbench,.docs-workspace { flex:1; min-width:0; min-height:0; display:flex; overflow:hidden; }
-.files-workbench button,.docs-workspace button,.log-document-row > button:last-child { border:0; color:var(--muted); background:transparent; border-radius:4px; cursor:pointer; font:inherit; }
-.files-workbench button:hover,.docs-workspace button:hover,.log-document-row > button:last-child:hover { color:var(--text); background:var(--raised); }
+.files-workbench button,.docs-workspace button { border:0; color:var(--muted); background:transparent; border-radius:4px; cursor:pointer; font:inherit; }
+.files-workbench button:hover,.docs-workspace button:hover { color:var(--text); background:var(--raised); }
 .files-workbench button:disabled { opacity:.45; cursor:default; }
 .file-tree,.docs-workspace nav { width:clamp(136px,29%,220px); min-width:0; flex:none; border-right:1px solid var(--line); padding:8px; background:var(--stage); display:flex; flex-direction:column; gap:6px; }
 .tree-search,.tree-options,.file-actions,.file-tabbar,.file-tabbar [role=tablist],.file-tab,.file-actions button,.docs-workspace nav button,.tree-list button { display:flex; align-items:center; }
@@ -18,6 +18,10 @@
 .tree-list button,.docs-workspace nav button { width:100%; text-align:left; gap:6px; padding:4px; font-size:12px; }
 .tree-list button { min-height:28px; }
 .tree-list button[aria-expanded] { min-height:32px; }
+.file-tree-row { display:flex; align-items:center; min-width:0; }
+.file-tree-row > :first-child { flex:1; min-width:0; }
+.tree-list .file-folder-open { flex:none; width:26px; min-height:24px; justify-content:center; color:var(--muted); border-radius:4px; }
+.tree-list .file-folder-open:is(:hover,:focus-visible) { color:var(--text); background:var(--raised); }
 .files-workbench svg,.docs-workspace nav svg { width:14px; height:14px; flex:none; }
 .tree-list button span,.docs-workspace nav span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tree-list [aria-current=page],.docs-workspace nav [aria-current=page] { color:var(--text); background:var(--raised); }
@@ -71,9 +75,6 @@
 .knowledge-tree summary { cursor:pointer; color:var(--muted); padding:4px 2px; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .knowledge-folder { padding-left:8px; }
 #folder-knowledge-field:not([hidden]) { margin-top:10px; }
-.log-document-row {display:grid;grid-template-columns:minmax(0,1fr) 28px;align-items:stretch;}
-.log-document-row .timeline-entry { flex:1; min-width:0; }
-.log-document-row > button:last-child { display:grid; place-items:center; width:28px; }
 @container (max-width:480px) {
   .files-workbench,.docs-workspace { flex-direction:column; }
   .file-tree,.docs-workspace nav { width:100%; max-height:35%; border-right:0; border-bottom:1px solid var(--line); }

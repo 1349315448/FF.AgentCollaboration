@@ -13,16 +13,18 @@ internal static class TerminalSocket
     internal static async Task RunLogin(HttpContext context, TerminalSession terminal, CancellationToken stopping)
     {
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(stopping);
-        using var signal = terminal.ExitSignal();
-        var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var wait = ThreadPool.RegisterWaitForSingleObject(signal, (_, _) => exited.TrySetResult(), null, Timeout.Infinite, true);
+        var exit = terminal.WaitForExitAsync(lifetime.Token);
         try
         {
             var connection = Run(context, terminal, lifetime.Token);
-            if (await Task.WhenAny(connection, exited.Task) == exited.Task) await lifetime.CancelAsync();
+            if (await Task.WhenAny(connection, exit) == exit) await lifetime.CancelAsync();
             await connection;
         }
-        finally { wait.Unregister(null); }
+        finally
+        {
+            await lifetime.CancelAsync();
+            try { await exit; } catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        }
     }
 
     internal static async Task Run(HttpContext context, TerminalSession terminal, CancellationToken stopping)

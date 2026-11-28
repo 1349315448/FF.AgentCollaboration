@@ -25,15 +25,14 @@ internal static class SkillFiles
         var parent=Path.GetDirectoryName(path)??throw new WorkbenchError("技能根路径无效");
         EnsureDirectory(parent);
         using var guard=WorkspaceDirectoryGuard.Open(parent);
-        Directory.CreateDirectory(path);
+        guard.EnsureChild(path);
         TopicArchive.CheckPath(path);
     }
     internal static byte[] ReadFile(string path,long limit)
     {
         using var guard=WorkspaceDirectoryGuard.Open(Path.GetDirectoryName(path)!);
         TopicArchive.CheckPath(path);
-        using var input=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);
-        WorkspaceDirectoryGuard.VerifyFile(input.SafeFileHandle,path);
+        using var input=guard.Read(path);
         if(input.Length>limit) throw new WorkbenchError("技能包超过大小限制");
         var data=new byte[checked((int)input.Length)];
         input.ReadExactly(data);
@@ -66,8 +65,7 @@ internal static class SkillFiles
                 }
                 else if(native)
                 {
-                    using var stream=new FileStream(entry,FileMode.Open,FileAccess.Read,FileShare.Read);
-                    WorkspaceDirectoryGuard.VerifyFile(stream.SafeFileHandle,entry);
+                    using var stream=guard.Read(entry);
                     if(relative.Equals("SKILL.md",StringComparison.OrdinalIgnoreCase))
                     {
                         if(stream.Length>SkillMarkdown.DocumentLimit) throw new WorkbenchError("原生 SKILL.md 超过预览上限");
@@ -137,7 +135,7 @@ internal static class SkillFiles
                 string file=Path.Combine(dir,name);
                 using var parent=WorkspaceDirectoryGuard.Open(Path.GetDirectoryName(file)!);
                 TopicArchive.CheckPath(file);
-                File.Delete(file);
+                parent.Delete(file);
             }
             foreach(string name in verified.Directories)
             {
@@ -146,7 +144,7 @@ internal static class SkillFiles
                 TopicArchive.CheckPath(child);
                 Directory.Delete(child);
             }
-            if(verified.Files.ContainsKey(Marker)) File.Delete(Path.Combine(dir,Marker));
+            if(verified.Files.ContainsKey(Marker)) guard.Delete(Path.Combine(dir,Marker));
         }
         Directory.Delete(dir);
     }
@@ -241,25 +239,25 @@ internal static class SkillFiles
         if(!exists && package==null) return;
         if(package!=null)
         {
-            Directory.CreateDirectory(stage);
+            guard.EnsureChild(stage);
             using var stageGuard=WorkspaceDirectoryGuard.Open(stage);
             var manifest=new Manifest(owner,package.ToDictionary(p=>p.Key,p=>Convert.ToHexString(SHA256.HashData(p.Value))));
             // 先落归属清单，再逐文件发布。中断的临时字节只留在此回执专属的 .ff-writing。
             string marker=Path.Combine(stage,Marker);
             string pending=Path.Combine(stage,".ff-writing");
-            using(var output=new FileStream(pending,FileMode.CreateNew,FileAccess.Write,FileShare.None))
+            using(var output=stageGuard.Create(pending))
             {
                 JsonSerializer.Serialize(output,manifest);
                 output.Flush(true);
             }
-            File.Move(pending,marker);
+            stageGuard.Publish(pending,marker,replace:false);
             foreach(var (relative,data) in package)
             {
                 string file=Child(stage,relative);
                 EnsureDirectory(Path.GetDirectoryName(file)!);
                 using var parent=WorkspaceDirectoryGuard.Open(Path.GetDirectoryName(file)!);
-                using(var output=new FileStream(pending,FileMode.CreateNew,FileAccess.Write,FileShare.None)) output.Write(data);
-                File.Move(pending,file);
+                using(var output=stageGuard.Create(pending)) output.Write(data);
+                stageGuard.PublishTo(pending,parent,file);
             }
         }
         if(exists) Directory.Move(dest,backup);

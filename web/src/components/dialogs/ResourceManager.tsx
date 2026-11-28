@@ -1,7 +1,6 @@
 import "./managedMcps.css";
 import { lazy, Suspense, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { knowledgeUiLocal } from "../../services/knowledge";
 
 const Mcps=lazy(()=>import("./ManagedMcps").then(m=>({default:m.ManagedMcps})));
 const Skills=lazy(()=>import("./ManagedSkills").then(m=>({default:m.ManagedSkills})));
@@ -17,9 +16,6 @@ export function ResourceManager() {
   }
   return <>
     <div className="resource-launchers" role="group" aria-label="扩展管理">
-      <button type="button" aria-controls="inspector-shell" disabled={!knowledgeUiLocal}
-        title={knowledgeUiLocal?"打开项目知识库":"请在工作台主机上浏览知识库"}
-        onClick={()=>window.dispatchEvent(new Event("ff:open-knowledge"))}>知识库</button>
       {kinds.map(value=><button type="button" key={value} aria-haspopup="dialog" aria-controls="resource-dialog"
         aria-label={value+" 管理"} title={value+" 管理"} onClick={()=>open(value)}>{value}<span> 管理</span></button>)}
     </div>

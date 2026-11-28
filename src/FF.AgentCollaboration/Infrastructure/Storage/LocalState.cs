@@ -9,6 +9,18 @@ internal abstract class LocalState : IDisposable
 
     protected LocalState(string path, bool create)
     {
+        if (create && !OperatingSystem.IsWindows() && !File.Exists(path))
+        {
+            try
+            {
+                using var privateFile = new FileStream(path, new FileStreamOptions
+                {
+                    Mode = FileMode.CreateNew, Access = FileAccess.Write,
+                    UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite
+                });
+            }
+            catch (IOException) when (File.Exists(path)) { /* SQLite coordinates existing database access. */ }
+        }
         database = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = path,

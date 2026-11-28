@@ -35,7 +35,7 @@ function normalizeEdit(text:string, previous:string) {
   const ending=previous.slice(raw).match(/\r\n|\r|\n/)?.[0]??previous.match(/\r\n|\r|\n/)?.[0]??"\n";
   return prefix+text.slice(start,nextEnd).replaceAll("\n",ending)+previous.slice(raw);
 }
-export default function CodeViewer({project,openDiff}:{project:string;openDiff:(c:GitChange)=>void}) {
+export default function CodeViewer({project,openDiff,reveal}:{project:string;openDiff:(c:GitChange)=>void;reveal?:{path:string;sequence:number}}) {
   const git=useGitWorkspace();
   const {tabs,active,session}=useEditor(project);
   const tab=tabs.find(t=>t.path===active), file=tab?.file;
@@ -53,6 +53,11 @@ export default function CodeViewer({project,openDiff}:{project:string;openDiff:(
     try { setNotice(""); await session.open(path); }
     catch(e){setNotice((e as Error).message);}
   },[session]);
+  useEffect(()=>{
+    if(!reveal)return;
+    showTree(true);
+    void open(reveal.path);
+  },[reveal,open]);
   async function sendPath() {
     const target=currentAgent();
     if (!target?.online || !file) return;
@@ -70,7 +75,7 @@ export default function CodeViewer({project,openDiff}:{project:string;openDiff:(
   return <div className="files-workbench" data-tree={treeOpen} onKeyDown={e=>{
     if (e.key.toLowerCase()==="s" && (e.ctrlKey||e.metaKey)) {e.preventDefault();if(tab && dirty(tab)) void session.save(tab).then(git.refresh);}
   }}>
-    {treeOpen && <FileTreeView {...{project,open,active,openDiff}}/>}
+    {treeOpen && <FileTreeView {...{project,open,active,openDiff,reveal}}/>}
     <div className="code-workspace"><div className="file-tabbar">
       <button className="inspector-icon" aria-label={treeOpen?"收起文件树":"展开文件树"} aria-expanded={treeOpen} title={treeOpen?"收起文件树":"展开文件树"} onClick={()=>showTree(v=>!v)}><WorkspaceIcon name="rail"/></button>
       <div role="tablist" aria-label="已打开文件">{tabs.map(t=><div className="file-tab" key={t.path} data-active={active===t.path}

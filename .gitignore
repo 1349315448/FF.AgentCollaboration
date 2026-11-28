@@ -24,6 +24,8 @@ coordinator.lock
 /workbench-data/
 /topics/
 /development-tasks/
+/signaling-keys/
+/FF.AgentCollaboration/signaling-keys/
 
 # Historical research notes from the development machine
 /docs/engine-protocol-research.md

@@ -5,7 +5,9 @@ export async function request<T = unknown>(path: string, { method = "GET", body,
   const headers = new Headers();
   const options: RequestInit = { method, signal, headers };
   if (method !== "GET" && pageId) headers.set("X-FF-View", pageId);
-  if (body != null) {
+  if (body instanceof FormData) {
+    options.body = body;
+  } else if (body != null) {
     headers.set("Content-Type", "application/json");
     options.body = JSON.stringify(body);
   }

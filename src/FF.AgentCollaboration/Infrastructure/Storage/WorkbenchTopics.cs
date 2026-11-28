@@ -166,6 +166,13 @@ internal sealed partial class WorkbenchStore
                 return $"| {Optional(row, 0) ?? "历史时间未记录"} | {Cell(row.GetString(1))} → {Cell(row.GetString(2))} | {Cell(row.GetString(3))} | {row.GetString(4)} | {Cell(path)} |";
             }, topic.Id);
         foreach (var row in rows) lines.AppendLine(row);
+        foreach (var row in Read("""
+            SELECT p.created_at,p.sender,substr(p.body,1,220)
+            FROM chat_post p WHERE p.topic=$p0 AND NOT EXISTS(
+                SELECT 1 FROM chat_delivery d JOIN inbox i ON i.id=d.id WHERE d.post=p.id)
+            ORDER BY p.created_at,p.rowid
+            """, row => $"| {row.GetString(0)} | {Cell(row.GetString(1))} | {Cell(row.GetString(2))} | 群聊 | — |", topic.Id))
+            lines.AppendLine(row);
         TopicArchive.Publish(Path.Combine(folder, "collab-log.md"), lines.ToString(), overwrite: true);
     }
 

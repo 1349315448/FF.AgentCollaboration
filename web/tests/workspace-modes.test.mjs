@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { codeViewport, workspacePreferences } from "../src/runtime/workspaceModes.js";
+import { codeViewport, terminalTiles, workspacePreferences } from "../src/runtime/workspaceModes.js";
 import { foldedCodexChars } from "../src/runtime/codexPaste.js";
 
 test("legacy topics start in the tiled layout, with independent bounded widths", () => {
@@ -18,6 +18,17 @@ test("selecting a code viewport leaves the original tiled layout intact", () => 
   assert.deepEqual(codeViewport(ids,{...tiles,codeActiveWindowId:"c"}), {active:"c",folded:["a","b"]});
   assert.deepEqual(codeViewport(["a"],{...tiles,codeActiveWindowId:"removed"}), {active:"a",folded:[]});
   assert.deepEqual(tiles,saved);
+});
+test("terminal tiles fit the region and keep the selected window reachable", () => {
+  const ids = ["1","2","3","4","5","6","7","8","9","10"];
+  assert.deepEqual(terminalTiles(ids, 1000, 750), { columns:3, visible:ids.slice(0,9) });
+  assert.deepEqual(terminalTiles(ids.slice(0,4), 1000, 750), { columns:2, visible:ids.slice(0,4) });
+  assert.deepEqual(terminalTiles(ids.slice(0,5), 340, 420, "5"), { columns:1, visible:["1","5"] });
+  assert.deepEqual(terminalTiles(ids.slice(0,1), 520, 420), { columns:1, visible:["1"] });
+  assert.deepEqual(terminalTiles(ids.slice(0,2), 520, 420), { columns:1, visible:["1","2"] });
+  assert.deepEqual(terminalTiles(ids.slice(0,2), 1000, 220), { columns:2, visible:["1","2"] });
+  assert.deepEqual(terminalTiles(ids.slice(0,3), 520, 420), { columns:2, visible:["1","2","3"] });
+  assert.deepEqual(terminalTiles(ids.slice(0,3), 1000, 220, "3"), { columns:2, visible:["1","3"] });
 });
 test("only a claimed Codex message can own a single folded editor block", () => {
   const parse = (value, state="writing") => foldedCodexChars("codex",{state},value);

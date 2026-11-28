@@ -2,11 +2,10 @@ import { byId } from "./dom.js";
 import { movePane, panes } from "../services/terminalRegistry";
 import { layout, selectedTopicId, snapshot } from "../store/workbenchStore";
 import { fitPane } from "./terminal.js";
-import { codeViewport, workspacePreferences } from "./workspaceModes.js";
+import { codeViewport, terminalTileLimit, terminalTiles, workspacePreferences } from "./workspaceModes.js";
 
 const layoutKey = "lx.agent.workbench.layout";
 const narrow = matchMedia("(width < 900px)");
-const singleColumn = matchMedia("(width < 720px)");
 function readLayout(topic) {
   let saved;
   try {
@@ -14,18 +13,24 @@ function readLayout(topic) {
     saved = JSON.parse(scoped ?? (topic?.name === "默认话题" ? localStorage.getItem(layoutKey) : null));
   }
   catch { /* 本地存储不可用时，当前页面仍可切换布局。 */ }
+  const ids = (snapshot?.windows ?? []).filter(w => w.agent.topicId === topic?.id).map(w => w.agent.id);
+  const opened = Array.isArray(saved?.openedIds) ? saved.openedIds :
+    Array.isArray(saved?.collapsedIds) ? ids.filter(id => !saved.collapsedIds.includes(id)) : [];
   return {
     ...workspacePreferences(saved),
     primaryWindowId: saved?.primaryWindowId ?? null,
     activeWindowId: saved?.activeWindowId ?? null,
-    collapsedIds: Array.isArray(saved?.collapsedIds) ? saved.collapsedIds : [],
+    openedIds: [...new Set(opened)].filter(id => ids.includes(id)).slice(0, terminalTileLimit),
+    focusedWindowId: null,
+    chatRatio: Number.isFinite(saved?.chatRatio) ? Math.min(.70,Math.max(.20,saved.chatRatio)) : .34,
     splitRatio: Number.isFinite(saved?.splitRatio) ? Math.min(1, Math.max(0, saved.splitRatio)) : .45
   };
 }
 
 function saveLayout() {
   if (!selectedTopicId) return;
-  try { localStorage.setItem(layoutKey + "." + selectedTopicId, JSON.stringify(layout)); }
+  const { focusedWindowId, ...preferences } = layout;
+  try { localStorage.setItem(layoutKey + "." + selectedTopicId, JSON.stringify(preferences)); }
   catch { /* 浏览器禁用存储不会影响当前终端。 */ }
 }
 
@@ -34,21 +39,44 @@ function focusAgent(id) {
   if (!pane) return;
   const code = layout.workspaceMode === "code";
   const collapsed = pane.element.dataset.collapsed === "true";
+  const wasHidden = !pane.element.getClientRects().length;
+  // 页内平铺顺序只记录实际打开的窗格。聚焦或尺寸变化不会改变最早打开的是谁。
+  if (!code && !layout.focusedWindowId && !layout.openedIds.includes(id)) {
+    if (layout.openedIds.length >= terminalTileLimit) {
+      const oldest = layout.openedIds[0];
+      const name = panes.get(oldest)?.agent.name;
+      if (!window.confirm("平铺已达到 " + terminalTileLimit + " 个终端。\n收起最早打开的 @" + name +
+        "，并展开 @" + pane.agent.name + "？\n收起后终端仍会运行并接收消息。")) return;
+      layout.openedIds.shift();
+    }
+    layout.openedIds.push(id);
+  }
+  byId("group-workspace").dataset.showTerminal = "true";
   if (code) {
     layout.codeActiveWindowId = id;
     layout.codeAgentHidden = false;
     saveLayout();
     renderLayout(collapsed ? pane : null);
-  } else if (collapsed || layout.activeWindowId !== id) {
-    if (collapsed) layout.collapsedIds = layout.collapsedIds.filter(item => item !== id);
+  } else if (wasHidden || collapsed || layout.activeWindowId !== id) {
+    if (layout.focusedWindowId) layout.focusedWindowId = id;
     layout.activeWindowId = id;
     saveLayout();
     renderLayout(collapsed ? pane : null);
   }
   fitPane(pane);
-  if (!collapsed) pane.element.scrollIntoView({ block: "nearest", inline: "nearest" });
   if (pane.view.agent.online) pane.term.focus();
   else pane.element.querySelector(".start-pane").focus();
+}
+
+function togglePaneFocus(pane) {
+  if (layout.workspaceMode !== "agent" || pane.surface.hidden) return;
+  const id = pane.agent.id;
+  const title = pane.element.querySelector(".terminal-title");
+  const keepFocus = document.activeElement === title;
+  layout.focusedWindowId = layout.focusedWindowId === id ? null : id;
+  layout.activeWindowId = id;
+  renderLayout();
+  if (keepFocus && !pane.surface.hidden) title.focus({preventScroll:true});
 }
 
 let renderLayout = layoutPanes;
@@ -56,8 +84,7 @@ function setLayoutProbe(callback) { renderLayout = callback; }
 
 let layoutAnimCount = 0;
 let splitDragging = false;
-let inspectorDragging = false;
-let narrowAgentRegion = false;
+let workspaceWidth = 0, workspaceHeight = 0;
 let pendingFitIds = new Set();
 let pendingRefitPanes = new Set();
 let fitFlushRaf = 0;
@@ -178,7 +205,7 @@ function layoutPanes(moving = null) {
       if (pane.term.options.cursorBlink) pane.term.options.cursorBlink = false;
       pane.layoutFlight?.cancel();
     } else if (moving && !pane.element.hidden) {
-      const rect = (pane.element.dataset.collapsed === "true" ? topicTag(pane) : pane.element)?.getBoundingClientRect();
+      const rect = (pane.element.dataset.collapsed === "true" ? agentRow(pane) : pane.element)?.getBoundingClientRect();
       if (!rect) continue;
       before.set(pane, rect);
       if (pane === moving) {
@@ -191,26 +218,46 @@ function layoutPanes(moving = null) {
     }
   }
   const primary = ids.includes(layout.primaryWindowId) ? layout.primaryWindowId : null;
-  const agentFolded = layout.collapsedIds.filter(id => ids.includes(id));
-  if (layout.primaryWindowId !== primary || agentFolded.length !== layout.collapsedIds.length ||
+  const opened = layout.openedIds.filter(id => ids.includes(id));
+  if (!ids.includes(layout.focusedWindowId)) layout.focusedWindowId = null;
+  const focused = layout.focusedWindowId;
+  if (layout.primaryWindowId !== primary || opened.length !== layout.openedIds.length ||
       (layout.activeWindowId && !ids.includes(layout.activeWindowId))) {
     layout.primaryWindowId = primary;
-    layout.collapsedIds = agentFolded;
+    layout.openedIds = opened;
     if (!ids.includes(layout.activeWindowId)) layout.activeWindowId = null;
     saveLayout();
   }
   applyWorkspaceMode();
   const code = layout.workspaceMode === "code";
-  const viewport = code ? codeViewport(ids, layout) : null;
-  const folded = viewport ? viewport.folded : agentFolded;
-  if (!inspectorDragging) narrowAgentRegion = byId("workspace-layout").clientWidth < 650;
-  const tightPreview = layout.agentInspectorOpen && narrowAgentRegion;
-  const left = viewport ? viewport.active : singleColumn.matches || tightPreview || primary && folded.includes(primary) ? null : primary;
-  const hasTiles = ids.some(id => id !== left && !folded.includes(id));
+  const single = code ? !layout.codeAgentHidden && codeViewport(ids, layout).active : focused;
   const leftPanes = byId("primary-panes"), rightPanes = byId("panes");
   const tray = byId("terminal-parking");
+  const group = byId("group-workspace");
+  const workspace = byId("workspace-layout");
+  const terminalsVisible = !!single || (!code && opened.length > 0);
+  group.hidden = !selectedTopicId;
+  group.dataset.terminals = String(terminalsVisible);
+  workspace.hidden = !terminalsVisible;
+  byId("chat-divider").hidden = !terminalsVisible;
+  group.style.setProperty("--chat-ratio",layout.chatRatio ?? .34);
+  workspaceWidth = workspace.clientWidth;
+  workspaceHeight = workspace.clientHeight;
+  let left = single || null;
+  let tileWidth = workspaceWidth;
+  if (!code && !single && opened.includes(primary) && (opened.length === 1 || workspaceWidth >= 650)) {
+    left = primary;
+    const style = getComputedStyle(workspace);
+    const available = workspaceWidth - parseFloat(style.getPropertyValue("--divider-width"));
+    const minimum = parseFloat(style.getPropertyValue("--pane-min"));
+    tileWidth = Math.max(minimum, Math.min(available - minimum, available * (1 - layout.splitRatio)));
+  }
+  const tiles = terminalTiles(code || single ? [] : opened.filter(id => id !== left), tileWidth, workspaceHeight, layout.activeWindowId);
+  const folded = ids.filter(id => id !== left && !tiles.visible.includes(id));
+  const hasTiles = tiles.visible.length > 0;
   const split = !!left && hasTiles;
-  byId("workspace-layout").dataset.split = String(split);
+  rightPanes.style.setProperty("--terminal-columns", tiles.columns);
+  workspace.dataset.split = String(split);
   byId("pane-divider").hidden = !split;
   leftPanes.hidden = !left;
   byId("collaboration").hidden = !hasTiles;
@@ -231,16 +278,16 @@ function layoutPanes(moving = null) {
   }
 
   const refitPanes = [];
-  ids.forEach((id, index) => {
+  ids.forEach(id => {
     const pane = panes.get(id), el = pane.element;
     const collapsed = folded.includes(id);
     const target = collapsed ? tray : id === left ? leftPanes : rightPanes;
     const refit = el.parentElement !== target || el.hidden || el.dataset.collapsed !== String(collapsed);
     movePane(pane, target);
     el.hidden = false;
-    el.style.order = id === primary ? "-1" : index;
+    el.style.order = id === primary ? "-1" : tiles.visible.indexOf(id);
     el.dataset.collapsed = String(collapsed);
-    const tag = topicTag(pane);
+    const tag = agentRow(pane);
     if (tag) {
       const expanded=!collapsed && !(code && layout.codeAgentHidden);
       tag.dataset.expanded = String(expanded);
@@ -251,14 +298,20 @@ function layoutPanes(moving = null) {
     if (pane.term.options.cursorBlink !== wantBlink) pane.term.options.cursorBlink = wantBlink;
     const toggle = el.querySelector(".toggle-collapse");
     toggle.setAttribute("aria-expanded", String(!collapsed));
-    toggle.title = collapsed ? "展开终端" : "缩小到顶部";
+    toggle.title = collapsed ? "展开终端" : "收起终端窗格";
     toggle.textContent = collapsed ? "⤢ 展开" : "⤡ 缩小";
     const isPrimary = id === primary;
     if (pane.primaryButton.hidden !== code) {
       pane.primaryButton.hidden = code;
       pane.toolbarWidth = null;
     }
-    toggle.hidden = code ? !collapsed : isPrimary;
+    toggle.hidden = code ? !collapsed : false;
+    const title = el.querySelector(".tile-name");
+    const titleAction = code ? "Agent 设置" : focused === id ? "恢复平铺" : "聚焦终端";
+    title.title = code ? titleAction : "双击" + titleAction;
+    title.setAttribute("aria-label", titleAction + " · @" + pane.agent.name);
+    if (code) title.removeAttribute("aria-pressed");
+    else title.setAttribute("aria-pressed", String(focused === id));
     el.querySelector(".primary-mark").hidden = !isPrimary;
     const primaryLabel = isPrimary ? "取消主对话" : "设为主对话";
     if (pane.primaryButton.textContent !== primaryLabel) {
@@ -283,11 +336,11 @@ function layoutPanes(moving = null) {
   animatePaneLayout(before, moving, [], [], movingCollapsed, null);
 }
 
-function topicTag(pane) { return document.querySelector('.topic-agent-tag[data-agent="'+CSS.escape(pane.agent.id)+'"]'); }
+function agentRow(pane) { return document.querySelector('.tree-agent[data-agent="'+CSS.escape(pane.agent.id)+'"]'); }
 
 function animatePaneLayout(before, moving, deferredIds = [], deferredRefits = [], collapsing = false, placeholder = null) {
   const from = before.get(moving);
-  const to = (collapsing ? topicTag(moving) : moving?.element)?.getBoundingClientRect();
+  const to = (collapsing ? agentRow(moving) : moving?.element)?.getBoundingClientRect();
   if (!from || !to || !from.width || !from.height || !to.width || !to.height ||
       (from.x === to.x && from.y === to.y && from.width === to.width && from.height === to.height)) {
     placeholder?.remove();
@@ -353,7 +406,7 @@ function animatePaneLayout(before, moving, deferredIds = [], deferredRefits = []
 
     if (!canceled && !reducedMotion.matches) {
       // 目标卡片/窗格落位淡入
-      const reveal = (collapsing ? topicTag(moving) ?? moving.element : moving.element).animate(
+      const reveal = (collapsing ? agentRow(moving) ?? moving.element : moving.element).animate(
         collapsing
           ? [{ opacity: 0, transform: "scale(0.92)" }, { opacity: 1, transform: "scale(1)" }]
           : [{ opacity: 0 }, { opacity: 1 }],
@@ -448,13 +501,12 @@ function applyWorkspaceMode() {
   const stage = byId("workspace-stage");
   stage.dataset.mode = layout.workspaceMode;
   stage.dataset.panel = String(open);
-  stage.dataset.agentsHidden = String(hidden);
-  byId("agent-stage").hidden = hidden;
+  stage.dataset.agentsHidden = String(hidden && !selectedTopicId);
+  byId("agent-stage").hidden = hidden && !selectedTopicId;
   byId("inspector-shell").hidden = !open;
-  byId("inspector-divider").hidden = !open || hidden;
+  byId("inspector-divider").hidden = !open || (hidden && !selectedTopicId);
   byId("toggle-inspector").hidden = code;
   byId("toggle-inspector").setAttribute("aria-expanded", String(open));
-  byId("inspector-toolbar-host").hidden = !open;
   const action = byId("inspector-panel-action");
   action.title = code ? hidden ? "展开 Agent" : "收起 Agent" : "收起面板";
   action.setAttribute("aria-label", action.title);
@@ -484,16 +536,17 @@ function resizeInspector(position) {
 }
 
 function attachLayoutControls() {
-  singleColumn.addEventListener("change", () => { if (snapshot) renderLayout(); });
-  new ResizeObserver(([entry]) => {
-    const narrowed = entry.contentRect.width < 650;
-    if (narrowed === narrowAgentRegion || splitDragging) return;
-    if (snapshot && layout.workspaceMode === "agent" && layout.agentInspectorOpen) renderLayout();
-  }).observe(byId("workspace-layout"));
+  const workspace = byId("workspace-layout");
+  new ResizeObserver(() => {
+    if (!snapshot || !layout || splitDragging || layout.workspaceMode !== "agent") return;
+    if (workspace.clientWidth !== workspaceWidth || workspace.clientHeight !== workspaceHeight) renderLayout();
+  }).observe(workspace);
   window.addEventListener("resize", flushActiveStage);
   const change = (property, value) => {
     if (!layout) return;
     layout[property] = value;
+    if (property === "workspaceMode" || property === "codeAgentHidden")
+      byId("group-workspace").dataset.showTerminal = String(property === "codeAgentHidden" && !value);
     saveLayout();
     renderLayout();
     window.dispatchEvent(new Event("ff:layout-changed"));
@@ -513,6 +566,17 @@ function attachLayoutControls() {
     ? change("codeAgentHidden", !layout.codeAgentHidden) : change("agentInspectorOpen", false);
   attachDivider(byId("pane-divider"), byId("workspace-layout"), resizeSplit);
   attachDivider(byId("inspector-divider"), byId("workspace-stage"), resizeInspector);
+  attachDivider(byId("chat-divider"),byId("group-workspace"),position=>{
+    const area=byId("group-workspace");
+    if(area.clientWidth<740)return;
+    layout.chatRatio=Math.min(.70,Math.max(.20,position/area.clientWidth));
+    area.style.setProperty("--chat-ratio",layout.chatRatio);
+    byId("chat-divider").setAttribute("aria-valuenow",Math.round(layout.chatRatio*100));
+  });
+  window.addEventListener("ff:focus-chat",()=>{
+    byId("group-workspace").dataset.showTerminal="false";
+    document.getElementById("group-chat-input")?.focus();
+  });
 }
 
 function attachDivider(divider, area, resize) {
@@ -526,7 +590,6 @@ function attachDivider(divider, area, resize) {
     areaLeft = area.getBoundingClientRect().left;
     offset = event.clientX - dividerRect.left;
     splitDragging = true;
-    inspectorDragging = divider.id === "inspector-divider";
     divider.setPointerCapture(event.pointerId);
   });
   divider.addEventListener("pointermove", event => {
@@ -545,8 +608,7 @@ function attachDivider(divider, area, resize) {
       resize(dragClientX - areaLeft - offset);
     }
     splitDragging = false;
-    inspectorDragging = false;
-    if (divider.id === "inspector-divider") renderLayout();
+    renderLayout();
     saveLayout();
     window.dispatchEvent(new Event("ff:layout-changed"));
     schedulePendingFits();
@@ -556,8 +618,9 @@ function attachDivider(divider, area, resize) {
     if (!step) return;
     event.preventDefault();
     resize(divider.getBoundingClientRect().left - area.getBoundingClientRect().left + step);
+    renderLayout();
     saveLayout();
   });
 }
 
-export { applySplitRatio, attachLayoutControls, fitPaneToolbar, focusAgent, isLayoutAnimating, layoutKey, narrow, readLayout, renderLayout, saveLayout, setLayoutProbe, togglePrimary };
+export { applySplitRatio, attachLayoutControls, fitPaneToolbar, focusAgent, isLayoutAnimating, layoutKey, narrow, readLayout, renderLayout, saveLayout, setLayoutProbe, togglePaneFocus, togglePrimary };

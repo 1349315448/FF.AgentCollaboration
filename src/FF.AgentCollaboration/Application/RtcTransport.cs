@@ -60,7 +60,7 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
         {
             var room = JsonSerializer.Deserialize<Credential>(record, Web);
             if (room != null && room.ExpiresAt > DateTimeOffset.UtcNow && room.ServerIdentity == trust.Identity &&
-                (!room.Host || db.Share(room.Window) != null)) Activate(room, trust);
+                (!room.Host || db.Share(room.Window)!=null || db.HasHostedGroup(room.Window))) Activate(room, trust);
         }
     }
 
@@ -90,7 +90,7 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
         // 工作台授权口令只从提供方传给对端，不交给信令服务器。
         var shared = new UriBuilder("ffcp", trust.Origin.IdnHost, trust.Origin.IsDefaultPort ? -1 : trust.Origin.Port, "/signal/" + roomId)
         {
-            Query = $"node={node.NodeId}&window={window.Id}&pin={pin}&agent={Uri.EscapeDataString(window.Name)}",
+            Query = $"node={node.NodeId}&window={window.Id}&topic={window.TopicId}&pin={pin}&agent={Uri.EscapeDataString(window.Name)}",
             Fragment = link.Fragment.TrimStart('#') + "." + share.Token
         };
         db.SetFedSetting("rtc_room." + roomId, JsonSerializer.Serialize(room, Web));
@@ -98,7 +98,7 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
         return shared.Uri.AbsoluteUri;
     }
 
-    internal async Task<string> Join(RemoteApplication input, Uri invite, CancellationToken ct)
+    internal async Task<string> Join(RemoteApplication input, Uri invite, CancellationToken ct,GroupSelection? group=null)
     {
         var trust = Require(settings.Read().Values);
         if (invite.Scheme != "ffcp" || invite.UserInfo.Length != 0 ||
@@ -133,8 +133,10 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
         }
         if (room.Host || room.Window != window || room.ExpiresAt <= DateTimeOffset.UtcNow || room.ServerIdentity != trust.Identity)
             throw new WorkbenchError("跨内网邀请已失效，请重新获取");
-        string id = db.AddRemote(topic, "rtc://" + roomId, pin, node, window, agent, secrets[1], purpose,
-            input.ContactSelected ? new ContactBinding(topic, input.AgentId) : null);
+        string id = group==null ? db.AddRemote(topic, "rtc://" + roomId, pin, node, window, agent, secrets[1], purpose,
+            input.ContactSelected ? new ContactBinding(topic, input.AgentId) : null)
+            : db.StartGroupCollaboration(topic,"rtc://"+roomId,pin,node,window,secrets[1],purpose,group,
+                fields.TryGetValue("topic",out var remoteTopic)?WorkbenchInput.Id(remoteTopic):null);
         Activate(room, trust);
         return id;
     }
@@ -169,7 +171,7 @@ internal sealed class RtcTransport(WorkbenchStartup startup, FederationNetwork n
                     if (room.Host)
                     {
                         using var db = new WorkbenchStore(startup.Root);
-                        if (db.Share(room.Window) == null) return;
+                        if (db.Share(room.Window) == null && !db.HasHostedGroup(room.Window)) return;
                     }
                     // 现有房间持续信任签发时的服务器，保存新设置不会把旧票据发给新服务器。
                     using var websocket = await session.Trust.Open(room.Room, room.Ticket, ct);

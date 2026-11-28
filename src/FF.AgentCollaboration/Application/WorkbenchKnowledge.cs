@@ -30,7 +30,7 @@ internal static class WorkbenchKnowledge
             string selected = mode ?? db.KnowledgeMode(project);
             if (selected is not (Disabled or "shared" or "local_only"))
                 throw new WorkbenchError("请选择共享、仅本机或停用知识库");
-            var files = new KnowledgeFiles(project);
+            var files = new KnowledgeFiles(project, db.DataDirectory);
             db.ConfigureKnowledgeMode(project, selected, register, () =>
             {
                 if (selected == Disabled) return;
@@ -255,7 +255,7 @@ internal static class WorkbenchKnowledge
     {
         if (db.KnowledgeMode(db.RegisteredProject(project)) == Disabled)
             throw new WorkbenchError("此项目暂未启用知识库", WorkbenchFailure.Conflict);
-        var files = new KnowledgeFiles(project);
+        var files = new KnowledgeFiles(project, db.DataDirectory);
         using var guard = WorkspaceDirectoryGuard.Open(files.Root);
         return files;
     }

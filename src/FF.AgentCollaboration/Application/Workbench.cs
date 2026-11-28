@@ -45,9 +45,14 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         var (current, projects) = state.ProjectList(topics.Select(t => t.Project).Concat(windows.Select(w => w.Agent.Project)));
         return new(current, projects, topics, windows, topicId, topicId == null ? [] : state.Timeline(topicId, recent),
             state.MentionShortcut(), state.RecentHandoffs(), state.FederationSummary(),
-            projects.Distinct(StringComparer.OrdinalIgnoreCase).ToDictionary(path => path, state.KnowledgeMode, StringComparer.OrdinalIgnoreCase),
-            state.PendingTeamProposals());
+            projects.Distinct(ProjectFolders.Comparer).ToDictionary(path => path, state.KnowledgeMode, ProjectFolders.Comparer),
+            state.PendingTeamProposals(), state.GroupPairs(), BuildVersion);
     }
+
+    private static readonly string BuildVersion =
+        ((System.Reflection.AssemblyInformationalVersionAttribute?)Attribute.GetCustomAttribute(
+            typeof(Workbench).Assembly,typeof(System.Reflection.AssemblyInformationalVersionAttribute)))?
+            .InformationalVersion.Split('+')[0] ?? typeof(Workbench).Assembly.GetName().Version!.ToString(3);
 
     internal TerminalSession Terminal(string id) => terminals.TryGetValue(id, out var terminal)
         ? terminal : throw new WorkbenchError("终端未启动", WorkbenchFailure.NotFound);
@@ -457,6 +462,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         {
             using var state = new WorkbenchStore(Root);
             var window = state.Window(id);
+            if (input.Enabled) state.ExternalLeader(window.TopicId, window.Id);
             bool current = state.DedicatedReader(id);
             using var engine = Engine.Create(window.Engine, window.Project);
             if (input.RestrictedTerminal(current) && !engine.SupportsDedicatedReader)
@@ -544,8 +550,16 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             string targetId = WorkbenchInput.Id(selection.TargetId);
             if (id == targetId) throw new WorkbenchError("请选择另一个 Agent");
             string topic = store.Window(id).TopicId;
+            if (selection.TargetTerminal==null && store.GroupRecipients(topic,id).FirstOrDefault(member=>member.Key==targetId) is {} grouped)
+            {
+                if (!grouped.Online) throw new WorkbenchError("常驻协作成员已离线，请重新选择",WorkbenchFailure.Conflict);
+                await source.Input(Encoding.UTF8.GetBytes("@"+grouped.Key+" "),ct);
+                return;
+            }
             var remotes = store.RemoteRecipients(topic,id).ToList();
             var contacts = store.ReturnContacts(id);
+            var sender = store.Window(id);
+            if (selection.TargetTerminal == null) store.ExternalLeader(sender.TopicId,sender.Id);
             string address;
             if (selection.TargetTerminal == null && contacts.FirstOrDefault(c=>c.Id==targetId) is { } contact)
             {
@@ -564,6 +578,8 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             }
             else
             {
+                if (!store.CanContact(sender,store.Window(targetId)))
+                    throw new WorkbenchError("只能点名本组成员或获准合作的成员",WorkbenchFailure.Forbidden);
                 var target = Terminal(targetId);
                 if (!target.Online || target.Generation != selection.TargetTerminal)
                     throw new WorkbenchError("窗口已离线或切换会话，请重新选择", WorkbenchFailure.Conflict);

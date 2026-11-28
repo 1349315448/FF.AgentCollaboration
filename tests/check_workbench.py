@@ -40,6 +40,8 @@ def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=Tr
     # Keep user-level skills and engine configuration inside this fixture.
     profile = Path(root).parent / "cli-user"
     env = dict(os.environ, USERPROFILE=str(profile))
+    if os.name != "nt":
+        env["XDG_DATA_HOME"] = str(Path(root).parent / "local-data")
     for key, folder in (("CODEX_HOME", ".codex"), ("CLAUDE_CONFIG_DIR", ".claude")):
         if not env.get(key) or not Path(env[key]).resolve().is_relative_to(profile.parent.resolve()):
             env[key] = str(profile / folder)
@@ -59,8 +61,12 @@ def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=Tr
 
         threading.Thread(target=read_output, daemon=True).start()
         try:
-            line = lines.get(timeout=15)
-            assert line and line.startswith("LX_WORKBENCH "), line
+            deadline = time.monotonic() + 15
+            startup = []
+            while (line := lines.get(timeout=max(0,deadline-time.monotonic()))) is not None:
+                if line.startswith("LX_WORKBENCH "): break
+                startup.append(line)
+            assert line is not None, "\n".join(startup)
             url = line.removeprefix("LX_WORKBENCH ")
             if initialize:
                 _, setup = http(url, "/api/initialize")

@@ -9,6 +9,7 @@ internal sealed partial class WorkbenchStore
     internal object QueuePeerAttachments(string grant, string? address, string? text, string? original, string[] paths)
     {
         var caller = Caller(grant);
+        RequireExternalLeader(caller);
         if (DedicatedReader(caller.Id)) throw new WorkbenchError("专用审阅 Agent 不能发送项目附件", WorkbenchFailure.Forbidden);
         if (paths.Length is < 1 or > 20) throw new WorkbenchError("请选择 1 至 20 个项目附件");
         if ((address != null) == (original != null)) throw new WorkbenchError("请选择收件 Agent 或提供要补附件的原消息 ID");
@@ -39,7 +40,7 @@ internal sealed partial class WorkbenchStore
         string status = "";
         Atomic(() =>
         {
-            Caller(grant);
+            RequireExternalLeader(Caller(grant));
             var queued = Read("""
                 SELECT count(*),coalesce(sum(length(f.content)),0)
                 FROM fed_send_file f JOIN fed_outbox o ON o.id=f.dispatch WHERE o.state IN ('awaiting_user','pending','sending')

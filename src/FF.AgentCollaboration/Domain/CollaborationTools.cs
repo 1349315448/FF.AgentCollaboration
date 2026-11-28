@@ -19,7 +19,8 @@ internal static class CollaborationTools
     internal const string ReadKnowledgeSkill = "read_knowledge_skill";
     internal const string AvailableEngines = "list_available_engines";
     internal const string ProposeTeam = "propose_team_agents";
+    internal const string UpdateTeam = "update_team_context";
     internal static readonly string[] Names =
         [ListWindows, Send, Receive, ReportTask, ShowExternalApproval, SendPeerFiles, ReadDocument, FinishTopic, ReadSkill,
-         KnowledgeSearch, KnowledgeRead, KnowledgeWrite, KnowledgeTeam, ReadKnowledgeSkill, ReadTeamSkill, AvailableEngines, ProposeTeam];
+         KnowledgeSearch, KnowledgeRead, KnowledgeWrite, KnowledgeTeam, ReadKnowledgeSkill, ReadTeamSkill, AvailableEngines, ProposeTeam, UpdateTeam];
 }

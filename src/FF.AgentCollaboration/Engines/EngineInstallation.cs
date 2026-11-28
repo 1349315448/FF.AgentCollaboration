@@ -1,3 +1,4 @@
+using FF.AgentCollaboration.Infrastructure.Processes;
 using System.Diagnostics;
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Infrastructure.Windows;
@@ -24,10 +25,10 @@ internal static class EngineInstallation
         {
             if (EngineExecutable.TryFindExecutable(name) != null) return;
             if (name is "traecli" or "zcode" or "cursor" or "opencode" or "antigravity")
-                throw new WorkbenchError("请按此引擎的官方安装指南安装 Windows 交互式 CLI，再重新检测");
-            if (name is "codebuddy" or "qwen" or "qoder")
+                throw new WorkbenchError("请按此引擎的官方安装指南安装当前系统的交互式 CLI，再重新检测");
+            if (!OperatingSystem.IsWindows() || name is "codebuddy" or "qwen" or "qoder")
             {
-                string installer = WindowsCommand.Dependency("npm.cmd", "npm.exe") ?? throw new WorkbenchError("请先安装 Node.js 和 npm");
+                string installer = HostCommand.Npm ?? throw new WorkbenchError("请先安装 Node.js 和 npm");
                 await RequireNpmRuntime(name, cancellation);
                 string module = EngineReleases.NpmPackage(name)!;
                 int result = await Run(installer, ["install", "-g", module]);
@@ -45,7 +46,7 @@ internal static class EngineInstallation
                 code = await Run(winget, args);
                 if (EngineExecutable.TryFindExecutable(name) != null) return;
             }
-            if (name == "claude" && WindowsCommand.Dependency("npm.cmd", "npm.exe") is { } npm)
+            if (name == "claude" && HostCommand.Npm is { } npm)
             {
                 code = await Run(npm, ["install", "-g", "@anthropic-ai/claude-code"]);
                 if (EngineExecutable.TryFindExecutable(name) != null) return;
@@ -60,7 +61,7 @@ internal static class EngineInstallation
     {
         if (engine is not ("qwen" or "qoder")) return;
         int minimum = engine == "qoder" ? 20 : 22;
-        string? node = await WindowsCommand.Version(WindowsCommand.Dependency("node.exe"), ct);
+        string? node = await HostCommand.Version(HostCommand.Node, ct);
         if (!Version.TryParse(node?.Trim().TrimStart('v'), out var version) || version.Major < minimum)
             throw new WorkbenchError($"npm 版 {(engine == "qoder" ? "Qoder CLI" : "Qwen Code")} 需要 Node.js {minimum} 或更高版本。");
     }
@@ -70,10 +71,10 @@ internal static class EngineInstallation
     {
         if (EngineExecutable.NpmPrefix(name, path) is { } prefix)
         {
-            return WindowsCommand.Dependency("npm.cmd", "npm.exe") is { } npm
+            return HostCommand.Npm is { } npm
                 ? (npm, ["install", "--global", "--prefix", prefix, EngineReleases.NpmPackage(name) + "@" + latest]) : null;
         }
-        if (name is "codex" or "copilot" or "claude")
+        if (OperatingSystem.IsWindows() && name is ("codex" or "copilot" or "claude"))
         {
             string target;
             try { target = File.ResolveLinkTarget(path, returnFinalTarget: true)?.FullName ?? path; }
@@ -135,6 +136,7 @@ internal static class EngineInstallation
 
     internal static string? Winget()
     {
+        if (!OperatingSystem.IsWindows()) return null;
         string local = Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         string alias = Path.Combine(local, "Microsoft", "WindowsApps", "winget.exe");
         return File.Exists(alias) ? alias : WindowsCommand.OnPath("winget.exe");
@@ -142,7 +144,7 @@ internal static class EngineInstallation
 
     internal static async Task<int> Run(string exe, IReadOnlyList<string> args, TimeSpan? timeout = null)
     {
-        var start = WindowsCommand.Resolve(exe, args);
+        var start = HostCommand.Resolve(exe, args);
         start.RedirectStandardInput = true;
         using var process = Process.Start(start) ?? throw new WorkbenchError("安装程序无法启动", WorkbenchFailure.Unavailable);
         process.StandardInput.Close();

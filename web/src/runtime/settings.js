@@ -167,7 +167,7 @@ for (const button of cleanupButtons) button.onclick = async () => {
 };
 settingsDialog.addEventListener("close", () => { clearInterval(countTimer); ++countVersion; });
 
-byId("open-settings").onclick = async () => {
+async function openSettings() {
   settingsDialog.showModal();
   resetMentionRecorder();
   byId("log-count").textContent = "正在统计…";
@@ -184,7 +184,9 @@ byId("open-settings").onclick = async () => {
     settingsEngines(), settingsEnvironment(), readLogCount()
   ]);
   if (results.some(result => result.status === "rejected")) settingsNote("部分配置未能读取。若刚更新工作台，请在下次启动后重新打开配置。");
-};
+}
+byId("open-settings").onclick = () => { byId("settings-category-general").click(); return openSettings(); };
+byId("open-engine-settings").onclick = () => { byId("settings-category-engines").click(); return openSettings(); };
 byId("save-paths").onclick = async event => {
   const save = event.currentTarget;
   save.disabled = true;

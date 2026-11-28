@@ -1,3 +1,4 @@
+using FF.AgentCollaboration.Infrastructure.Processes;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -5,7 +6,6 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Infrastructure.Files;
-using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Engines;
 
@@ -164,7 +164,7 @@ internal sealed class QwenEngine(string cwd) : ConfiguredTerminalEngine
 
     private async Task<string> Output(string[] arguments, CancellationToken ct)
     {
-        var start = WindowsCommand.Resolve(EngineExecutable.FindExecutable("qwen"), arguments);
+        var start = HostCommand.Resolve(EngineExecutable.FindExecutable("qwen"), arguments);
         start.WorkingDirectory = cwd;
         start.RedirectStandardOutput = start.RedirectStandardError = true;
         start.StandardOutputEncoding = Encoding.UTF8;

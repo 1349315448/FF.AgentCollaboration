@@ -1,8 +1,9 @@
+using FF.AgentCollaboration.Infrastructure.Processes;
 using FF.AgentCollaboration.Domain;
 using FF.AgentCollaboration.Engines;
 using FF.AgentCollaboration.Infrastructure.Files;
 using FF.AgentCollaboration.Infrastructure.Storage;
-using FF.AgentCollaboration.Infrastructure.Windows;
+using FF.AgentCollaboration.Infrastructure.Terminal;
 
 namespace FF.AgentCollaboration.Application;
 
@@ -29,13 +30,22 @@ internal static class WorkbenchEnvironment
         bool conpty = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) &&
             File.Exists(Path.Combine(native, "OpenConsole.exe")) && File.Exists(Path.Combine(native, "conpty.dll"));
         var winget = EngineInstallation.Winget();
-        var result = new List<HealthItem> { new("conpty", "Windows ConPTY", conpty, conpty ? native :
-            "需要 Windows 10 1809 或更高版本及随程序分发的 OpenConsole.exe 和 conpty.dll，请重新构建或解压完整程序。") };
-        foreach (var (id, label, path) in new[] {
-            ("winget", "WinGet", winget), ("node", "Node.js", WindowsCommand.Dependency("node.exe")),
-            ("npm", "npm", WindowsCommand.Dependency("npm.cmd", "npm.exe")), ("git", "Git", WindowsCommand.Dependency("git.exe")) })
+        var result = new List<HealthItem>();
+        if (OperatingSystem.IsWindows())
+            result.Add(new("conpty", "Windows ConPTY", conpty, conpty ? native :
+                "需要 Windows 10 1809 或更高版本及随程序分发的 OpenConsole.exe 和 conpty.dll，请重新构建或解压完整程序。"));
+        else
         {
-            string? version = await WindowsCommand.Version(path, ct);
+            string helper = UnixTerminalProcess.Helper;
+            bool ready = HostCommand.IsUnixExecutable(helper);
+            result.Add(new("pty", "Unix PTY", ready, ready ? helper : "缺少可执行的 FF.AgentCollaboration.Pty，请使用对应平台的完整发布目录。"));
+        }
+        foreach (var (id, label, path) in new[] {
+            ("winget", "WinGet", winget), ("node", "Node.js", HostCommand.Node),
+            ("npm", "npm", HostCommand.Npm), ("git", "Git", HostCommand.Git) })
+        {
+            if (id == "winget" && !OperatingSystem.IsWindows()) continue;
+            string? version = await HostCommand.Version(path, ct);
             bool ready = !string.IsNullOrWhiteSpace(version);
             result.Add(new(id, label, ready, ready ? version! : "未找到可运行的 " + label,
                 ready ? null : id == "winget" ? "store" : winget == null ? null : "install"));
@@ -76,6 +86,7 @@ internal static class WorkbenchEnvironment
             CheckStorage(item, path);
             return;
         }
+        if (!OperatingSystem.IsWindows()) throw new WorkbenchError("请通过本机的软件包管理器安装运行依赖", WorkbenchFailure.Unavailable);
         string package = item switch
         {
             "node" or "npm" => "OpenJS.NodeJS.LTS",
@@ -85,8 +96,8 @@ internal static class WorkbenchEnvironment
         string manager = EngineInstallation.Winget() ?? throw new WorkbenchError("请先安装 Windows 应用安装程序", WorkbenchFailure.Unavailable);
         int code = await EngineInstallation.Run(manager, ["install", "--id", package, "--exact", "--source", "winget", "--silent",
             "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"]);
-        string? executable = item == "npm" ? WindowsCommand.Dependency("npm.cmd", "npm.exe") : WindowsCommand.Dependency(item + ".exe");
-        if (string.IsNullOrWhiteSpace(await WindowsCommand.Version(executable, CancellationToken.None)))
+        string? executable = item == "npm" ? HostCommand.Npm : item == "node" ? HostCommand.Node : HostCommand.Git;
+        if (string.IsNullOrWhiteSpace(await HostCommand.Version(executable, CancellationToken.None)))
             throw new WorkbenchError($"WinGet 返回 {code}，尚未检测到可用的 {item}，请检查安装程序。", WorkbenchFailure.Unavailable);
     }
 }

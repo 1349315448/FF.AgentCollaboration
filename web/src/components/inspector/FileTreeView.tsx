@@ -6,8 +6,8 @@ import { useGitWorkspace, type GitChange } from "./gitWorkspace";
 import { fileKind, GitFileMark } from "./GitFileMark";
 
 interface Entry {name:string; path:string; directory:boolean}
-interface Props {project:string; open:(path:string)=>void; active:string}
-function Directory({project, path, ignored, open, active,changes,version}:Props & {path:string; ignored:boolean;changes:Map<string,GitChange>;version:number}) {
+interface Props {project:string; open:(path:string)=>void; active:string; reveal?:{path:string;sequence:number}}
+function Directory({project, path, ignored, open, active,changes,version,reveal}:Props & {path:string; ignored:boolean;changes:Map<string,GitChange>;version:number}) {
   const [entries,setEntries]=useState<Entry[]>([]), [error,setError]=useState("");
   const [expanded,setExpanded]=useState<string[]>([]);
   useEffect(() => {
@@ -18,16 +18,34 @@ function Directory({project, path, ignored, open, active,changes,version}:Props 
       .catch(e=>{if (!controller.signal.aborted) setError(e.message);});
     return ()=>controller.abort();
   },[project,path,ignored,version]);
+  useEffect(()=>{
+    if(!reveal)return;
+    const candidate=entries.find(e=>e.directory&&reveal.path.startsWith(e.path+"/"));
+    if(candidate)setExpanded(current=>current.includes(candidate.path)?current:[...current,candidate.path]);
+    else if(entries.some(e=>e.path===reveal.path))
+      document.querySelector('.file-tree button[title="'+CSS.escape(reveal.path)+'"]')?.scrollIntoView({block:"nearest"});
+  },[entries,reveal]);
+  async function openFolder(folder:string) {
+    setError("");
+    try { await request(workspaceUrl("open-folder",{project,path:folder}),{method:"POST"}); }
+    catch (reason) { setError((reason as Error).message); }
+  }
   return <ul>{error && <li role="status">{error}</li>}{entries.map(e=>{
     const change=e.directory?undefined:changes.get(e.path);
     if(change?.code==="D") return null;
     return <li key={e.path} data-git-kind={change && fileKind(change)}>
-    <button type="button" title={e.path} aria-expanded={e.directory?expanded.includes(e.path):undefined}
-      aria-current={!e.directory && active===e.path?"page":undefined}
-      onClick={()=>e.directory?setExpanded(xs=>xs.includes(e.path)?xs.filter(x=>x!==e.path):[...xs,e.path]):open(e.path)}>
-      <WorkspaceIcon name={e.directory?(expanded.includes(e.path)?"down":"right"):"docs"}/><span className="git-path">{e.name}</span>{change&&<GitFileMark change={change}/>}
-    </button>
-    {e.directory && expanded.includes(e.path) && <Directory {...{project,open,active,ignored,changes,version}} path={e.path}/>}
+    <div className="file-tree-row">
+      <button type="button" title={e.path} aria-expanded={e.directory?expanded.includes(e.path):undefined}
+        aria-current={!e.directory && active===e.path?"page":undefined}
+        onClick={()=>e.directory?setExpanded(xs=>xs.includes(e.path)?xs.filter(x=>x!==e.path):[...xs,e.path]):open(e.path)}>
+        <WorkspaceIcon name={e.directory?(expanded.includes(e.path)?"down":"right"):"docs"}/><span className="git-path">{e.name}</span>{change&&<GitFileMark change={change}/>}
+      </button>
+      {e.directory&&location.hostname==="127.0.0.1"&&<button type="button" className="file-folder-open"
+        title="在本机打开文件夹" aria-label={"在本机打开文件夹 "+e.name} onClick={()=>void openFolder(e.path)}>
+        <WorkspaceIcon name="files"/>
+      </button>}
+    </div>
+    {e.directory && expanded.includes(e.path) && <Directory {...{project,open,active,ignored,changes,version,reveal}} path={e.path}/>}
   </li>;})}</ul>;
 }
 export const FileTreeView=memo(function FileTreeView(props:Props & {openDiff:(c:GitChange)=>void}) {
@@ -39,6 +57,7 @@ export const FileTreeView=memo(function FileTreeView(props:Props & {openDiff:(c:
   },[git.status]);
   const [query,setQuery]=useState(""), [ignored,setIgnored]=useState(false), [files,setFiles]=useState<string[]>([]);
   const [status,setStatus]=useState(""), [refresh,setRefresh]=useState(0);
+  useEffect(()=>{if(props.reveal){setQuery("");setIgnored(true);}},[props.reveal]);
   useEffect(()=>{
     setFiles([]); setStatus("");
     const q=query.trim();

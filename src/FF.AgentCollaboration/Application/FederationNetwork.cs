@@ -148,12 +148,12 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
         {
             string pin = Certificate()!.GetCertHashString(HashAlgorithmName.SHA256).ToLowerInvariant();
             var endpoint = publicEndpoint;
-            link = $"ffcp://{endpoint?.IdnHost ?? ActiveIp.ToString()}:{endpoint?.Port ?? Port}/share/{share.Value.Token}?node={node.NodeId}&window={window.Id}&pin={pin}&agent={Uri.EscapeDataString(window.Name)}";
+            link = $"ffcp://{endpoint?.IdnHost ?? ActiveIp.ToString()}:{endpoint?.Port ?? Port}/share/{share.Value.Token}?node={node.NodeId}&window={window.Id}&topic={window.TopicId}&pin={pin}&agent={Uri.EscapeDataString(window.Name)}";
         }
         return new { enabled = share != null, permissionMode = share?.Permission ?? "read_only", dedicatedReadOnly=store.DedicatedReader(id),
             link, restarted, rtc = rtcBlockReason == null, rtcBlockReason, attachmentAllowed = store.AttachmentPermission(id) };
     }
-    internal static string AddRemote(WorkbenchStore store, RemoteApplication input)
+    internal static string AddRemote(WorkbenchStore store, RemoteApplication input,GroupSelection? group=null)
     {
         if (input.Link?.Length > 1500 || !Uri.TryCreate(input.Link, UriKind.Absolute, out var uri) || uri.Scheme != "ffcp" ||
             uri.Port == 0 || !PeerHost(uri) ||
@@ -165,6 +165,10 @@ internal sealed class FederationNetwork(WorkbenchStartup startup) : IDisposable
         if (!FederationPolicy.IsSecret(share) || !FederationPolicy.IsSecret(pin)) throw new WorkbenchError("分享凭据或证书指纹无效");
         if (store.FederationNode().NodeName == null) throw new WorkbenchError("请先设置本端节点名称");
         var endpoint = new UriBuilder(Uri.UriSchemeHttps, uri.IdnHost, uri.Port == -1 ? 443 : uri.Port).Uri;
+        if (group!=null)
+            return store.StartGroupCollaboration(WorkbenchInput.Id(input.TopicId),endpoint.GetLeftPart(UriPartial.Authority),pin,
+                WorkbenchInput.Id(query["node"]),WorkbenchInput.Id(query["window"]),share,WorkbenchInput.Text(input.Purpose,"申请用途",300),group,
+                query.TryGetValue("topic",out var topic)?WorkbenchInput.Id(topic):null);
         return store.AddRemote(WorkbenchInput.Id(input.TopicId), endpoint.GetLeftPart(UriPartial.Authority), pin, WorkbenchInput.Id(query["node"]),
             WorkbenchInput.Id(query["window"]), WorkbenchInput.AgentName(query["agent"]), share, WorkbenchInput.Text(input.Purpose, "申请用途", 300),
             input.ContactSelected ? new ContactBinding(WorkbenchInput.Id(input.TopicId),input.AgentId) : null);

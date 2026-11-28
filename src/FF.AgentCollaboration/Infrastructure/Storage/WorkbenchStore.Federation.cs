@@ -84,10 +84,15 @@ internal sealed partial class WorkbenchStore
             Exec("ALTER TABLE fed_request ADD COLUMN sender TEXT");
         if (!Read("PRAGMA table_info(fed_remote)",r=>r.GetString(1)).Contains("contacts_published"))
             Exec("ALTER TABLE fed_remote ADD COLUMN contacts_published INTEGER NOT NULL DEFAULT 0");
-        if (!Read("PRAGMA table_info(fed_remote)", r => r.GetString(1)).Contains("quota_snapshot"))
+        var remoteColumns=Read("PRAGMA table_info(fed_remote)",r=>r.GetString(1));
+        if (!remoteColumns.Contains("group_name")) Exec("ALTER TABLE fed_remote ADD COLUMN group_name TEXT");
+        if (!remoteColumns.Contains("engine")) Exec("ALTER TABLE fed_remote ADD COLUMN engine TEXT");
+        if (!remoteColumns.Contains("quota_snapshot"))
             Exec("ALTER TABLE fed_remote ADD COLUMN quota_snapshot TEXT");
         if (!Read("PRAGMA table_info(fed_outbox)", r => r.GetString(1)).Contains("attach_to"))
             Exec("ALTER TABLE fed_outbox ADD COLUMN attach_to TEXT");
+        if (!Read("PRAGMA table_info(fed_mail)", r => r.GetString(1)).Contains("reply_to"))
+            Exec("ALTER TABLE fed_mail ADD COLUMN reply_to TEXT");
         if (!Read("PRAGMA table_info(inbox)", r => r.GetString(1)).Contains("work_state"))
             Exec("""
                 ALTER TABLE inbox ADD COLUMN work_state TEXT;
@@ -140,6 +145,7 @@ internal sealed partial class WorkbenchStore
     {
         var window = Window(id);
         input.Validate();
+        if (input.Enabled) RequireExternalLeader(window);
         bool current = DedicatedReader(id), restricted = input.RestrictedTerminal(current);
         if (restricted != current)
         {
@@ -148,11 +154,11 @@ internal sealed partial class WorkbenchStore
         }
         if (!input.Enabled)
         {
-            foreach (var pending in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND status='pending'", r => r.GetString(0), id))
+            foreach (var pending in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND kind='agent' AND status='pending'", r => r.GetString(0), id))
                 ClearPeerReview(pending);
-            foreach (var grant in Read("SELECT id FROM fed_grant WHERE window_id=$p0", r => r.GetString(0), id)) WithdrawPeerInbox(grant);
+            foreach (var grant in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND kind='agent'", r => r.GetString(0), id)) WithdrawPeerInbox(grant);
             Exec("DELETE FROM fed_share WHERE window_id=$p0", id);
-            Exec("UPDATE fed_grant SET status='revoked',token_hash=NULL,salt=NULL WHERE window_id=$p0 AND status IN ('approved','pending')", id);
+            Exec("UPDATE fed_grant SET status='revoked',token_hash=NULL,salt=NULL WHERE window_id=$p0 AND kind='agent' AND status IN ('approved','pending')", id);
             return;
         }
         Exec("""
@@ -161,8 +167,8 @@ internal sealed partial class WorkbenchStore
             """, id, NewGrant(), input.PermissionMode, input.Rotate);
         if (input.PermissionMode == "read_only")
         {
-            foreach (var grant in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND permission='read_write'", r => r.GetString(0), id)) WithdrawPeerInbox(grant);
-            Exec("UPDATE fed_grant SET permission='read_only' WHERE window_id=$p0", id);
+            foreach (var grant in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND kind='agent' AND permission='read_write'", r => r.GetString(0), id)) WithdrawPeerInbox(grant);
+            Exec("UPDATE fed_grant SET permission='read_only' WHERE window_id=$p0 AND kind='agent'", id);
         }
     });
 
@@ -188,18 +194,18 @@ internal sealed partial class WorkbenchStore
         ?? throw new FederationException(403, "invalid_grant");
 
     internal FederationSummary FederationSummary() => new(
-        Read($"SELECT {GrantFields} FROM fed_grant WHERE window_id IN (SELECT id FROM windows WHERE closed=0) ORDER BY rowid DESC", GrantView),
+        Read($"SELECT {GrantFields} FROM fed_grant WHERE kind='agent' AND window_id IN (SELECT id FROM windows WHERE closed=0) ORDER BY rowid DESC", GrantView),
         RemoteCapsules(), Read("SELECT window_id FROM fed_share WHERE window_id IN (SELECT id FROM windows WHERE closed=0)", r => r.GetString(0)),
         RecentPeerMail(), ReturnContacts(), Read("""
             SELECT g.id FROM fed_review_dialog d JOIN fed_grant g ON g.id=d.application
             JOIN windows w ON w.id=g.window_id AND w.closed=0
-            WHERE g.status='pending' ORDER BY d.rowid
-            """, r => r.GetString(0)), AttachmentApprovals());
+            WHERE g.kind='agent' AND g.status='pending' ORDER BY d.rowid
+            """, r => r.GetString(0)), AttachmentApprovals(), GroupCollaborations());
 
     internal void ShowExternalApproval(string grant, string id) => Atomic(() =>
     {
         var window = Caller(grant);
-        if (!Read("SELECT 1 FROM fed_grant WHERE id=$p0 AND window_id=$p1 AND status='pending'",
+        if (!Read("SELECT 1 FROM fed_grant WHERE id=$p0 AND window_id=$p1 AND kind='agent' AND status='pending'",
             _ => true, WorkbenchInput.Id(id), window.Id).Any())
             throw new WorkbenchError("当前 Agent 无此待审外协申请", WorkbenchFailure.Forbidden);
         Exec("INSERT OR IGNORE INTO fed_review_dialog VALUES($p0)", id);
@@ -216,6 +222,8 @@ internal sealed partial class WorkbenchStore
 
     internal void DecidePeer(string id, PeerDecision decision) => Atomic(() =>
     {
+        if (!Read("SELECT 1 FROM fed_grant WHERE id=$p0 AND kind='agent'",r=>true,id).Any())
+            throw new FederationException(404,"unknown_agent_grant");
         var grant = Grant(id);
         var share = Share(grant.WindowId) ?? throw new FederationException(409, "sharing_disabled");
         Window(grant.WindowId);
@@ -229,20 +237,29 @@ internal sealed partial class WorkbenchStore
             Exec("UPDATE fed_grant SET status=$p1,salt=NULL,token_hash=NULL WHERE id=$p0", id, before == "pending" ? "rejected" : "revoked");
             return;
         }
+        RequireExternalLeader(Window(grant.WindowId));
         bool approve = decision.Action == "approve";
         if (!(approve && grant.Status == "pending" || decision.Action == "configure" && grant.Status == "approved"))
             throw new FederationException(409, "invalid_transition");
-        FederationPolicy.Permission(decision.PermissionMode, decision.ConfirmWrite);
+        CheckPeerPolicy(decision,share.Permission);
         if (decision.Paused || grant.PermissionMode == "read_write" && decision.PermissionMode == "read_only") WithdrawPeerInbox(id);
-        if (decision.PermissionMode == "read_write" && share.Permission != "read_write") throw new FederationException(403, "window_read_only");
+        SavePeerPolicy(id,decision);
+    });
+
+    private static void CheckPeerPolicy(PeerDecision decision,string permission)
+    {
+        FederationPolicy.Permission(decision.PermissionMode, decision.ConfirmWrite);
+        if (decision.PermissionMode == "read_write" && permission != "read_write") throw new FederationException(403, "window_read_only");
         if (decision.QuotaMode is not ("daily" or "hourly" or "total" or "unlimited") ||
             decision.QuotaMode != "unlimited" && decision.QuotaLimit is not > 0) throw new WorkbenchError("请选择有效的次数配额");
+    }
+
+    private void SavePeerPolicy(string id,PeerDecision decision) =>
         Exec("""
             UPDATE fed_grant SET status='approved',salt=coalesce(salt,$p1),permission=$p2,quota=$p3,quota_limit=$p4,
             paused=$p5,upload=$p6,total=CASE WHEN $p7 THEN 0 ELSE total END WHERE id=$p0
             """, id, NewGrant(), decision.PermissionMode, decision.QuotaMode, decision.QuotaMode == "unlimited" ? null : decision.QuotaLimit,
             decision.Paused, decision.AllowUpload, decision.ResetTotal && decision.QuotaMode == "total");
-    });
 
     internal PeerSession ApplyPeer(string shareToken, string node, string name, string ip, PeerApplication input)
     {
@@ -252,7 +269,8 @@ internal sealed partial class WorkbenchStore
         Atomic(() =>
         {
             string window = Read("""
-                SELECT s.window_id FROM fed_share s JOIN windows w ON w.id=s.window_id AND w.closed=0 WHERE s.token=$p0
+                SELECT s.window_id FROM fed_share s JOIN windows w ON w.id=s.window_id AND w.closed=0
+                JOIN topics t ON t.id=w.topic_id AND t.leader_window_id=w.id AND t.status='active' WHERE s.token=$p0
                 """, r => r.GetString(0), shareToken).SingleOrDefault() ?? throw new FederationException(403, "invalid_share");
             if (node == FedSetting("node_id")) throw new FederationException(409, "self_pair");
             string claim = Hash(input.Claim);
@@ -280,7 +298,8 @@ internal sealed partial class WorkbenchStore
             return new(id, grant.Status, node.NodeId, "", "", false, grant.WindowId);
         var window = Window(grant.WindowId);
         return new(id, grant.Status, node.NodeId, node.NodeName!, window.Name, grant.Status == "approved" && window.Online, grant.WindowId, token,
-            grant.Status == "approved" ? PeerQuota.From(grant) : null);
+            grant.Status == "approved" ? PeerQuota.From(grant) : null,grant.Status=="approved"?Topic(window.TopicId).Name:null,
+            grant.Status=="approved"?window.Engine:null);
     }
 
     // 申请凭据只用于本人轮询；审批后用独立随机盐派生可重取的 PeerToken，普通授权入口只认其哈希。
@@ -289,7 +308,7 @@ internal sealed partial class WorkbenchStore
         PeerSession session = null!;
         Atomic(() =>
         {
-            var match = Read("SELECT id,salt FROM fed_grant WHERE claim_hash=$p0 AND node=$p1", r => (r.GetString(0), Optional(r, 1)), Hash(claim), node);
+            var match = Read("SELECT id,salt FROM fed_grant WHERE claim_hash=$p0 AND node=$p1 AND kind='agent'", r => (r.GetString(0), Optional(r, 1)), Hash(claim), node);
             if (match.Count != 1) throw new FederationException(403, "invalid_claim");
             var (id, salt) = match[0];
             string? token = null;
@@ -306,7 +325,8 @@ internal sealed partial class WorkbenchStore
     internal string AuthorizePeer(string token, string node) => Read("""
         SELECT g.id FROM fed_grant g JOIN fed_share s ON s.window_id=g.window_id
         JOIN windows w ON w.id=g.window_id AND w.closed=0
-        WHERE g.token_hash=$p0 AND g.node=$p1 AND g.status='approved'
+        JOIN topics t ON t.id=w.topic_id AND t.leader_window_id=w.id AND t.status='active'
+        WHERE g.token_hash=$p0 AND g.node=$p1 AND g.status='approved' AND g.kind='agent'
         """, r => r.GetString(0), Hash(token), node).SingleOrDefault() ?? throw new FederationException(403, "invalid_grant");
 
     internal PeerSession PeerStatus(string token, string node) => Session(AuthorizePeer(token, node));
@@ -371,11 +391,7 @@ internal sealed partial class WorkbenchStore
                 Mail(Window(grant.WindowId).TopicId, "blocked", "peer-mailbox", grant.WindowId, grant.NodeName, denied.Message);
                 return;
             }
-            long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            Exec("""
-                UPDATE fed_grant SET total=total+1,hourly=CASE WHEN hour=$p1 THEN hourly+1 ELSE 1 END,hour=$p1,
-                daily=CASE WHEN day=$p2 THEN daily+1 ELSE 1 END,day=$p2,last_received=$p3,name=$p4 WHERE id=$p0
-                """, grant.Id, FederationPolicy.Period("hourly", now).Start, FederationPolicy.Period("daily", now).Start, now, name);
+            ChargePeerQuota(grant,name);
             Exec("INSERT INTO fed_request(grant_id,id,body,permission,expects_reply,sender) VALUES($p0,$p1,$p2,$p3,$p4,$p5)", grant.Id, id, body, permission,input.ExpectsReply,sender);
             if (input.UploadId != null && !grant.AllowUpload) throw new FederationException(403, "upload_disabled");
             QueuePeerRequest(grant, input, body);
@@ -386,6 +402,15 @@ internal sealed partial class WorkbenchStore
         if (denied != null || inserted) changed();
         if (denied != null) throw denied;
         return new { id, status = "accepted", permissionMode = permission };
+    }
+
+    private void ChargePeerQuota(PeerGrant grant,string name)
+    {
+        long now=DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        Exec("""
+            UPDATE fed_grant SET total=total+1,hourly=CASE WHEN hour=$p1 THEN hourly+1 ELSE 1 END,hour=$p1,
+            daily=CASE WHEN day=$p2 THEN daily+1 ELSE 1 END,day=$p2,last_received=$p3,name=$p4 WHERE id=$p0
+            """,grant.Id,FederationPolicy.Period("hourly",now).Start,FederationPolicy.Period("daily",now).Start,now,name);
     }
 
     private void RecordPeerReply(string grant, PeerMessage input)
@@ -423,9 +448,11 @@ internal sealed partial class WorkbenchStore
             Exec("UPDATE fed_incoming SET active=0 WHERE grant_id=$p0 AND request=$p1", grant, source);
     }
 
-    internal List<PeerEvent> PeerEvents(string grant, long after, bool acceptsContacts, bool acceptsRemoval) => Read("""
-        SELECT e.seq,e.kind,e.request_id,e.body,d.file_id,f.name,e.final_reply FROM fed_event e
+    internal List<PeerEvent> PeerEvents(string grant, long after, bool acceptsContacts, bool acceptsRemoval, bool acceptsHumanChat) => Read("""
+        SELECT e.seq,e.kind,e.request_id,e.body,d.file_id,f.name,e.final_reply,h.chat_to FROM fed_event e
         LEFT JOIN fed_reply_doc d ON e.kind='reply' AND d.grant_id=e.grant_id AND d.event_id=e.id LEFT JOIN fed_file f ON f.id=d.file_id
-        WHERE e.grant_id=$p0 AND e.seq>$p1 AND ($p2 OR e.kind!='contact') AND ($p3 OR e.kind!='contact-removed') ORDER BY e.seq LIMIT 32
-        """, r => new PeerEvent(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), Optional(r, 4), Optional(r, 5), r.IsDBNull(6) ? null : r.GetBoolean(6)), grant, after, acceptsContacts, acceptsRemoval);
+        LEFT JOIN fed_chat_outbox h ON e.kind='human-chat' AND h.id=e.id AND h.remote=e.grant_id AND h.direction='event'
+        WHERE e.grant_id=$p0 AND e.seq>$p1 AND ($p2 OR e.kind!='contact') AND ($p3 OR e.kind!='contact-removed')
+        AND ($p4 OR e.kind!='human-chat') ORDER BY e.seq LIMIT 32
+        """, r => new PeerEvent(r.GetInt64(0), r.GetString(1), r.GetString(2), r.GetString(3), Optional(r, 4), Optional(r, 5), r.IsDBNull(6) ? null : r.GetBoolean(6),Optional(r,7)), grant, after, acceptsContacts, acceptsRemoval, acceptsHumanChat);
 }

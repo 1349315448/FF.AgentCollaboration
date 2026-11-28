@@ -24,7 +24,8 @@ internal sealed record ManagedMcp
 
     internal bool Applies(string engine, string project) => Enabled &&
         (Engines.Length == 0 || Engines.Contains(engine)) &&
-        (Scope == "global" || string.Equals(ProjectPath, project, StringComparison.OrdinalIgnoreCase));
+        (Scope == "global" || string.Equals(ProjectPath, project,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
 
     internal ManagedMcp Validate(ManagedMcp? prior)
     {

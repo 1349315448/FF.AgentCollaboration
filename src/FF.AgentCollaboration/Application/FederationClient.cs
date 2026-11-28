@@ -13,7 +13,7 @@ using Microsoft.Extensions.Hosting;
 namespace FF.AgentCollaboration.Application;
 
 // 每个外部胶囊只建立一条向外的 SSE。游标和事件在同一事务提交，中断后从已落盘的位置恢复。
-internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents events, RtcTransport rtc) : BackgroundService
+internal sealed partial class FederationClient(WorkbenchStartup startup, WorkbenchEvents events, RtcTransport rtc) : BackgroundService
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private WorkbenchStore Store() => new(startup.Root);
@@ -21,6 +21,7 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
         var workers = new Dictionary<string, Task>();
+        var groupWorkers = new Dictionary<string,Task>();
         DateTime nextCleanup = DateTime.MinValue;
         try
         {
@@ -32,10 +33,18 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
                     await workers[id];
                     workers.Remove(id);
                 }
+                foreach (var id in groupWorkers.Where(p=>p.Value.IsCompleted).Select(p=>p.Key).ToArray())
+                {
+                    await groupWorkers[id];
+                    groupWorkers.Remove(id);
+                }
                 using (var db = Store())
                 {
                     foreach (string id in db.ActiveRemotes())
                         if (!workers.ContainsKey(id)) workers[id] = Follow(id, ct);
+                    foreach (string id in db.ActiveGroupConnections())
+                        if (!groupWorkers.ContainsKey(id)) groupWorkers[id]=FollowGroup(id,ct);
+                    if (db.ExpireGroupConnections()) events.RefreshPages();
                     if (DateTime.UtcNow >= nextCleanup)
                     {
                         nextCleanup = DateTime.UtcNow.AddMinutes(5);
@@ -63,13 +72,14 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
                         { db.FinishDispatch(d, "retry"); }
                         events.RefreshPages();
                     }
+                    foreach (var chat in db.HumanChatDispatches()) await SendHumanChat(db,chat,ct);
                     foreach (var (id, item) in db.Downloads()) await DownloadReply(db, id, item, ct);
                 }
                 await Task.Delay(2000, ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        finally { await Task.WhenAll(workers.Values); }
+        finally { await Task.WhenAll(workers.Values.Concat(groupWorkers.Values)); }
     }
 
     private HttpClient Connect(RemoteConnection remote)
@@ -81,6 +91,28 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
             string.Equals(cert.GetCertHashString(HashAlgorithmName.SHA256), remote.Pin, StringComparison.OrdinalIgnoreCase);
         return new HttpClient(handler) { BaseAddress = new Uri((tunnel ? "https://127.0.0.1" : remote.Endpoint) +
             "/api/federation/"), Timeout = TimeSpan.FromSeconds(8) };
+    }
+
+    private async Task SendHumanChat(WorkbenchStore db,HumanChatDispatch item,CancellationToken ct)
+    {
+        try
+        {
+            db.VerifyHumanChatSender(item);
+            var remote = db.Remote(item.Remote);
+            if (remote?.Status != "approved" || remote.Token == null) throw new FederationException(403,"peer_not_approved");
+            using var client = Connect(remote);
+            using var request = item.Receipt ? Request(HttpMethod.Post,"chat/" + item.Id + "/received",remote.Token,
+                new PeerHumanReceipt(item.Text == "delivered"))
+                : Request(HttpMethod.Post,"chat",remote.Token,new PeerHumanChat(item.Id,item.Text));
+            using var response = await client.SendAsync(request,HttpCompletionOption.ResponseHeadersRead,ct);
+            var receipt = await Read<JsonElement>(response,ct);
+            db.FinishHumanChat(item.Id,receipt.TryGetProperty("state",out var state) && state.GetString() == "delivered" ? "delivered" : "blocked");
+        }
+        catch (FederationException error) { db.FinishHumanChat(item.Id,error.Status >= 500 || error.Status == 429 ? "retry" : "blocked"); }
+        catch (WorkbenchError) { db.FinishHumanChat(item.Id,"blocked"); }
+        catch (Exception error) when (!ct.IsCancellationRequested && error is HttpRequestException or IOException or OperationCanceledException or JsonException)
+        { db.FinishHumanChat(item.Id,"retry"); }
+        events.Changed();
     }
 
     private async ValueTask<Stream> ConnectTunnel(string endpoint, CancellationToken ct)
@@ -119,13 +151,13 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
         return request;
     }
 
-    private static async Task<T> Read<T>(HttpResponseMessage response, CancellationToken ct)
+    private static async Task<T> Read<T>(HttpResponseMessage response, CancellationToken ct,int maxBytes=65536)
     {
         // 对端也属于输入边界；不把远端任意错误 HTML / 文本带回本机控制台。
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(TimeSpan.FromSeconds(8));
         ct = deadline.Token;
-        await response.Content.LoadIntoBufferAsync(65536, ct);
+        await response.Content.LoadIntoBufferAsync(maxBytes, ct);
         if (!response.IsSuccessStatusCode)
         {
             var status = (int)response.StatusCode;
@@ -155,12 +187,20 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
         var remote = db.Remote(id);
         if (remote?.Status != "approved" || remote.Token == null) throw new FederationException(403, "peer_not_approved");
         var message = new PeerMessage(WorkbenchInput.Id(input.Id), WorkbenchInput.Text(input.Text, "消息", 8000),ExpectsReply:dispatch?.ExpectsReply??input.ExpectsReply);
-        string? sender = dispatch?.Window ?? db.ManualContactAgent(id,input.TopicId);
-        if (sender != null) message = message with
+        if (dispatch?.Window == InboxItem.ChatUser)
         {
-            SenderKey = WorkbenchStore.ScopedContactId(id,sender),
-            ContactKey = dispatch == null ? null : db.SenderContactKey(id,sender)
-        };
+            db.RequireUserRemote(id,dispatch.Id);
+            message = message with { SenderKey = WorkbenchStore.ScopedContactId(id,InboxItem.ChatUser) };
+        }
+        else
+        {
+            string sender = db.ExternalSender(id,input.TopicId,dispatch?.Window).Id;
+            message = message with
+            {
+                SenderKey = WorkbenchStore.ScopedContactId(id,sender),
+                ContactKey = dispatch == null ? null : db.SenderContactKey(id,sender)
+            };
+        }
         if (dispatch == null) db.TrackManual(id, message with { TopicId = input.TopicId });
         using var client = Connect(remote);
         if (dispatch?.Content != null)
@@ -251,6 +291,7 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
                     req.Headers.Add("Last-Event-ID", remote.Cursor.ToString(System.Globalization.CultureInfo.InvariantCulture));
                     req.Headers.Add("X-FF-Return-Contacts","1");
                     req.Headers.Add("X-FF-Contact-Removal","1");
+                    req.Headers.Add("X-FF-Human-Chat","1");
                     using var response = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
                     if (!response.IsSuccessStatusCode) await Read<JsonElement>(response, ct);
                     if (response.Content.Headers.ContentType?.MediaType != "text/event-stream") throw new InvalidDataException();
@@ -283,7 +324,7 @@ internal sealed class FederationClient(WorkbenchStartup startup, WorkbenchEvents
                         else if (doc.RootElement.TryGetProperty("item", out var field))
                         {
                             var item = field.Deserialize<PeerEvent>(Json);
-                            if (item == null || item.Id <= 0 || item.Kind is not ("receipt" or "reply" or "contact" or "contact-removed") || item.Text is not { Length: <= 8000 } ||
+                            if (item == null || item.Id <= 0 || item.Kind is not ("receipt" or "reply" or "contact" or "contact-removed" or "human-chat") || item.Text is not { Length: <= 8000 } ||
                                 !Guid.TryParseExact(item.RequestId, "N", out _)) throw new InvalidDataException();
                             db.ReceivePeerEvent(id, item);
                             events.Changed();

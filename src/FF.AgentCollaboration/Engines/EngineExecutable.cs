@@ -1,4 +1,5 @@
 using FF.AgentCollaboration.Domain;
+using FF.AgentCollaboration.Infrastructure.Processes;
 using FF.AgentCollaboration.Infrastructure.Windows;
 using System.Text.Json;
 
@@ -9,6 +10,17 @@ internal static class EngineExecutable
     internal static string? NpmPrefix(string name, string path)
     {
         if (EngineReleases.NpmPackage(name) is not { } package) return null;
+        if (!OperatingSystem.IsWindows())
+        {
+            var bin = Path.GetDirectoryName(path);
+            if (bin == null || Path.GetFileName(bin) != "bin") return null;
+            var prefix = Path.GetDirectoryName(bin);
+            if (prefix == null) return null;
+            string module = Path.Combine(prefix, "lib", "node_modules", package);
+            var target = File.ResolveLinkTarget(path, returnFinalTarget: true)?.FullName;
+            return target != null && target.StartsWith(module + Path.DirectorySeparatorChar, StringComparison.Ordinal) &&
+                File.Exists(Path.Combine(module, "package.json")) ? prefix : null;
+        }
         for (var dir = new FileInfo(path).Directory; dir != null; dir = dir.Parent)
         {
             string module = Path.GetFullPath(Path.Combine(dir.FullName, "node_modules", package));
@@ -27,7 +39,8 @@ internal static class EngineExecutable
             string package = EngineReleases.NpmPackage(engine)!;
             try
             {
-                using var file = File.OpenRead(Path.Combine(prefix, "node_modules", package, "package.json"));
+                string packages = OperatingSystem.IsWindows() ? "node_modules" : "lib/node_modules";
+                using var file = File.OpenRead(Path.Combine(prefix, packages, package, "package.json"));
                 using var metadata = await JsonDocument.ParseAsync(file, cancellationToken: ct);
                 var root = metadata.RootElement;
                 if (root.TryGetProperty("name", out var name) && name.GetString() == package &&
@@ -36,7 +49,7 @@ internal static class EngineExecutable
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }
         }
-        return await WindowsCommand.Version(path, ct);
+        return await HostCommand.Version(path, ct);
     }
 
     internal static string FindExecutable(string name) => TryFindExecutable(name)
@@ -48,8 +61,10 @@ internal static class EngineExecutable
         foreach (string prefix in new[] { "FF_", "LX_" })
         {
             string? configured = Environment.GetEnvironmentVariable(prefix + name.ToUpperInvariant() + "_EXE");
-            if (File.Exists(configured)) return Path.GetFullPath(configured);
+            if (configured != null && (OperatingSystem.IsWindows() ? File.Exists(configured) : HostCommand.IsUnixExecutable(configured)))
+                return Path.GetFullPath(configured);
         }
+        if (!OperatingSystem.IsWindows()) return FindUnixExecutable(name);
         if (name == "cursor") return CursorEngine.FindExecutable();
         if (name == "opencode") return OpenCodeEngine.FindExecutable();
         if (name == "antigravity") return AntigravityEngine.FindExecutable();
@@ -148,5 +163,21 @@ internal static class EngineExecutable
             }
         }
         return null;
+    }
+
+    private static string? FindUnixExecutable(string engine)
+    {
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (engine == "cursor")
+        {
+            string agent = Path.Combine(home, ".local", "bin", "agent");
+            // "agent" on PATH is ambiguous; the official Cursor location and cursor-agent are specific.
+            return HostCommand.IsUnixExecutable(agent) ? agent : HostCommand.OnUnixPath("cursor-agent");
+        }
+        string cli = engine switch { "qoder" => "qodercli", "antigravity" => "agy", _ => engine };
+        string? path = HostCommand.OnUnixPath(cli);
+        if (path != null) return path;
+        string local = Path.Combine(home, ".local", "bin", cli);
+        return HostCommand.IsUnixExecutable(local) ? local : null;
     }
 }

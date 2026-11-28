@@ -4,6 +4,7 @@ import { byId, feedback, setBusy } from "./dom.js";
 import { openFolders } from "./folders.js";
 import { panes } from "../services/terminalRegistry";
 import { applySplitRatio, focusAgent, readLayout } from "./layout.js";
+import { openPaneSessions } from "./session-history.js";
 import { navigation, projectKey } from "../services/navigation";
 import { flushSync } from "react-dom";
 import { layout, publishFrame, selectedTopicId, setTopic, snapshot } from "../store/workbenchStore";
@@ -126,18 +127,18 @@ async function openTopicDialog(topic, project = snapshot.project) {
   byId("topic-goal").value = topic?.goal || "";
   byId("topic-project").textContent = topic?.project || project;
   byId("topic-project").disabled = !!topic;
-  byId("topic-title").textContent = topic ? "编辑话题" : "新建话题";
-  byId("topic-submit").textContent = topic ? "保存" : "创建话题";
+  byId("topic-title").textContent = topic ? "编辑小组" : "创建小组";
+  byId("topic-submit").textContent = topic ? "保存" : "创建小组";
   feedback("topic-error");
   const choice = byId("topic-folder");
-  choice.replaceChildren(new Option("自动创建话题目录", ""));
+  choice.replaceChildren(new Option("自动创建小组目录", ""));
   choice.parentElement.hidden = !!topic;
   byId("topic-dialog").showModal();
   if (topic) byId("topic-name").select();
   if (!topic) {
     try {
       const folders = await request("/topic-folders");
-      choice.replaceChildren(new Option("自动创建话题目录", ""), ...folders.map(f => new Option(f.name, f.path)));
+      choice.replaceChildren(new Option("自动创建小组目录", ""), ...folders.map(f => new Option(f.name, f.path)));
     } catch (error) { feedback("topic-error", error.message); }
   }
 }
@@ -151,7 +152,7 @@ function collapseProjects(collapsed) {
 }
 
 function removeProject(path) {
-  if (!path || !window.confirm("从工作台移除这个项目？\n" + path + "\n文件、话题和 Agent 会话会保留。")) return;
+  if (!path || !window.confirm("从工作台移除这个项目？\n" + path + "\n文件、小组和 Agent 会话会保留。")) return;
   changeProject(() => request("/project?" + new URLSearchParams({path}), {method:"DELETE"}))
     .catch(error => feedback("connection-error", error.message));
 }
@@ -167,7 +168,8 @@ async function archiveTopic(id) {
 function toggleAgent(id) {
   const pane=panes.get(id);
   if (!pane) return;
-  if (pane.element.dataset.collapsed==="true" || layout.workspaceMode==="code" && layout.codeAgentHidden) return focusAgent(id);
+  if (pane.element.dataset.collapsed==="true" || !pane.element.getClientRects().length ||
+      layout.workspaceMode==="code" && layout.codeAgentHidden) return focusAgent(id);
   if (layout.workspaceMode==="code") { byId("inspector-panel-action").click(); return; }
   if (layout.activeWindowId!==id) return focusAgent(id);
   pane.element.querySelector(".toggle-collapse").click();
@@ -187,8 +189,12 @@ function attachTopicControls() {
     removeProject, editTopic:id=>openTopicDialog(snapshot.topics.find(t=>t.id===id)),
     addTopic:path=>openTopicDialog(null,path), addAgent:openCreate, archiveTopic,
     selectAgent:(topic,id)=>switchTopic(topic,id).catch(error=>feedback("connection-error",error.message)),
-    renameAgent:id=>panes.get(id)?.element.querySelector(".rename-agent")?.click(),
+    renameAgent:id=>{
+      const pane = panes.get(id);
+      if (pane) openPaneSessions(pane, "basic");
+    },
     powerAgent:id=>panes.get(id)?.element.querySelector(".pane-power")?.click(),
+    openAgentSessions:id=>panes.get(id)?.element.querySelector(".pane-sessions")?.click(),
   });
   byId("topic-project").onclick = () => openFolders(byId("topic-project").textContent, path => {
     byId("topic-project").textContent = path;

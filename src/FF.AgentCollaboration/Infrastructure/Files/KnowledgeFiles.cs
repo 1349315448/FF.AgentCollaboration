@@ -7,13 +7,16 @@ using YamlDotNet.RepresentationModel;
 
 namespace FF.AgentCollaboration.Infrastructure.Files;
 
-internal sealed class KnowledgeFiles(string project)
+internal sealed class KnowledgeFiles(string project, string dataDirectory)
 {
     private static readonly UTF8Encoding Utf8 = new(false, true);
     private const int FrontmatterLimit = 16 * 1024;
     internal const int Limit = 512 * 1024;
     internal const string Folder = ".ff-acp-knowledge";
     internal string Root { get; } = Path.Combine(project, Folder);
+    // SQLite 通过路径打开数据库。Unix 把派生索引放入工作台数据目录，避免项目目录被替换时重定向 SQLite。
+    internal string IndexDirectory => OperatingSystem.IsWindows() ? Path.Combine(Root, ".index") :
+        Path.Combine(dataDirectory, "knowledge-index", Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(project))));
 
     internal static string Scope(string? value)
     {
@@ -202,17 +205,19 @@ internal sealed class KnowledgeFiles(string project)
         EnsureDirectory(parent);
         using var guard = WorkspaceDirectoryGuard.Open(parent);
         TopicArchive.CheckPath(path);
-        Directory.CreateDirectory(path);
+        guard.EnsureChild(path);
         using var created = WorkspaceDirectoryGuard.Open(path);
     }
 
     internal static (string Text, DateTime Modified, string Version, long Size) ReadText(string path)
     {
         using var guard = WorkspaceDirectoryGuard.Open(Path.GetDirectoryName(path)!);
-        TopicArchive.CheckPath(path);
-        if (!File.Exists(path)) throw new WorkbenchError("知识库文档不存在", WorkbenchFailure.NotFound);
-        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-        WorkspaceDirectoryGuard.VerifyFile(file.SafeFileHandle, path);
+        using var file = OpenDocument();
+        FileStream OpenDocument()
+        {
+            try { return guard.Read(path); }
+            catch (FileNotFoundException) { throw new WorkbenchError("知识库文档不存在", WorkbenchFailure.NotFound); }
+        }
         if (file.Length > Limit) throw new WorkbenchError("知识库单篇文档上限为 512 KiB");
         var bytes = new byte[(int)file.Length];
         file.ReadExactly(bytes);
@@ -245,26 +250,25 @@ internal sealed class KnowledgeFiles(string project)
         string temporary = Path.Combine(parent, ".ff-kb-" + Guid.NewGuid().ToString("N") + ".tmp");
         try
         {
-            using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var file = guard.Create(temporary))
             {
                 file.Write(Utf8.GetBytes(content));
                 file.Flush(true);
             }
             if (File.Exists(dest))
             {
-                using var original = File.OpenHandle(dest, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
-                WorkspaceDirectoryGuard.VerifyFile(original, dest);
+                using var original = guard.Read(dest, FileShare.Read | FileShare.Delete);
                 if (verifyVersion && (expectedVersion == null || ReadText(dest).Version != expectedVersion))
                     throw new WorkbenchError("知识库文件已变化，请重新读取后保存", WorkbenchFailure.Conflict);
-                File.Replace(temporary, dest, null);
+                guard.Publish(temporary, dest, replace: true);
             }
             else
             {
                 if (verifyVersion && expectedVersion != null)
                     throw new WorkbenchError("知识库文件已被移除，请刷新", WorkbenchFailure.Conflict);
-                File.Move(temporary, dest);
+                guard.Publish(temporary, dest, replace: false);
             }
         }
-        finally { File.Delete(temporary); }
+        finally { guard.Delete(temporary); }
     }
 }

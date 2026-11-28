@@ -1,3 +1,4 @@
+using FF.AgentCollaboration.Infrastructure.Processes;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -7,7 +8,6 @@ using FF.AgentCollaboration.Engines;
 using FF.AgentCollaboration.Infrastructure.Files;
 using FF.AgentCollaboration.Infrastructure.Storage;
 using FF.AgentCollaboration.Infrastructure.Terminal;
-using FF.AgentCollaboration.Infrastructure.Windows;
 
 namespace FF.AgentCollaboration.Presentation.Http;
 
@@ -19,6 +19,7 @@ internal static class WorkbenchEndpoints
     internal static void Map(WebApplication app, WorkbenchStartup startup, WorkbenchLocation location)
     {
         WorkspaceFileEndpoints.Map(app, startup);
+        ChatEndpoints.Map(app,startup);
         GitWorkspaceEndpoints.Map(app, startup);
         ManagedMcpEndpoints.Map(app, startup);
         ManagedSkillEndpoints.Map(app, startup);
@@ -167,7 +168,7 @@ internal static class WorkbenchEndpoints
         app.MapGet("/api/engines/{engine}/installed", async (string engine, CancellationToken ct) =>
         {
             string? path = EngineExecutable.TryFindExecutable(EngineNames.Require(engine));
-            return new { ready = path != null && !string.IsNullOrWhiteSpace(await WindowsCommand.Version(path, ct)) };
+            return new { ready = path != null && !string.IsNullOrWhiteSpace(await HostCommand.Version(path, ct)) };
         });
         app.MapPost("/api/engines/{engine}/install", async (string engine, CancellationToken cancellation) =>
         {

@@ -6,6 +6,7 @@ import type { CreatedTeam, TeamProposal } from "../../services/teamProposals";
 import { isDialogOpen, useWorkbench } from "../../store/workbenchStore";
 import { LeaderFlag } from "../layout/LeaderFlag";
 import { WorkspaceIcon } from "../layout/WorkspaceIcon";
+import { createPortal } from "react-dom";
 import "./teamProposal.css";
 
 interface MemberDraft {
@@ -272,10 +273,10 @@ export function TeamProposalControl() {
       onClick={()=>{previouslyShown.current=proposal.id; setOpened({proposal,project:topic.project});}}>
       <WorkspaceIcon name="flag"/><span>团队提案</span>
     </button>}
-    <dialog id="team-proposal-dialog" ref={dialog} aria-labelledby="team-proposal-title" onClose={()=>setOpened(undefined)}
+    {createPortal(<dialog id="team-proposal-dialog" ref={dialog} aria-labelledby="team-proposal-title" onClose={()=>setOpened(undefined)}
       onCancel={event=>{if (busy.current) event.preventDefault();}}>
       {opened && <TeamProposalForm key={opened.proposal.id} proposal={opened.proposal} project={opened.project} active={active}
         close={close} onBusy={value=>{busy.current=value;}}/>}
-    </dialog>
+    </dialog>,document.body)}
   </>;
 }

@@ -33,7 +33,7 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
 
     private static FileStream Acquire(string path)
     {
-        Directory.CreateDirectory(path);
+        StorageDirectories.CreatePrivateDirectory(path);
         return new FileStream(Path.Combine(path, "workbench.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
     }
 
@@ -59,7 +59,7 @@ internal sealed class WorkbenchStartup(WorkbenchLocation location, string initia
         {
             if (Ready.IsCompleted) throw new WorkbenchError("工作台已初始化", WorkbenchFailure.Conflict);
             string nodeName = string.IsNullOrWhiteSpace(paths.NodeName) ? FederationPolicy.DefaultName() : FederationPolicy.Name(paths.NodeName);
-            string data = StorageDirectories.PrepareDirectory(paths.Data_dir);
+            string data = StorageDirectories.PrepareDirectory(paths.Data_dir, privateData:true);
             if (location.IsFixed && !ProjectFolders.Same(data, Root)) throw new WorkbenchError("此实例使用固定数据目录", WorkbenchFailure.Conflict);
             string archive = StorageDirectories.PrepareDirectory(paths.Archive_root);
             string docs = StorageDirectories.PrepareDirectory(paths.Handoffs);
