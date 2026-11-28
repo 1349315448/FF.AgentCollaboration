@@ -129,9 +129,10 @@ async function run() {
       assert.equal(await page.locator("pre").textContent(),original);
       console.log("PASS new typing kept, saved original available after another workbench tab takes over");return;
     }
-    if(process.argv.includes("--expanded")){
+    if(process.argv.includes("--expanded")||process.argv.includes("--queued-receipt")){
       const project=path.join(root,"one");
-      fs.writeFileSync(path.join(project,"native-prompt.fixture"),"plain-hint");
+      fs.writeFileSync(path.join(project,"native-prompt.fixture"),
+        process.argv.includes("--expanded")?"plain-hint":"empty-codex");
       const post=async(route,data)=>{const r=await page.request.post(base+"/api"+route,{data});assert(r.ok(),await r.text());return r.json();};
       const topic=await post("/topics",{name:"无重绘提交",project});
       const target=await post("/windows",{topic:topic.id,name:"Codex",engine:"codex",newSession:true});
@@ -143,6 +144,31 @@ async function run() {
       execFileSync("python",["-c","import sqlite3,sys;d=sqlite3.connect(sys.argv[1]);d.execute('create table threads(id text,rollout_path text)');d.execute('insert into threads values(?,?)',sys.argv[2:]);d.commit()",path.join(home,"state_5.sqlite"),target.session,rollout]);
       sql("UPDATE windows SET grant_hash=? WHERE id=?",crypto.createHash("sha256").update(token).digest("hex").toUpperCase(),source.id);
       await page.goto(base);await page.waitForFunction(id=>window.panes?.get?.(id)?.view.inputReady,target.id);
+      if(process.argv.includes("--queued-receipt")){
+        for(const confirmed of [false,true]){
+          await page.waitForFunction(id=>panes.get(id)?.view.inputReady,target.id);
+          fs.writeFileSync(path.join(project,"mode.txt"),"queue-followup");
+          const message="群聊来信原生排队 "+(confirmed?"执行":"中断");
+          await post("/topics/"+topic.id+"/chat",{text:message,targets:[target.id]});
+          const history=await (await page.request.get(base+"/api/topics/"+topic.id+"/chat")).json();
+          const queued=history.find(p=>p.text===message).receipts[0].id;
+          const queuedState=()=>sql("SELECT state FROM inbox WHERE id=?",queued)[0][0];
+          await until(()=>queuedState()==="delivery_uncertain","Codex queue is not a session receipt",9000);
+          const draft=logLines("one","followup.txt").find(l=>l.startsWith("MSG_ID: "+queued.slice(0,8)));
+          assert(draft);
+          await page.evaluate(id=>panes.get(id).socket.send(Uint8Array.of(21)),target.id);
+          if(confirmed){
+            fs.appendFileSync(rollout,JSON.stringify({type:"response_item",payload:{type:"message",role:"user",content:[{type:"input_text",text:draft}]}})+"\n");
+            await until(()=>queuedState()==="delivered","Codex queue and exact user history",12000);
+          }else{
+            await new Promise(resolve=>setTimeout(resolve,5600));
+            assert.equal(queuedState(),"delivery_uncertain");
+          }
+        }
+        assert.equal(logLines("one","enters.txt").filter(l=>l==="queue-followup").length,2);
+        console.log("PASS Codex group receipt distinguishes cancelled follow-up from exact native submission");
+        return;
+      }
       // 模拟浏览器在相同 VT 帧只上报一次完整草稿。首次 CR 被吞且没有新的帧。
       await page.evaluate(()=>{const original=WebSocket.prototype.send;const seen=new Set();WebSocket.prototype.send=function(data){
         if(typeof data==="string"){const c=JSON.parse(data);if(c.type==="prompt"&&c.retryDraft&&c.draftTail){
@@ -263,7 +289,7 @@ async function run() {
       if (!await pin.isVisible()) await page.locator('[data-window="'+source.id+'"] .pane-more').click();
       await pin.click();
       await page.setViewportSize({width:1280,height:900});
-      await page.locator("#toggle-inspector").click();
+      if (await page.locator("#inspector-shell").isHidden()) await page.locator("#toggle-inspector").click();
       const divider=page.locator("#inspector-divider"), bounds=await divider.boundingBox();
       const stage=await page.locator("#workspace-stage").boundingBox();
       await page.mouse.move(bounds.x+3,bounds.y+32);
@@ -912,7 +938,7 @@ async function run() {
     assert(Math.abs(main.x - area.x) < 1 && Math.abs(main.height - area.height) < 1 && Math.abs(main.width - area.width) < 1);
     const modeSwitch = page.locator("#workspace-mode-switch");
     await page.evaluate(ids => { window.modeHandles=ids.map(id => [id,panes.get(id).term,panes.get(id).socket]); }, [left,helper]);
-    await page.locator("#toggle-inspector").click();
+    if (await page.locator("#inspector-shell").isHidden()) await page.locator("#toggle-inspector").click();
     await page.getByRole("tab",{name:"文件",exact:true}).click();
     await page.locator("#inspector-divider").focus();
     await page.keyboard.press("ArrowLeft");

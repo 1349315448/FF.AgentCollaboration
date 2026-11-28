@@ -4,8 +4,9 @@ import { codeViewport, terminalTiles, workspacePreferences } from "../src/runtim
 import { foldedCodexChars } from "../src/runtime/codexPaste.js";
 
 test("legacy topics start in the tiled layout, with independent bounded widths", () => {
-  assert.deepEqual(workspacePreferences(null), { workspaceMode:"agent", agentInspectorOpen:false,
+  assert.deepEqual(workspacePreferences(null), { workspaceMode:"agent", agentInspectorOpen:true,
     agentInspectorRatio:.30, codeAgentRatio:.35, codeAgentHidden:false, codeActiveWindowId:null });
+  assert.equal(workspacePreferences({agentInspectorOpen:false}).agentInspectorOpen,false);
   const saved = workspacePreferences({workspaceMode:"code", agentInspectorRatio:1, codeAgentRatio:-1, codeAgentHidden:true});
   assert.equal(saved.agentInspectorRatio,.45);
   assert.equal(saved.codeAgentRatio,.24);

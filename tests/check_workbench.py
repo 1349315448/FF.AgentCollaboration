@@ -40,6 +40,8 @@ def host(executable, root, project=None, handoffs=None, knowledge=None, fixed=Tr
     # Keep user-level skills and engine configuration inside this fixture.
     profile = Path(root).parent / "cli-user"
     env = dict(os.environ, USERPROFILE=str(profile))
+    env.pop("FF_UPDATE_ROOT",None)
+    env.pop("FF_UPDATE_BOOT",None)
     if os.name != "nt":
         env["XDG_DATA_HOME"] = str(Path(root).parent / "local-data")
     for key, folder in (("CODEX_HOME", ".codex"), ("CLAUDE_CONFIG_DIR", ".claude")):

@@ -62,7 +62,10 @@ def signals(dll, root, key, *, block_udp=False, port=None, processes=None):
             port = probe.getsockname()[1]
     endpoint = f"https://127.0.0.1:{port}"
     env = dict(os.environ, InternalService__Key=key, Signaling__PublicOrigin=endpoint,
-               Signaling__CertificatePath=str(root / "signal.pfx"))
+               Signaling__CertificatePath=str(root / "signal.pfx"),
+               Signaling__PairingsPath=str(root / "data" / "signaling-pairings.json"))
+    env.pop("FF_UPDATE_ROOT",None)
+    env.pop("FF_UPDATE_BOOT",None)
     with ExitStack() as scope:
         if block_udp:
             blocked = scope.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))

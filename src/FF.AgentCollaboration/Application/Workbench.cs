@@ -425,7 +425,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         {
             terminals[window.Id] = new TerminalSession(window.Engine, executable, launch.Arguments,
                 ProjectFolders.Resolve(window.Project), grant, 100, 30, events.Changed, launch.Environment, engine.SubmissionReceipts(window))
-                { NativeInbox = launch.NativeInbox, Enqueue = launch.Enqueue };
+                { NativeInbox = launch.NativeInbox, Enqueue = launch.Enqueue, AppliedLaunchModel = applyModel };
             state.AppliedMcps(window.Id, revision);
             return window with { Online = true };
         }
@@ -799,13 +799,36 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
         {
             if (terminals.TryGetValue(id, out var terminal) && ReferenceEquals(terminal, expected) && !terminal.Online)
             {
-                if (waking.TryRemove(new KeyValuePair<string,string>(id, terminal.Generation)) && state.Inbox(id).Any(i => i.State == "pending"))
+                bool wasWaking=waking.TryRemove(new KeyValuePair<string,string>(id, terminal.Generation));
+                var window=state.Window(id);
+                if (wasWaking && state.Inbox(id).Any(i => i.State == "pending"))
                 {
                     wakeErrors[id] = "自动启动的终端已退出。请检查引擎登录状态后重新打开，消息已保留。";
                     state.StopWindow(id);
                 }
                 else state.Offline(id);
                 await Task.Run(() => ReleaseInBackground(id, terminal));
+                if (window.Engine=="codex" && window.Session!=null && terminal.ExitedOnAccountRouting())
+                {
+                    if (!terminal.RoutingRetried)
+                    {
+                        try
+                        {
+                            await Open(state,window with { LaunchModelPending=terminal.AppliedLaunchModel },ct,reopening:true);
+                            var retry=terminals[id];
+                            retry.RoutingRetried=true;
+                            if (wasWaking) waking[id]=retry.Generation;
+                            wakeErrors.TryRemove(id,out _);
+                            events.RefreshPages();
+                            return;
+                        }
+                        catch (Exception error) when (!ct.IsCancellationRequested)
+                        {
+                            logger.LogWarning("Codex routing retry failed for {WindowId}: {Type}",id,error.GetType().Name);
+                        }
+                    }
+                    wakeErrors[id]="Codex 读取账户时连接工作区路由超时。请检查本机网络或代理，再点击电源键重试原会话。";
+                }
                 events.RefreshPages();
             }
         }

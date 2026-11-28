@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState,type FormEvent} from "react";
 import {useWorkbench,type Topic,type WindowView} from "../../store/workbenchStore";
 import {request} from "../../services/api";
-import {groupStates,openGroupCollaboration,type GroupCollaborationView,type GroupPolicy} from "../../services/permanentGroups";
+import {groupStates,groupConnectionLabel,openGroupCollaboration,type GroupCollaborationView,type GroupPolicy} from "../../services/permanentGroups";
 import {copyText} from "../../services/clipboard";
 import {LocalGroupLinks,GroupMembers} from "./LocalGroupLinks";
 import {openShareSettings} from "./Federation";
@@ -78,7 +78,7 @@ export function GroupCollaborationDialog() {
         {(visible.length>0||pending.length>0)&&<nav aria-label="外部合作记录" className="group-collab-list">
           {[...pending,...visible.filter(group=>!pending.some(item=>item.id===group.id))].map(group=>
             <button key={group.id} type="button" className="text-button" aria-pressed={selected===group.id} onClick={()=>select(group.id)}>
-              {[group.remote.name,group.user].filter(Boolean).join(" · ")||"外部小组"}<small>{groupStates[group.status]}</small>
+              {[group.remote.name,group.user].filter(Boolean).join(" · ")||"外部小组"}<small>{groupStates[group.status]} · {groupConnectionLabel(group)}</small>
             </button>)}
         </nav>}
         {selected&&!link?<p role="status">正在加载合作记录…</p>:current&&current.status==="active"&&current.leaderWindowId?
@@ -158,7 +158,9 @@ function GroupCollabForm({action,topic,group,suggested,roster,done,shareSettings
     }} autoComplete="off"/></label>
       {preview?.name&&<div className="group-collab-summary">邀请来源 · {preview.name}</div>}</>}
       <label>合作用途<input required maxLength={300} value={purpose} onChange={event=>setPurpose(event.target.value)}/></label></>:
-      <div className="group-collab-summary"><span>{groupStates[group.status]}{group.user?" · "+group.user:""}</span>
+      <div className="group-collab-summary"><span>授权 · {group.status==="approved"?"已同意":groupStates[group.status]}　连接 · {groupConnectionLabel(group)}</span>
+        {group.needsInvitation&&<p>旧邀请已到期，尚未建立可续票的配对。请对方组长创建新邀请，再在上方「接受邀请」中粘贴，原合作记录会保留。</p>}
+        {!group.connected&&!group.needsInvitation&&group.status==="approved"&&<p>正在等待对端同步，暂时无法确认成员是否在线。</p>}
         <p>{group.purpose}</p>{group.remote.members.length>0&&<p>对方参与成员 · {group.remote.members.map(member=>"@"+member.name).join("、")}</p>}
         {group.remoteQuota?.remaining!=null&&<small>对端剩余 {group.remoteQuota.remaining} 次</small>}</div>}
     {editable&&<>

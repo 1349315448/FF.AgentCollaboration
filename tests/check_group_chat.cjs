@@ -13,8 +13,8 @@ async function watchFlight(page,reducedMotion="no-preference"){
       for(const record of records) for(const node of record.addedNodes){
         if(!node.matches?.(".chat-envelope-flight"))continue;
         const motion=node.getAnimations()[0],frames=motion.effect.getKeyframes();
-        const trace=document.querySelector(".chat-flight-trail path");
-        const record=[frames[0].transform,frames.at(-1).transform,trace?.getBoundingClientRect().right];
+        const right=Math.max(...frames.map(frame=>Number(frame.transform.match(/translate\((-?\d+)px/)[1])+9));
+        const record=[frames[0].transform,frames.at(-1).transform,right,!!document.querySelector(".chat-flight-trail,.chat-flick-hand"),motion.effect.getTiming().duration];
         window.chatFlightFrames.push(record);
         motion.finished.then(()=>{record[1]=motion.effect.getKeyframes().at(-1).transform;});
       }
@@ -118,6 +118,8 @@ async function checkLayout(page, ids) {
   await page.goto(base);
   await page.locator('.topic-choice[data-topic="'+group+'"] .topic-label').press("Enter");
   await page.waitForFunction(id=>selectedTopicId===id,group);
+  await page.locator("#toggle-inspector").click();
+  assert(await page.locator("#inspector-shell").isHidden());
   const agent = id => page.locator('.tree-agent[data-agent="'+id+'"] .member-name');
   const tile = id => page.locator('.pane[data-window="'+id+'"] .terminal-title');
   const visible = () => page.locator(":is(#primary-panes,#panes) > .pane:visible");
@@ -305,6 +307,14 @@ async function run() {
     await input.waitFor();
     await chat.locator(".current-topic-title").filter({hasText:/^开发$/}).waitFor();
     await post("普通记录，无 Agent 调用").waitFor();
+    const fileToggle=page.getByRole("button",{name:"切换右侧文件栏",exact:true});
+    assert(await fileToggle.isVisible() && await page.locator("#inspector-shell").isVisible());
+    await fileToggle.click();
+    const expanded=(await post("普通记录，无 Agent 调用").boundingBox()).width;
+    assert(expanded>800);
+    await page.keyboard.press("Control+Alt+b");
+    assert(await page.locator("#inspector-shell").isVisible());
+    assert((await post("普通记录，无 Agent 调用").boundingBox()).width<expanded);
     const note = "浏览器发群记录";
     await input.fill(note);
     await input.press("Shift+Enter");
@@ -371,7 +381,7 @@ async function run() {
     if(await localBranch.getAttribute("aria-expanded")==="false") await localBranch.click();
     const memberRowInGroup=page.locator('[data-nav-topic="'+group+'"] .tree-agent[data-agent="'+member+'"]');
     const leadRow=page.locator('[data-nav-topic="'+group+'"] .tree-agent').filter({hasText:"@组长"});
-    await watchFlight(page,"reduce");
+    await watchFlight(page);
     await input.press("Enter");
     const inline="请@开发 看看接口测试 请找 #离线成员 核对";
     await post(inline).locator(".chat-receipts").waitFor();
@@ -383,13 +393,15 @@ async function run() {
     const addressed = (await response.json()).find(item=>item.text===inline);
     assert.deepEqual(addressed.receipts.map(receipt=>receipt.target),[member]);
     await page.waitForFunction(()=>window.chatFlightFrames.length===1);
-    await page.waitForFunction(()=>!document.querySelector(".chat-flight-trail"));
+    await page.waitForFunction(()=>!document.querySelector(".chat-envelope-flight"));
     const [outbound]=await page.evaluate(()=>window.chatFlightFrames);
     const composerBox=await input.boundingBox(),memberBox=await memberRowInGroup.boundingBox();
     assert(frameAt(outbound[0],composerBox)&&frameAt(outbound[1],memberBox),
-      "composer to chosen member with reduced motion: "+JSON.stringify({outbound,composerBox,memberBox}));
-    assert(outbound[2]>0,"visible path");
-    await page.waitForFunction(()=>!document.querySelector(".chat-flight-trail"));
+      "composer to chosen member: "+JSON.stringify({outbound,composerBox,memberBox}));
+    assert.equal(outbound[3],false,"only the envelope is painted");
+    assert(outbound[4]>=1050 && outbound[4]<=1850,"flight uses the former arc-length timing");
+    const roll=Number(outbound[1].match(/rotate\((-?\d+)deg\)/)[1]);
+    assert(Math.abs(roll)>=360 && Math.abs(roll)<=1800 && roll%360===0,"envelope lands level");
     await watchFlight(page);
     sendAsLeader({target:member,message:"成员间弧线测试"});
     await post("成员间弧线测试").waitFor();
@@ -398,15 +410,24 @@ async function run() {
     assert(frameAt(between[0],await leadRow.boundingBox())&&frameAt(between[1],await memberRowInGroup.boundingBox()),"member to member");
     const rail=await page.locator("#project-tabs").boundingBox();
     assert(between[2]>rail.x+rail.width,"path leaves the tree before returning");
-    await page.waitForFunction(()=>!document.querySelector(".chat-flight-trail"));
+    await page.waitForFunction(()=>!document.querySelector(".chat-envelope-flight"));
     await watchFlight(page);
     sendAsLeader({target:"@工作台用户",message:"新交付回复飞行测试",files:["接口说明.md"]});
     const replyHead=post("新交付回复飞行测试").locator(".chat-message-body > header");
     await replyHead.waitFor();
     await page.waitForFunction(()=>window.chatFlightFrames.length===1);
     const [inbound]=await page.evaluate(()=>window.chatFlightFrames);
-    assert(frameAt(inbound[0],await leadRow.boundingBox())&&frameAt(inbound[1],await replyHead.boundingBox()),"unsolicited delivery to its new chat message");
+    const edge=await chat.boundingBox();
+    const end=inbound[1].match(/translate\((-?\d+)px,\s*(-?\d+)px\)/);
+    assert(frameAt(inbound[0],await leadRow.boundingBox())&&Math.abs(Number(end[1])+9-edge.x)<2&&
+      Number(end[2])+6>=edge.y&&Number(end[2])+6<=edge.y+edge.height,"reply lands on the near border of the chat");
     await page.waitForFunction(()=>!document.querySelector(".chat-flight-trail,.chat-envelope-flight,.chat-flick-hand"));
+    await watchFlight(page,"reduce");
+    await page.evaluate(id=>window.dispatchEvent(new CustomEvent("ff:chat-flight",{detail:{
+      topic:selectedTopicId,source:"workbench-user",receipts:[{target:id}]
+    }})),member);
+    await memberRowInGroup.evaluate(row=>Promise.all(row.getAnimations().map(motion=>motion.finished)));
+    assert.equal(await page.evaluate(()=>window.chatFlightFrames.length),0,"reduce motion only flashes the recipient");
     await watchFlight(page);
 
     await input.fill("请记下 #离");

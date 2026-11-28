@@ -8,7 +8,7 @@ internal sealed record GroupSession(string Id, string Status, string Node, strin
     bool AllowUpload, string? Token = null);
 internal sealed record GroupView(string Id, string Topic, string Status, bool Requester, bool Connected, string User,
     GroupRoster Remote, string[] Members, PeerGrant Policy, PeerQuota? RemoteQuota, bool RemoteAllowsUpload, string Purpose,
-    GroupRouteMember[] Recipients, string MemberMode, string? SuggestedMember, long? ExpiresAt);
+    GroupRouteMember[] Recipients, string MemberMode, string? SuggestedMember, long? ExpiresAt, bool NeedsInvitation);
 internal sealed record GroupRouteMember(string Key, string Link, string Window, string Name, string Topic, string User,
     string? Engine, bool Leader, bool Online);
 internal sealed record GroupFileRef(string Id, string Name);

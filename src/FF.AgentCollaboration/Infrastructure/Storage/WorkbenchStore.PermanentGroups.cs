@@ -322,8 +322,13 @@ internal sealed partial class WorkbenchStore
             string status=grant.Status=="approved" ? link.RemoteStatus : grant.Status;
             if (status=="approved" && (!LocalGroupRoster(link,grant).Active || !link.Remote.Active)) status="paused";
             var contacts=status=="approved"? GroupMembers(link).ToArray():[];
+            bool needsInvitation=!link.Connected && status is ("approved" or "pending" or "applying" or "paused")
+                && link.Endpoint?.StartsWith("rtc://", StringComparison.Ordinal)==true && Read("""
+                    SELECT 1 FROM settings WHERE key='rtc_room.'||$p0 AND julianday(json_extract(value,'$.expiresAt'))<=julianday('now')
+                    AND (json_extract(value,'$.resumeTicket') IS NULL OR coalesce(json_array_length(value,'$.bindings'),0)=0)
+                    """,_=>true,link.Endpoint[6..]).Any();
             return new GroupView(link.Id,link.Topic,status,link.Endpoint!=null,link.Connected,link.User,link.Remote,LocalGroupRoster(link,grant).Members.Select(m=>m.Id).ToArray(),
-                grant,link.RemoteQuota,link.RemoteUpload,grant.Purpose,contacts,link.MemberMode,link.SuggestedMember,link.ExpiresAt);
+                grant,link.RemoteQuota,link.RemoteUpload,grant.Purpose,contacts,link.MemberMode,link.SuggestedMember,link.ExpiresAt,needsInvitation);
         }).ToList();
 
     private static IEnumerable<GroupRouteMember> GroupMembers(GroupLink link) =>

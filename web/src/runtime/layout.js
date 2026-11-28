@@ -506,6 +506,7 @@ function applyWorkspaceMode() {
   byId("inspector-shell").hidden = !open;
   byId("inspector-divider").hidden = !open || (hidden && !selectedTopicId);
   byId("toggle-inspector").hidden = code;
+  byId("menu-toggle-inspector").hidden = code;
   byId("toggle-inspector").setAttribute("aria-expanded", String(open));
   const action = byId("inspector-panel-action");
   action.title = code ? hidden ? "展开 Agent" : "收起 Agent" : "收起面板";
@@ -556,6 +557,13 @@ function attachLayoutControls() {
     if (mode) change("workspaceMode", mode);
   };
   window.addEventListener("keydown", e => {
+    if (layout?.workspaceMode==="agent" && !e.defaultPrevented && !e.isComposing && !e.repeat &&
+        e.ctrlKey && e.altKey && !e.shiftKey && !e.metaKey && !e.getModifierState("AltGraph") &&
+        e.code==="KeyB" && !document.querySelector("dialog[open]")) {
+      e.preventDefault(); e.stopPropagation();
+      byId("toggle-inspector").click();
+      return;
+    }
     if (!layout || e.defaultPrevented || e.isComposing || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey ||
         e.code !== "KeyE" || document.querySelector("dialog[open]")) return;
     e.preventDefault(); e.stopPropagation();

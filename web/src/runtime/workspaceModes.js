@@ -5,7 +5,7 @@ function ratio(value, fallback, min, max) {
 export function workspacePreferences(saved) {
   return {
     workspaceMode: saved?.workspaceMode === "code" ? "code" : "agent",
-    agentInspectorOpen: saved?.agentInspectorOpen === true,
+    agentInspectorOpen: saved?.agentInspectorOpen !== false,
     agentInspectorRatio: ratio(saved?.agentInspectorRatio, .30, .22, .45),
     codeAgentRatio: ratio(saved?.codeAgentRatio, .35, .24, .50),
     codeAgentHidden: saved?.codeAgentHidden === true,

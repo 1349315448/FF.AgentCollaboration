@@ -57,6 +57,7 @@ internal sealed partial class TerminalSession : IDisposable
     private readonly Action changed;
     private readonly bool workingWithoutPrompt;
     private readonly bool codexEditor;
+    private readonly bool codexSession;
     private readonly ISubmissionReceiptSource? submissionReceipts;
     private sealed class DeliveryReview(string tail, int expectedChars, ISubmissionReceipt? receipt)
     {
@@ -64,7 +65,7 @@ internal sealed partial class TerminalSession : IDisposable
         internal readonly int ExpectedChars = expectedChars;
         internal readonly ISubmissionReceipt? Receipt = receipt;
         internal long BeforePaste, BeforeSubmit = -1, KeyboardVersion, KeyboardIntent, Epoch, Since, LastCheck;
-        internal bool BusyAtStart;
+        internal bool BusyAtStart, NativeQueued;
         internal int Checks;
     }
 
@@ -78,7 +79,8 @@ internal sealed partial class TerminalSession : IDisposable
     {
         this.changed = changed;
         this.submissionReceipts = submissionReceipts;
-        codexEditor = engine is "codex" or "traecli";
+        codexSession = engine == "codex";
+        codexEditor = codexSession || engine == "traecli";
         unsubmittedNewSession = engine is "claude" or "qoder" && arguments.Contains("--session-id") && !arguments.Contains("--fork-session");
         workingWithoutPrompt = engine is "codex" or "copilot";
         columns = cols;
@@ -89,6 +91,17 @@ internal sealed partial class TerminalSession : IDisposable
     }
 
     internal string Generation { get; } = Guid.NewGuid().ToString("N");
+    internal bool RoutingRetried { get; set; }
+    internal bool AppliedLaunchModel { get; init; }
+    internal bool ExitedOnAccountRouting()
+    {
+        lock (outputLock)
+        {
+            if (exitCode is null or 0 || keyboardVersion!=0 || pasteRevision>=0 || replayBytes>16384) return false;
+            var output=Encoding.UTF8.GetString(replay.SelectMany(frame=>frame.Data).ToArray());
+            return Regex.IsMatch(output, @"Error: account/read failed:[^\r\n]*workspace routing discovery timed out", RegexOptions.IgnoreCase);
+        }
+    }
     internal bool NativeInbox { get; init; }
     internal Func<string, CancellationToken, Task>? Enqueue { get; init; }
     private bool unsubmittedNewSession;
@@ -353,9 +366,18 @@ internal sealed partial class TerminalSession : IDisposable
         }
     }
 
-    // 只有本次回车之后、原生队列明确显示当前编号，才算 CLI 已接手。
+    // 当前编号出现在原生队列，只能证明 CLI 暂存了这条消息。
     private bool NativeQueuedSince(string messageId, long beforeSubmit) => revision > beforeSubmit &&
         screens.Values.Any(s => s.Revision == revision && s.QueuedId == messageId[..8]);
+
+    private bool ObserveQueued(string id, long beforeSubmit, DeliveryReview review)
+    {
+        if (!NativeQueuedSince(id, beforeSubmit)) return false;
+        if (!codexSession) return true;
+        // Codex 中断当前执行时可能丢弃后续队列，必须等该消息进入会话记录。
+        review.NativeQueued = true;
+        throw new IOException("Codex 已暂存来信，等待原生会话确认");
+    }
 
     private void MarkInput()
     {
@@ -756,13 +778,20 @@ internal sealed partial class TerminalSession : IDisposable
             foreach (var (id, saved) in recentReceipts)
             {
                 if (Stopwatch.GetElapsedTime(saved.LastCheck).TotalSeconds < 5) continue;
-                if (!Online || !stillUncertain(id) || Stopwatch.GetElapsedTime(saved.Since).TotalMinutes > 2)
+                bool expired = Stopwatch.GetElapsedTime(saved.Since).TotalMinutes > 2;
+                if (!Online || !stillUncertain(id) || (expired && !saved.NativeQueued))
                 {
                     recentReceipts.TryRemove(id, out _);
                     continue;
                 }
                 saved.LastCheck = Stopwatch.GetTimestamp();
-                if (saved.Checks <= 5)
+                if (saved.NativeQueued)
+                {
+                    if (saved.Receipt?.Check() == SubmissionStatus.Confirmed) confirmed.Add(id);
+                    else if (saved.Receipt == null || (expired && ViewState().Activity == "idle"))
+                        recentReceipts.TryRemove(id, out _);
+                }
+                else if (saved.Checks <= 5)
                 {
                     saved.Checks++;
                     if (await ReviewSubmission(id, saved, stillUncertain, ct)) confirmed.Add(id);
@@ -786,7 +815,12 @@ internal sealed partial class TerminalSession : IDisposable
             if (!stillUncertain(id)) return false;
             lock (outputLock)
             {
-                if (review.BeforeSubmit >= 0 && NativeQueuedSince(id, review.BeforeSubmit)) return true;
+                if (review.BeforeSubmit >= 0 && NativeQueuedSince(id, review.BeforeSubmit))
+                {
+                    if (!codexSession) return true;
+                    review.NativeQueued = true;
+                    return false;
+                }
                 // 后续自动投递不会改变键盘计数，仍须禁止用后一条消息的清空帧确认本条。
                 if (!Online || review.Epoch != deliveryEpoch || Volatile.Read(ref keyboardIntent) != review.KeyboardIntent || keyboardVersion != review.KeyboardVersion)
                     return false;
@@ -820,7 +854,7 @@ internal sealed partial class TerminalSession : IDisposable
             if (native == SubmissionStatus.Confirmed) return;
             lock (outputLock)
             {
-                if (NativeQueuedSince(messageId, sent.BeforeSubmit)) return;
+                if (ObserveQueued(messageId, sent.BeforeSubmit, review)) return;
                 if (!Online) throw new IOException("终端在提交后退出");
                 // [T09c] 回车后用户可以继续输入。认定送达依赖清空、原生执行提示或已被其他消息替代的草稿。
                 // 单凭输出序号增加、观察端掉线或一次无法识别的画面，无法证明当前正文已离开编辑器。
@@ -853,7 +887,7 @@ internal sealed partial class TerminalSession : IDisposable
                     if (native == SubmissionStatus.Confirmed) return;
                     lock (outputLock)
                     {
-                        if (NativeQueuedSince(messageId, sent.BeforeSubmit)) return;
+                        if (ObserveQueued(messageId, sent.BeforeSubmit, review)) return;
                         if (!StillEditing(native)) continue;
                         // 同一写锁内复核最新草稿与键盘版本，然后只补回车，不重写正文或再次认领。
                         retried = true;

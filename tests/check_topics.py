@@ -6,7 +6,26 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from check_workbench import host
+from check_workbench import host, http
+
+
+def check_routing(base, case):
+    from check_federation import until
+    project = case / "one"
+    trigger = project / "routing-timeout.fixture"
+    topic = http(base, "/api/topics", {"name":"路由恢复","project":str(project)})[1]["id"]
+    trigger.write_text("twice")
+    status, window = http(base,"/api/windows",{"engine":"codex","name":"路由测试","topic":topic,"newSession":True})
+    assert status == 200, window
+    row = lambda: next(v for v in http(base,"/api/state")[1]["windows"] if v["agent"]["id"]==window["id"])
+    until(row,lambda v: not v["agent"]["online"] and "工作区路由超时" in (v.get("wakeError") or ""))
+    attempts = project / "routing-attempts.txt"
+    assert attempts.read_text().splitlines()==[window["session"]]*2, (attempts.read_text(),window["session"])
+    trigger.write_text("once")
+    assert http(base,"/api/windows/"+window["id"]+"/start",{})[0] in (200,204)
+    until(row,lambda v: v["agent"]["online"] and len((project/"terminal-pids.txt").read_text().splitlines())==4)
+    assert row()["agent"]["session"]==window["session"] and attempts.read_text().splitlines()==[window["session"]]*3
+    print("PASS Codex native routing timeout retries once, retains session and allows manual recovery")
 
 
 def verify(exe, case):
@@ -37,15 +56,18 @@ def verify(exe, case):
         mcp_test = "--mcps" in sys.argv
         skills_test = "--skills" in sys.argv
         knowledge_test = "--knowledge" in sys.argv
-        expanded_test = "--expanded" in sys.argv
+        expanded_test = "--expanded" in sys.argv or "--queued-receipt" in sys.argv
         if expanded_test: os.environ["CODEX_HOME"]=str(case / "receipt-home")
-        scoped = "--manual-draft" in sys.argv or buddy_inbox_test or expanded_test or create_test or delivery_test or inspector_test or git_test or mcp_test or skills_test or knowledge_test
+        scoped = "--routing" in sys.argv or "--manual-draft" in sys.argv or buddy_inbox_test or expanded_test or create_test or delivery_test or inspector_test or git_test or mcp_test or skills_test or knowledge_test
         with host(exe, state, case / "one" if scoped else None, knowledge=knowledge, initialize=scoped) as url:
+            if "--routing" in sys.argv:
+                check_routing(url,case)
+                return
             script = Path(__file__).with_name("check_knowledge_ui.cjs" if knowledge_test else "check_managed_skills_ui.cjs" if skills_test else "check_managed_mcps.cjs" if mcp_test else "check_git_panel.cjs" if git_test else
                 "check_inspector.cjs" if inspector_test else "check_create.cjs" if create_test else "check_topics.cjs")
             # Individual assertions retain their deadlines. The full suite runs eight engines sequentially,
             # including 16 native restarts and five authenticated round trips between terminals.
-            flags = [flag for flag in ("--expanded", "--phase13", "--buddy-inbox", "--manual-draft") if flag in sys.argv]
+            flags = [flag for flag in ("--expanded", "--queued-receipt", "--phase13", "--buddy-inbox", "--manual-draft") if flag in sys.argv]
             subprocess.run(["node", script, url, exe, case, *flags], check=True, timeout=200 if scoped else 720)
 
 

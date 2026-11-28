@@ -1,7 +1,7 @@
 import {useState,type ReactNode} from "react";
 import {useWorkbench,type Topic,type WindowView} from "../../store/workbenchStore";
 import {groupLinkSides,includedMember} from "../../services/groupLinks";
-import {groupStates,openGroupCollaboration} from "../../services/permanentGroups";
+import {groupStates,groupConnectionLabel,openGroupCollaboration} from "../../services/permanentGroups";
 import {navigation,activityLabels,peerPresence,remoteOnline} from "../../services/navigation";
 import {engineNames} from "../../services/engines";
 import {RemoteCapsule,viewReturnContact} from "../federation/Federation";
@@ -17,8 +17,8 @@ interface Cooperation {
   open?:()=>void;
 }
 
-function Branch({name,children,link}:{name:string;children:ReactNode;link?:string}) {
-  return <li><details open data-collab-branch={link}><summary title={name}>{name}</summary><ul>{children}</ul></details></li>;
+function Branch({name,children,link,status}:{name:string;children:ReactNode;link?:string;status?:string}) {
+  return <li><details open data-collab-branch={link}><summary title={name}>{name}{status&&<small> · {status}</small>}</summary><ul>{children}</ul></details></li>;
 }
 
 function CooperationLink({item}:{item:Cooperation}) {
@@ -75,10 +75,11 @@ export function CooperationTree({topic,members}:{topic:Topic;members:WindowView[
     const open=()=>openGroupCollaboration(group.id);
     const people=group.recipients.filter(person=>person.engine).sort((a,b)=>Number(b.online)-Number(a.online)).map(person=>
       <Person key={person.key} id={person.key} name={person.name} engine={person.engine} leader={person.leader}
-        activity={person.online?"idle":"offline"} status={peerPresence(person.online,group.connected)} open={open}/>);
+        activity={person.online?"idle":"offline"} status={group.connected?peerPresence(person.online,true):"未同步"} open={open}/>);
     const owners=!group.requester&&group.memberMode==="selected"&&group.members.length ? group.members : undefined;
     const status=group.status==="approved" ? (group.connected?"暂无参与成员":"成员未同步") : groupStates[group.status];
-    cooperations.push({id:group.id,label,people:people.length?people:null,status:people.length?undefined:status,owners,open});
+    cooperations.push({id:group.id,label,people:people.length?people:null,
+      status:group.needsInvitation || (group.status==="approved"&&!group.connected)?groupConnectionLabel(group):people.length?undefined:status,owners,open});
   }
   for(const contact of snapshot?.federation?.contacts??[]) {
     if(!members.some(view=>view.agent.id===contact.windowId))continue;
@@ -96,6 +97,6 @@ export function CooperationTree({topic,members}:{topic:Topic;members:WindowView[
   const branches=cooperations.filter(item=>!item.owners);
   return <ul className="tree-members">{cooperations.length||remotes.length?<><Branch name="本组成员" link="own">{own}</Branch>
     {branches.length>0&&<Branch name="协作小组" link="partners">{branches.map(item=>
-      item.people ? <Branch key={item.id} name={item.label} link={item.id}>{item.people}</Branch> :
+      item.people ? <Branch key={item.id} name={item.label} link={item.id} status={item.status}>{item.people}</Branch> :
         <li key={item.id}><CooperationLink item={item}/></li>)}</Branch>}</>:own}</ul>;
 }

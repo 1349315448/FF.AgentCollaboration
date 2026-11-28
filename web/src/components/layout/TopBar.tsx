@@ -6,6 +6,7 @@ import { navigation } from "../../services/navigation";
 import { knowledgeUiLocal } from "../../services/knowledge";
 import { openGroupCollaboration } from "../../services/permanentGroups";
 import { TopicNavigation } from "./TopicNavigation";
+import { WorkspaceIcon } from "./WorkspaceIcon";
 
 function press(id: string) { document.getElementById(id)?.click(); }
 
@@ -93,7 +94,7 @@ export function TopBar() {
             <button type="button" data-mode="agent" aria-pressed="true">协作工作区</button>
             <button type="button" data-mode="code" aria-pressed="false">代码模式</button>
           </div>
-          <button id="toggle-inspector" type="button" aria-controls="inspector-shell" aria-expanded="false">切换右侧面板</button>
+          <button id="menu-toggle-inspector" type="button" onClick={()=>press("toggle-inspector")}>切换右侧文件栏</button>
           <button type="button" disabled={!project} onClick={()=>showInspector("files")}>文件</button>
           <button type="button" disabled={!project} onClick={()=>showInspector("changes")}>Git 变更</button>
           <button type="button" disabled={!project} onClick={()=>showInspector("docs")}>协作文档</button>
@@ -111,5 +112,7 @@ export function TopBar() {
       </details>
     </nav>
     <TopicNavigation />
+    <button id="toggle-inspector" className="icon-button" type="button" aria-controls="inspector-shell"
+      aria-label="切换右侧文件栏" aria-keyshortcuts="Control+Alt+B" title="切换右侧文件栏（Ctrl+Alt+B）"><WorkspaceIcon name="panel"/></button>
   </header>;
 }

@@ -75,6 +75,14 @@ class TopicTerminalFixture
         if (args.Contains("--acp")) { WorkbenchEngineFixture.Main(args); return; }
         File.WriteAllLines("terminal-launch.txt", args);
         File.AppendAllText("terminal-pids.txt", System.Diagnostics.Process.GetCurrentProcess().Id + Environment.NewLine);
+        if (File.Exists("routing-timeout.fixture"))
+        {
+            File.AppendAllLines("routing-attempts.txt", new[] {args[1]});
+            if (File.ReadAllText("routing-timeout.fixture") == "once") File.Delete("routing-timeout.fixture");
+            Console.Error.WriteLine("Error: account/read failed: account/read failed: workspace routing discovery timed out (code -32603)");
+            Environment.ExitCode = 1;
+            return;
+        }
         Console.InputEncoding = new UTF8Encoding(false);
         Console.OutputEncoding = new UTF8Encoding(false);
         SetConsoleMode(GetStdHandle(-10), 0x200);
@@ -83,6 +91,7 @@ class TopicTerminalFixture
         bool claude = args.Contains("--mcp-config");
         var native = File.Exists("native-prompt.fixture") ? File.ReadAllText("native-prompt.fixture").Trim() : "";
         bool busy = false;
+        string queuedFollowup = null;
         var input = new EditorInput();
         string draft = "";
         bool newline = false;
@@ -100,9 +109,9 @@ class TopicTerminalFixture
             string cursor = newline ? "4;2" : "1;" + Math.Min(40, 3 + draft.Length);
             string content = "› " + (draft.Length == 0 ? "\x1b[2mAsk Codex to do anything\x1b[22m" : draft);
             const string plainHint = "Ask Codex to do anything";
-            if (native == "plain-hint" && !newline)
+            if ((native == "plain-hint" || native == "empty-codex") && !newline)
             {
-                content = "› " + (draft.Length == 0 ? plainHint : draft) + "\r\n\r\nGPT-fixture high · project";
+                content = "› " + (native == "plain-hint" && draft.Length == 0 ? plainHint : draft) + "\r\n\r\nGPT-fixture high · project";
                 if (draft == plainHint) cursor = "1;3"; // Identical pixels after typing the hint and pressing Home.
             }
             if (newline)
@@ -111,13 +120,20 @@ class TopicTerminalFixture
                 int split = Math.Max(0, draft.LastIndexOf(" | ", StringComparison.Ordinal));
                 content = "› " + draft.Substring(0, split) + "\r\n\r\n " + draft.Substring(split) + "\r\n ";
             }
-            if (folded || busy && native == "")
+            if (folded || busy && (native == "" || queuedFollowup != null))
             {
                 int chars = 0;
                 foreach (char value in draft) if (!char.IsLowSurrogate(value)) chars++;
                 string editor = folded && chars > 0 ? "[Pasted Content " + chars + " chars]" : draft;
-                string status = "Reading code (12m 39s • esc to interrupt) · 1 background terminal running · /ps to view";
+                string status = queuedFollowup == null
+                    ? "Reading code (12m 39s • esc to interrupt) · 1 background terminal running · /ps to view"
+                    : "Reading code (2s • esc to interrupt)";
                 int statusRows = busy ? (status.Length - 1) / Math.Max(1, Console.WindowWidth) + 1 : 0;
+                if (queuedFollowup != null)
+                {
+                    status += "\r\n• Queued follow-up inputs\r\n  ↳ " + queuedFollowup.Substring(0, 16);
+                    statusRows += 2;
+                }
                 content = (busy ? status + "\r\n" : "") + "› " + editor +
                     "\r\nGPT-fixture · model: test" + (busy ? "\r\ntab to queue message" : "");
                 cursor = (statusRows + 1) + ";" + (3 + editor.Length);
@@ -230,11 +246,23 @@ class TopicTerminalFixture
                 File.AppendAllText("clears.txt", draft + Environment.NewLine);
                 draft = ""; newline = approval = folded = false;
             }
-            else if (key == 21 || key == 24) { draft = ""; newline = approval = busy = folded = false; }
+            else if (key == 21 || key == 24) { draft = ""; queuedFollowup = null; newline = approval = busy = folded = false; }
             else if (key == 13 || key == 10)
             {
                 string mode = File.Exists("mode.txt") ? File.ReadAllText("mode.txt").Trim() : "submit";
                 File.AppendAllText("enters.txt", mode + Environment.NewLine);
+                if (mode == "queue-followup")
+                {
+                    if (draft.StartsWith("MSG_ID: ", StringComparison.Ordinal) && draft.Length > 16)
+                    {
+                        queuedFollowup = draft;
+                        File.AppendAllText("followup.txt", draft + Environment.NewLine);
+                        draft = "";
+                        busy = true;
+                        draw();
+                    }
+                    continue;
+                }
                 if (mode == "delayed")
                 {
                     Console.Write("\x1b[H\x1b[2JWorking");

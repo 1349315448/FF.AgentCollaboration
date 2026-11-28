@@ -470,10 +470,18 @@ def check_permanent(exe, case):
             db.execute("UPDATE topics SET leader_window_id=? WHERE id=?",(a_member,a))
         assert http(left,"/api/peers/groups/"+link,{"members":[a_lead],"policy":policy("configure")},"PUT")[0]==204
         share=http(left,f"/api/peers/windows/{a_member}",{"enabled":True},"PUT")[1]["link"]
+        # An old signaling room can expire while the provider is approving the group.
+        expired=new_id()
+        with sqlite3.connect(requester/"db"/"workbench.sqlite") as db:
+            db.execute("INSERT INTO settings(key,value) VALUES(?,?)",("rtc_room."+expired,json.dumps({"expiresAt":"2020-01-01T00:00:00Z"})))
+            db.execute("UPDATE fed_group_link SET endpoint=?,seen=0 WHERE id=?",("rtc://"+expired,link))
+        stale=until(lambda:links(right)[0],lambda row:row["needsInvitation"])
+        assert not stale["connected"] and all(not recipient["online"] for recipient in stale["recipients"])
         status, rebound=http(right,"/api/peers/groups",{"topicId":b,"link":share,"purpose":"续接",
             "selection":{"members":[b_member],"policy":policy()}})
         assert status==200 and rebound["id"]==link,(status,rebound)
-        until(lambda:links(right),lambda rows:rows[0]["status"]=="approved" and rows[0]["remote"]["leader"]==a_member)
+        until(lambda:links(right),lambda rows:rows[0]["status"]=="approved" and rows[0]["remote"]["leader"]==a_member
+              and rows[0]["connected"] and not rows[0]["needsInvitation"])
 
         status,new=http(right,"/api/peers/groups",{"topicId":unsupported,"link":share,"purpose":"取消尚未审批的申请",
             "selection":{"members":[],"policy":policy()}})
