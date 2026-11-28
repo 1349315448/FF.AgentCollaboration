@@ -20,7 +20,8 @@ internal sealed partial class WorkbenchStore
         if (link.Endpoint==null || link.RemoteStatus is "revoked" or "rejected") return null;
         var transport=new RemoteConnection(id,link.InvitedWindow,link.Endpoint,link.Pin!,link.Node,link.Share,link.Claim!,
             link.Token,link.RemoteStatus,grant.Purpose,0,false);
-        var application=link.Share==null?null:new GroupApplication(id,link.Claim!,grant.Purpose,LocalGroupRoster(link,grant),link.SuggestedMember);
+        var application=link.Share==null?null:new GroupApplication(id,link.Claim!,grant.Purpose,LocalGroupRoster(link,grant),
+            link.SuggestedMember,link.MemberMode=="all" && link.SuggestedMember==null);
         return new(transport,application,grant.Status=="revoked");
     }
 
@@ -38,6 +39,9 @@ internal sealed partial class WorkbenchStore
                 throw new FederationException(409,"invalid_group_session");
             changed=SetRemoteGroup(link,session.Roster,FederationPolicy.Name(session.User),session.Status,session.Quota,
                 session.AllowUpload,session.Token);
+            if (link.RemoteStatus is "applying" or "pending" && session.Status is "approved" or "rejected")
+                Mail(link.Topic,"permission",link.Id,InboxItem.ChatUser,session.User,
+                    $"{session.User} 已{(session.Status=="approved"?"同意":"拒绝")}你与「{session.Roster.Name}」的小组协作申请。");
         });
         return changed;
     }

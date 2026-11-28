@@ -2,6 +2,7 @@ import {useEffect, useRef, useState} from "react";
 import {navigation, peerPresence, remoteOnline} from "../../services/navigation";
 import {request} from "../../services/api";
 import {copyText} from "../../services/clipboard";
+import {engineNames} from "../../services/engines";
 import {useWorkbench} from "../../store/workbenchStore";
 import {WorkspaceIcon} from "../layout/WorkspaceIcon";
 import "./federation.css";
@@ -144,14 +145,20 @@ export function RemoteCapsule({remote:r,tree=false}:{remote:Capsule;tree?:boolea
   const denied=bindingDenied(r), online=remoteOnline(r), status=denied?"无权限":r.status==="approved" ? peerPresence(online,r.connected) : states[r.status];
   const details=()=>open({remoteId:r.id,topicId:r.topicId});
   const origin=[r.groupName,r.nodeName].filter(Boolean).join(" · "), quota=quotaText(r);
+  const engine=r.engine ? engineNames[r.engine]??r.engine : "";
   return <button type="button" data-remote-id={r.id} data-activity={online?"idle":"offline"} className={tree?"tree-remote":"remote-capsule"}
         onClick={event=>{event.stopPropagation();if(event.detail===0) details();else if(tree) void navigation.switchTopic(r.topicId);}}
-        onDoubleClick={details} title={["外部 Agent @"+r.agentName,origin,status,quota,"双击查看详情"].filter(Boolean).join(" · ")}>
-        <WorkspaceIcon name="network"/><span className="nav-dot" aria-hidden="true"/><b>@{r.agentName}</b>
-        {tree&&<span className="remote-origin">{origin}</span>}
-        {quota && <span className="remote-quota">{tree?quota.replace(/^上次同步 · /,""):quota}</span>}
-        {denied && !tree && <span className="remote-quota">无权限</span>}
-        <small>{tree?status:(r.nodeName || states[r.status])+" · "+r.nodeId.slice(0,8)}</small>
+        onDoubleClick={details} title={["外部 Agent @"+r.agentName,origin,engine,status,quota,"双击查看详情"].filter(Boolean).join(" · ")}>
+        <WorkspaceIcon name="network"/><span className="nav-dot" aria-hidden="true"/>
+        {tree ? <>
+          <span className="remote-identity"><b>@{r.agentName}</b>{r.nodeName&&<span className="remote-origin">[{r.nodeName}]</span>}</span>
+          {engine&&<span className="nav-engine remote-engine">{engine}</span>}
+        </> : <>
+          <b>@{r.agentName}</b>
+          {quota&&<span className="remote-quota">{quota}</span>}
+          {denied&&<span className="remote-quota">无权限</span>}
+          <small>{(r.nodeName || states[r.status])+" · "+r.nodeId.slice(0,8)}</small>
+        </>}
       </button>;
 }
 

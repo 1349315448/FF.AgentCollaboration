@@ -3,7 +3,7 @@ namespace FF.AgentCollaboration.Domain;
 internal sealed record GroupMember(string Id, string Name, string Engine, bool Online);
 internal sealed record GroupRoster(string Topic, string Name, string Leader, GroupMember[] Members, bool Active);
 internal sealed record GroupSelection(string[] Members, PeerDecision Policy, string? MemberMode = null, string? SuggestedMember = null, long? ExpiresAt = null);
-internal sealed record GroupApplication(string Id, string Claim, string Purpose, GroupRoster Roster, string? SuggestedMember = null);
+internal sealed record GroupApplication(string Id, string Claim, string Purpose, GroupRoster Roster, string? SuggestedMember = null, bool FullGroup = false);
 internal sealed record GroupSession(string Id, string Status, string Node, string User, GroupRoster Roster, PeerQuota? Quota,
     bool AllowUpload, string? Token = null);
 internal sealed record GroupView(string Id, string Topic, string Status, bool Requester, bool Connected, string User,

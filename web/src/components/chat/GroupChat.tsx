@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { request } from "../../services/api";
 import { navigation, peerPresence, remoteOnline } from "../../services/navigation";
 import { useWorkbench, type Topic } from "../../store/workbenchStore";
-import { approvedGroupRecipients,openGroupCollaboration } from "../../services/permanentGroups";
+import { approvedGroupRecipients } from "../../services/permanentGroups";
 import { NavigationName } from "../layout/NavigationName";
 import { ChatComposer, emptyDraft, type ChatDraft } from "./ChatComposer";
 import { ChatThread } from "./ChatThread";
@@ -99,8 +99,9 @@ function Group({topic,drafts}:{topic:Topic;drafts:Map<string,ChatDraft>}) {
       presence.set(remote.id,{activity:online?"idle":"offline",label:peerPresence(online,remote.connected)});
     }
   }
-  const pending=new Set(snapshot?.federation?.grants.filter(grant=>grant.status==="pending"&&roster.some(w=>w.agent.id===grant.windowId)).map(g=>g.id)??[]);
-  const groupApplications=(snapshot?.federation?.groups??[]).filter(group=>group.topic===topic.id&&!group.requester&&group.status==="pending");
+  const applications=new Map((snapshot?.federation?.grants??[]).map(grant=>[grant.id,grant.status]));
+  const groupApplications=new Map((snapshot?.federation?.groups??[])
+    .filter(group=>group.topic===topic.id&&!group.requester).map(group=>[group.id,group]));
   for(const person of approvedGroupRecipients(snapshot?.federation?.groups,topic.id))
     if(person.engine)presence.set(person.key,{activity:person.online?"idle":"offline",label:peerPresence(person.online,person.connected)});
   const targets=chatTargets(snapshot,topic,links);
@@ -112,11 +113,10 @@ function Group({topic,drafts}:{topic:Topic;drafts:Map<string,ChatDraft>}) {
           <NavigationName className="current-topic-title" title={topic.name} onRename={()=>navigation.editTopic(topic.id)}>{topic.name}</NavigationName>
         </div>
       </div>
-      {groupApplications.length>0&&<button type="button" className="text-button"
-        onClick={()=>openGroupCollaboration(groupApplications[0].id)}>待确认的合作申请 {groupApplications.length}</button>}
     </header>
     <ChatThread topic={topic.id} posts={displayed} busy={loading} hasOlder={more&&displayed.length>=40} targets={targets}
-      loadOlder={()=>void loadOlder()} pending={pending} members={new Set(roster.map(w=>w.agent.id))} presence={presence} listRef={list} notice={setNotice}
+      loadOlder={()=>void loadOlder()} applications={applications} groupApplications={groupApplications}
+      members={new Set(roster.map(w=>w.agent.id))} presence={presence} listRef={list} notice={setNotice}
       onScroll={()=>{const el=list.current;if(!el)return;atBottom.current=el.scrollHeight-el.scrollTop-el.clientHeight<48;if(atBottom.current)setUnread(0);}}/>
     {unread>0&&<button type="button" className="chat-jump button compact" onClick={bottom}>{unread} 条新消息 ↓</button>}
     <p className="chat-notice" role="status" hidden={!notice}>{notice}<button type="button" className="text-button" onClick={()=>setNotice("")}>知道了</button></p>

@@ -379,7 +379,8 @@ internal sealed partial class FederationClient(WorkbenchStartup startup, Workben
             !stream && peer.Status == "approved" && !FederationPolicy.IsSecret(peer.Token)) throw new InvalidDataException();
         if (peer.Status is "revoked" or "rejected")
         {
-            if (db.RemoteFailure(remote.Id, peer.Status, peer.Status)) events.RefreshPages();
+            bool changed=peer.Status=="rejected"?db.RemoteApplicationRejected(remote.Id):db.RemoteFailure(remote.Id,peer.Status,peer.Status);
+            if (changed) events.RefreshPages();
             return;
         }
         FederationPolicy.Name(peer.NodeName);

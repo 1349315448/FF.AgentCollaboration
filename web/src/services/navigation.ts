@@ -19,11 +19,12 @@ export interface NavigationActions {
   switchTopic(id:string):Promise<void>;
   editTopic(id:string):void;
   archiveTopic(id:string):void;
+  removeTopic(id:string):void;
   selectAgent(topicId:string,id:string):void;
   renameAgent(id:string):void;
   powerAgent(id:string):void;
   openAgentSessions(id:string):void;
-  addAgent():void;
+  addAgent(topicId?:string):void;
 }
 // Installed once after the host DOM exists and before publishing the first snapshot.
 export const navigation = {} as NavigationActions;

@@ -23,7 +23,7 @@ internal sealed partial class WorkbenchStore
     internal (string? Current, string[] Paths) ProjectList(IEnumerable<string>? associated = null)
     {
         string? selected = ProjectSetting();
-        associated ??= Read("SELECT project FROM topics UNION ALL SELECT project FROM windows WHERE closed=0", row => row.GetString(0));
+        associated ??= Read("SELECT project FROM topics WHERE deleted_at IS NULL UNION ALL SELECT project FROM windows WHERE closed=0", row => row.GetString(0));
         var paths = Projects(selected == null ? associated : associated.Prepend(selected));
         return (paths.FirstOrDefault(path => ProjectFolders.Same(path, selected)) ?? paths.FirstOrDefault(), paths);
     }

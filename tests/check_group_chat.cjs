@@ -39,65 +39,74 @@ function frameAt(frame,box){
 }
 
 async function checkInvite(context, provider, requesterUrl, requesterGroup) {
-  const panel = page=>page.getByRole("dialog",{name:"小组合作"});
-  async function open(page,url,topic) {
+  const panel=page=>page.getByRole("dialog",{name:"小组合作"});
+  const row=(page,id)=>page.locator('.topic-choice[data-topic="'+id+'"]');
+  const tree=(page,id)=>page.locator('[data-nav-topic="'+id+'"]');
+  const chat=page=>page.getByRole("region",{name:"小组群聊"});
+  async function open(page,url,id){
     await page.goto(url);
-    if (topic) {
-      await page.locator('.topic-choice[data-topic="'+topic+'"] .topic-label').press("Enter");
-      await page.waitForFunction(id=>selectedTopicId===id,topic);
-    }
-    await page.locator(".workbench-menu summary").filter({hasText:/^小组$/}).click();
-    await page.locator(".workbench-menu").getByRole("button",{name:"小组合作",exact:true}).click();
-    await panel(page).getByRole("button",{name:/外部小组/}).click();
+    await row(page,id).locator(".topic-label").press("Enter");
+    await page.waitForFunction(id=>selectedTopicId===id,id);
+    const arrow=row(page,id).getByRole("button",{name:/收起.*的 Agent|展开.*的 Agent/});
+    if(await arrow.getAttribute("aria-expanded")==="false") await arrow.click();
   }
   await provider.addInitScript(()=>{
     Object.defineProperty(navigator,"clipboard",{value:{writeText:async value=>{window.copiedGroupInvite=value;}}});
   });
   await open(provider,base,group);
-  const asking = panel(provider);
-  await asking.getByLabel("合作用途").fill("常驻接口审阅");
-  assert.equal(await asking.getByLabel("本组参与成员范围").inputValue(),"all");
-  await asking.getByLabel("本组参与成员范围").selectOption("selected");
-  await asking.getByRole("checkbox",{name:"@甲组组员",exact:true}).check();
-  await asking.getByText("权限与配额",{exact:true}).click();
-  await asking.getByLabel("次数配额").selectOption("total");
-  await asking.getByLabel("上限").fill("2");
-  await asking.getByRole("button",{name:"复制小组邀请"}).click();
-  await asking.getByText(/邀请已复制/).waitFor();
-  const invite=await provider.evaluate(()=>window.copiedGroupInvite);
-  assert.equal(new URL(invite).searchParams.get("ffGroup"),"甲组");
-  assert(new URL(invite).searchParams.get("ffMember"));
-
   const requester=await context.newPage();
   await open(requester,requesterUrl,requesterGroup);
-  const accepting = panel(requester);
-  await accepting.getByRole("button",{name:"接受邀请",exact:true}).click();
-  await accepting.getByLabel("粘贴收到的邀请").fill(invite);
-  await accepting.getByText("邀请来源 · 甲组",{exact:true}).waitFor();
-  assert.equal(await accepting.getByLabel("合作用途").inputValue(),"常驻接口审阅");
-  await accepting.getByLabel("我的小组").selectOption(requesterGroup);
-  assert.equal(await accepting.getByLabel("本组参与成员范围").inputValue(),"all");
-  await accepting.getByRole("button",{name:"提交本组名单"}).click();
-  await accepting.getByRole("button",{name:"关闭小组合作"}).click();
-  const waitingTeam=requester.locator('[data-nav-topic="'+requesterGroup+'"]');
-  const expand=waitingTeam.locator(".topic-choice").getByRole("button",{name:/展开|收起/});
-  if(await expand.getAttribute("aria-expanded")==="false")await expand.click();
-  const waitingLink=waitingTeam.locator('[data-collab-branch="partners"] button.tree-loan-group');
-  await waitingLink.waitFor();
-  assert((await waitingLink.locator("span").innerText()).length>0);
-  assert.match(await waitingLink.locator("small").innerText(),/申请中|待审批/);
-  await waitingLink.click();
-  await accepting.getByText("常驻接口审阅",{exact:true}).waitFor();
-  await asking.getByRole("button",{name:/乙组.*待审批/}).click();
-  assert(await asking.getByRole("checkbox",{name:"@甲组组员",exact:true}).isChecked());
-  await asking.getByText(/对方参与成员.*@乙组组员/).waitFor();
-  const state=await (await provider.request.get(base+"/api/peers")).json();
-  assert.equal(state.groups[0].status,"pending");
-  assert.deepEqual(state.groups[0].recipients,[]);
-  assert.equal((await provider.request.put(base+"/api/peers/grants/"+state.groups[0].id,{data:{action:"approve"}})).status(),404);
-  await asking.getByRole("button",{name:"确认合作",exact:true}).click();
-  await asking.getByText("已保存",{exact:true}).waitFor();
-  console.log("PASS Chromium copy invitation, choose own groups and members, review and confirm");
+
+  await row(provider,group).hover();
+  await row(provider,group).getByRole("button",{name:"协作分享",exact:true}).click();
+  await panel(provider).getByLabel("合作用途").fill("常驻接口审阅");
+  assert.equal(await panel(provider).getByLabel("本组参与成员范围").count(),0);
+  await panel(provider).getByRole("button",{name:"复制小组邀请"}).click();
+  await panel(provider).getByText(/邀请已复制/).waitFor();
+  const invite=await provider.evaluate(()=>window.copiedGroupInvite);
+  assert.equal(new URL(invite).searchParams.get("ffGroup"),"甲组");
+  assert.equal(new URL(invite).searchParams.has("ffMember"),false);
+  await panel(provider).getByRole("button",{name:"关闭小组合作"}).click();
+
+  await tree(requester,requesterGroup).getByRole("button",{name:"＋协作小组"}).click();
+  await panel(requester).getByLabel("粘贴收到的邀请").fill(invite);
+  await panel(requester).getByText("邀请来源 · 甲组",{exact:true}).waitFor();
+  assert.equal(await panel(requester).getByLabel("合作用途").inputValue(),"常驻接口审阅");
+  assert.equal(await panel(requester).getByLabel("本组参与成员范围").count(),0);
+  assert.equal(await panel(requester).getByLabel("我的小组").count(),0);
+  await panel(requester).getByRole("button",{name:"发送小组协作申请"}).click();
+  await panel(requester).waitFor({state:"hidden"});
+
+  const application=chat(provider).locator(".chat-message").filter({hasText:"申请与「甲组」合作"});
+  await application.getByRole("button",{name:"同意",exact:true}).click();
+  await application.getByText("已同意",{exact:true}).waitFor();
+  const groupApproval=chat(requester).getByText(/已同意你与「甲组」的小组协作申请/);
+  await groupApproval.waitFor();
+  await requester.reload();
+  await groupApproval.waitFor();
+  assert.equal(await groupApproval.count(),1);
+  const providerState=await (await provider.request.get(base+"/api/state")).json();
+  const leader=providerState.topics.find(t=>t.id===group).leaderWindowId;
+  const share=await (await provider.request.get(base+"/api/peers/windows/"+leader)).json();
+  await tree(requester,requesterGroup).getByRole("button",{name:"＋Agent",exact:true}).click();
+  const add=requester.locator("#new-dialog");
+  await add.getByRole("button",{name:"协作 Agent",exact:true}).click();
+  await add.getByLabel("Agent 分享链接").fill(share.link);
+  await add.getByLabel("申请用途").fill("单 Agent 审批验证");
+  await add.getByRole("button",{name:"发送 Agent 协作申请"}).click();
+  await add.waitFor({state:"hidden"});
+  const single=chat(provider).locator(".chat-message").filter({hasText:"单 Agent 审批验证"});
+  await single.getByRole("button",{name:"同意",exact:true}).click();
+  const approve=provider.getByRole("dialog",{name:"外部协作申请"});
+  await approve.waitFor();
+  await approve.getByLabel(/配额/).selectOption("total");
+  await approve.getByLabel("次数",{exact:true}).fill("4");
+  await approve.getByRole("button",{name:"同意",exact:true}).click();
+  await single.getByText("已同意",{exact:true}).waitFor();
+  const agentApproval=chat(requester).getByText(/已同意你与 @甲组组长 的 Agent 协作申请/);
+  await agentApproval.waitFor();
+  assert.equal(await agentApproval.count(),1);
+  console.log("PASS Chromium scoped share and join, full roster approval in chat, single Agent policy, and one result per application");
 }
 
 async function checkLayout(page, ids) {
@@ -231,7 +240,12 @@ async function run() {
       assert.equal(await topicTree.getByText("外部 Agent",{exact:true}).count(),0);
       assert(await contact.locator(":scope > svg").isVisible());
       assert.equal((await contact.boundingBox()).height,28);
-      assert((await contact.locator(".remote-origin").boundingBox()).y>(await contact.locator("b").boundingBox()).y);
+      assert.match(await contact.locator(".remote-identity").textContent(),/^@提供组组长\[.+\]$/);
+      for (const control of [":scope > svg",":scope > .nav-dot",".remote-origin",".remote-engine"]) {
+        const row=await contact.boundingBox(), part=await contact.locator(control).boundingBox();
+        assert(part.x>=row.x && part.x+part.width<=row.x+row.width);
+        assert(Math.abs(part.y+part.height/2-row.y-row.height/2)<3);
+      }
       const summary=ownMembers.locator(":scope > summary");
       await summary.click();
       assert(!(await contact.isVisible()));
@@ -270,7 +284,9 @@ async function run() {
       if(process.argv.includes("--lender")){
         const badge=railTopic.getByRole("button",{name:"@甲组组员 协作中 1"});
         assert.equal(await badge.getAttribute("aria-expanded"),"false");
-        assert.equal(await railTopic.getByText("协作小组",{exact:true}).count(),0);
+        const partners=railTopic.locator('[data-collab-branch="partners"]');
+        assert.equal(await partners.count(),1);
+        assert.equal(await partners.locator(".tree-loan-group,.tree-group-person").count(),0);
         await badge.click();
         await peer.waitFor();
         assert.equal(await peer.locator("xpath=ancestor::li[@data-cooperation-owner]").getAttribute("data-cooperation-owner"),member);
@@ -490,8 +506,8 @@ async function run() {
     await opened.waitForURL(url);
     assert.equal(await opened.evaluate(()=>window.opener),null);
     await opened.close();
-    await menu("小组").click();
-    await page.locator(".workbench-menu").getByRole("button", {name:"小组合作",exact:true}).click();
+    await page.locator('[data-nav-topic="'+group+'"]').getByRole("button",{name:"＋协作小组"}).click();
+    await page.getByRole("button",{name:"本机小组",exact:true}).click();
     const collaboration=page.getByRole("dialog",{name:"小组合作"});
     await collaboration.getByRole("checkbox",{name:"关联 测试",exact:true}).check();
     const peerMembers=collaboration.getByLabel("测试 · 参与成员范围");

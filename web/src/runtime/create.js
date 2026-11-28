@@ -5,7 +5,7 @@ import { focusAgent } from "./layout.js";
 import { engineCapabilities, engineNames, installEngine, installGuides } from "../services/engines";
 import { loadQuota, quotas } from "./quota.js";
 import { isDialogOpen, selectedProject, selectedTopicId, setSelectedProjectPath, snapshot } from "../store/workbenchStore";
-import { openTopicDialog, selectedTopic } from "./topics.js";
+import { openTopicDialog } from "./topics.js";
 import { normalizeActivities, refresh, render } from "./workbench.js";
 import { accountReady, checkAccount, openEngineLogin } from "./engine-login.js";
 
@@ -20,13 +20,15 @@ function setSelectedProject(path) {
   byId("agent-project").title = path;
 }
 
-function openCreate() {
+function openCreate(topicId = selectedTopicId) {
   if (!snapshot.project) { openProjectFolders(null); return; }
-  if (!selectedTopic()) { openTopicDialog(); return; }
-  byId("new-dialog").dataset.topic = selectedTopicId;
+  const topic = snapshot.topics.find(item=>item.id===topicId);
+  if (!topic) { openTopicDialog(); return; }
+  byId("new-dialog").dataset.topic = topic.id;
+  byId("new-dialog").dispatchEvent(new Event("ff:new-agent"));
   byId("new-form").reset();
   setSessionSource();
-  setSelectedProject(selectedTopic().project);
+  setSelectedProject(topic.project);
   feedback("create-error");
   byId("new-dialog").showModal();
   loadCatalogs();

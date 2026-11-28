@@ -55,6 +55,14 @@ internal sealed partial class WorkbenchStore
                 CREATE UNIQUE INDEX fed_open_peer ON fed_grant(window_id,node)
                     WHERE kind='agent' AND status IN ('pending','approved');
                 """);
+        Exec("""
+            INSERT INTO fed_mail(topic,kind,source,target,label,body)
+            SELECT l.topic,'group-application',l.id,l.invited_window,l.peer_user,
+                l.peer_user||' 的「'||json_extract(l.roster,'$.name')||'」申请小组合作。'||char(10)||'用途：'||g.purpose
+            FROM fed_group_link l JOIN fed_grant g ON g.id=l.id
+            WHERE l.endpoint IS NULL AND g.status='pending'
+              AND NOT EXISTS(SELECT 1 FROM fed_mail m WHERE m.kind='group-application' AND m.source=l.id)
+            """);
     }
 
     private const string GroupFields = """
@@ -75,7 +83,7 @@ internal sealed partial class WorkbenchStore
 
     private GroupRoster LocalGroupRoster(GroupLink link,PeerGrant grant)
     {
-        var topic = Topic(link.Topic);
+        var topic = Topic(link.Topic, includeDeleted: true);
         string leader = topic.LeaderWindowId ?? grant.WindowId;
         var members = Windows().Where(window=>window.TopicId==topic.Id && (link.MemberMode=="all" || link.Members.Contains(window.Id)) && !DedicatedReader(window.Id))
             .Select(window=>new GroupMember(window.Id,window.Name,window.Engine,window.Online)).ToArray();
@@ -205,9 +213,12 @@ internal sealed partial class WorkbenchStore
                 VALUES($p0,$p1,$p2,$p3,$p4,$p5,'pending',$p6,'group')
                 """,id,leader.Id,node,user,ip,purpose,Hash(input.Claim));
             Exec("""
-                INSERT INTO fed_group_link(id,topic,invited_window,peer_node,peer_user,roster,peer_status,members,suggested_member)
-                VALUES($p0,$p1,$p2,$p3,$p4,$p5,'approved','[]',$p6)
-                """,id,leader.TopicId,window,node,user,GroupEncode(input.Roster),input.SuggestedMember==null?null:WorkbenchInput.Id(input.SuggestedMember));
+                INSERT INTO fed_group_link(id,topic,invited_window,peer_node,peer_user,roster,peer_status,members,suggested_member,member_mode)
+                VALUES($p0,$p1,$p2,$p3,$p4,$p5,'approved','[]',$p6,$p7)
+                """,id,leader.TopicId,window,node,user,GroupEncode(input.Roster),
+                input.SuggestedMember==null?null:WorkbenchInput.Id(input.SuggestedMember),input.FullGroup && input.SuggestedMember==null?"all":"legacy");
+            Mail(leader.TopicId,"group-application",id,window,user,
+                $"{user} 的「{input.Roster.Name}」申请与「{Topic(leader.TopicId).Name}」合作。\n用途：{purpose}");
         });
         return ClaimGroupCollaboration(id,input.Claim,node);
     }
@@ -246,7 +257,7 @@ internal sealed partial class WorkbenchStore
     {
         var node=FederationNode();
         var roster=LocalGroupRoster(link,grant);
-        if (grant.Status is "rejected" or "revoked") roster=roster with { Members=[] };
+        if (grant.Status!="approved") roster=roster with { Members=[] };
         return new(link.Id,grant.Status,node.NodeId,node.NodeName!,roster,grant.Status=="approved"?PeerQuota.From(grant):null,grant.AllowUpload,token);
     }
 
@@ -317,7 +328,7 @@ internal sealed partial class WorkbenchStore
     }
 
     internal List<GroupView> GroupCollaborations() =>
-        Read($"SELECT {GroupFields} FROM fed_group_link ORDER BY rowid DESC",ReadGroup).Select(link=>{
+        Read($"SELECT {GroupFields} FROM fed_group_link WHERE topic IN (SELECT id FROM topics WHERE deleted_at IS NULL) ORDER BY rowid DESC",ReadGroup).Select(link=>{
             var grant=Grant(link.Id);
             string status=grant.Status=="approved" ? link.RemoteStatus : grant.Status;
             if (status=="approved" && (!LocalGroupRoster(link,grant).Active || !link.Remote.Active)) status="paused";

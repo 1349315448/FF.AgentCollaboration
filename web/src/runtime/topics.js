@@ -165,6 +165,16 @@ async function archiveTopic(id) {
     } catch (e) { feedback("connection-error", e.message); }
 }
 
+async function removeTopic(id) {
+  const topic = snapshot.topics.find(t => t.id === id);
+  if (topic?.status !== "finished" || !window.confirm(`删除已归档的小组「${topic.name}」？\n该小组会从工作台移除，终端会关闭。原生会话和归档文件会保留。`)) return;
+  try {
+    await request("/topics/" + id, {method:"DELETE"});
+    await refreshing;
+    await refresh();
+  } catch (error) { feedback("connection-error", error.message); }
+}
+
 function toggleAgent(id) {
   const pane=panes.get(id);
   if (!pane) return;
@@ -187,7 +197,7 @@ function attachTopicControls() {
   Object.assign(navigation, {
     switchTopic:id=>switchTopic(id).catch(error=>feedback("connection-error",error.message)),
     removeProject, editTopic:id=>openTopicDialog(snapshot.topics.find(t=>t.id===id)),
-    addTopic:path=>openTopicDialog(null,path), addAgent:openCreate, archiveTopic,
+    addTopic:path=>openTopicDialog(null,path), addAgent:openCreate, archiveTopic, removeTopic,
     selectAgent:(topic,id)=>switchTopic(topic,id).catch(error=>feedback("connection-error",error.message)),
     renameAgent:id=>{
       const pane = panes.get(id);

@@ -19,6 +19,19 @@ def git(project, *options):
     return subprocess.check_output(["git", "-C", str(project), *options], encoding="utf8").strip()
 
 
+def index_path(project, runtime):
+    if os.name == "nt":
+        return project / ".ff-acp-knowledge" / ".index" / "knowledge.db"
+    return runtime / "knowledge-index" / hashlib.sha256(str(project).encode("utf8")).hexdigest() / "knowledge.db"
+
+
+def verify_index(index):
+    assert index.is_file() and index.stat().st_size > 0, index
+    with closing(sqlite3.connect(index)) as derived:
+        names = dict(derived.execute("SELECT name,sql FROM sqlite_master WHERE name IN ('documents','knowledge_fts')"))
+        assert "documents" in names and "fts5" in names["knowledge_fts"], names
+
+
 def verify_library(exe, case):
     project, other_project, runtime = [case / name for name in ("project", "other-project", "workbench")]
     for folder in (project, other_project):
@@ -56,6 +69,7 @@ def verify_library(exe, case):
         added = http(url, "/api/project", {"path": str(other_project), "knowledgeMode": "shared"}, "PUT")
         assert added[0] == 200, added
         assert (other_project / ".ff-acp-knowledge" / "project" / "INDEX.md").is_file()
+        verify_index(index_path(other_project, runtime))
         exclude = project / ".git" / "info" / "exclude"
         with exclude.open("a", encoding="utf8") as stream:
             stream.write("\nlocal-note.txt\n")
@@ -154,16 +168,15 @@ def verify_library(exe, case):
         call(leader, "kb_read", True, path="project/invalid.md")
         call(leader, "kb_write", True, scope="project", path="large.md", content="汉" * 175000)
         assert not (directory / "project" / "large.md").exists()
-        index = directory / ".index" / "knowledge.db"
-        assert index.is_file()
-        for remove in (True, False):
-            if remove:
+        index = index_path(project, runtime)
+        verify_index(index)
+        for contents in (None, b"", b"invalid SQLite file"):
+            if contents is None:
                 index.unlink()
             else:
-                index.write_bytes(b"invalid SQLite file")
+                index.write_bytes(contents)
             assert search(query="确认回执")[0]["path"] == plan["path"]
-        with closing(sqlite3.connect(index)) as derived:
-            assert "fts5" in derived.execute("SELECT sql FROM sqlite_master WHERE name='knowledge_fts'").fetchone()[0]
+            verify_index(index)
         example = "新版计划\n\n~~~md\n[成员任务记录](records/)\n~~~"
         refreshed = call(leader, "kb_write", scope="topic", path="PLAN.md", content=example, expectedVersion=plan["version"])
         assert refreshed["path"] == plan["path"]

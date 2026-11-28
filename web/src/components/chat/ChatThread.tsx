@@ -3,6 +3,8 @@ import { activityLabels, navigation } from "../../services/navigation";
 import { copyText } from "../../services/clipboard";
 import { WorkspaceIcon } from "../layout/WorkspaceIcon";
 import { viewApplication } from "../federation/Federation";
+import { request } from "../../services/api";
+import { openGroupCollaboration,type GroupCollaborationView } from "../../services/permanentGroups";
 import { deliveryLabels, workLabels, type Attachment, type ChatPost, type ChatPresence, type ChatTarget } from "./chatModel";
 import { ChatMarkedText,findChatTextMarks } from "./ChatMarkedText";
 
@@ -41,8 +43,38 @@ function Receipts({post}:{post:ChatPost}) {
   </div>;
 }
 
-export function ChatThread({topic, posts, busy, loadOlder, hasOlder, pending, members, presence, targets, onScroll, listRef, notice}:{
-  topic:string; posts:ChatPost[]; busy:boolean; loadOlder:()=>void; hasOlder:boolean; pending:Set<string>; members:Set<string>;
+function ApplicationActions({id,status,group,notice}:{id:string;status?:string;group?:GroupCollaborationView;notice:(message:string)=>void}) {
+  const [sending,setSending]=useState(false);
+  const [decision,setDecision]=useState("");
+  if (status!=="pending" || decision) {
+    const label:Record<string,string>={approved:"已同意",rejected:"已拒绝",revoked:"已解除",paused:"已同意 · 合作暂停"};
+    return <span className="chat-application-status">{label[(status==="pending"?decision:status)??""]??"已结束"}</span>;
+  }
+  async function decide(action:"approve"|"reject") {
+    if (sending) return;
+    setSending(true);
+    try {
+      const policy=group&&{...group.policy,action};
+      await request(group?"/peers/groups/"+id:"/peers/grants/"+id,
+        {method:"PUT",body:group?{memberMode:"all",members:[],policy}:{action}});
+      setDecision(action==="approve"?"approved":"rejected");
+    } catch(error) {notice((error as Error).message);}
+    finally {setSending(false);}
+  }
+  return <div className="chat-application-actions">
+    {group?.memberMode==="all"&&<small>全组参与 · 只读审阅 · 每日 {group.policy.quotaLimit} 次</small>}
+    <button className="button compact" type="button" disabled={sending} onClick={()=>{
+      if (!group) viewApplication(id);
+      else if (group.memberMode==="all") void decide("approve");
+      else openGroupCollaboration(id);
+    }}>同意</button>
+    <button className="text-button" type="button" disabled={sending} onClick={()=>void decide("reject")}>拒绝</button>
+  </div>;
+}
+
+export function ChatThread({topic, posts, busy, loadOlder, hasOlder, applications, groupApplications, members, presence, targets, onScroll, listRef, notice}:{
+  topic:string; posts:ChatPost[]; busy:boolean; loadOlder:()=>void; hasOlder:boolean;
+  applications:Map<string,string>; groupApplications:Map<string,GroupCollaborationView>; members:Set<string>;
   presence:Map<string,ChatPresence>;
   targets:ChatTarget[];
   onScroll:()=>void; listRef:React.RefObject<HTMLDivElement|null>; notice:(message:string)=>void;
@@ -92,8 +124,8 @@ export function ChatThread({topic, posts, busy, loadOlder, hasOlder, pending, me
             '[data-message="'+CSS.escape(reply.id)+'"]')?.scrollIntoView({block:"center"})}>回复 {reply.sender} · {reply.text}</button>}
           <div className="chat-text"><ChatMarkedText text={post.text} marks={findChatTextMarks(post.text,
             post.receipts.flatMap(receipt=>[names.get(receipt.target)??"@"+receipt.name,"@"+receipt.name]),references)}/></div>
-          {post.application && pending.has(post.application) && <button className="button compact" type="button"
-            onClick={()=>viewApplication(post.application!)}>查看申请</button>}
+          {post.application && <ApplicationActions id={post.application} group={groupApplications.get(post.application)}
+            status={post.kind==="group-application"?groupApplications.get(post.application)?.status:applications.get(post.application)} notice={notice}/>}
           {post.attachments.length>0&&<div className="chat-attachments">{post.attachments.map(file=>{
             const route=attachmentRoute(topic,post.id,file.key);
             return <div className="chat-attachment" key={file.key}>

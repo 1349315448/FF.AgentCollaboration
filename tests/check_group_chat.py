@@ -175,6 +175,22 @@ def check(exe, case):
         assert not manifest["receipts"] and not manifest["replyTo"]
         assert mcp(exe,root,member_grant,"send_to_agent",target="@工作台用户",message="纯文本").get("isError")
         assert mcp(exe,root,member_grant,"send_to_agent",target="@工作台用户",message="越界",files=["../etc"]).get("isError")
+        archived = group("待删除小组")
+        retired, retired_key = agent(db,archived,project,"待删除成员")
+        db.commit()
+        topic_route = f"/api/topics/{archived}"
+        assert http(base,topic_route,method="DELETE")[0] == 409
+        assert http(base,topic_route+"/chat",{"text":"归档前消息"})[0] == 200
+        assert http(base,topic_route+"/finish",method="POST")[0] == 200
+        folder = Path(next(t["folder"] for t in http(base,"/api/topics")[1] if t["id"]==archived))
+        assert http(base,topic_route,method="DELETE")[0] == 204
+        assert http(base,topic_route+"/reopen",method="POST")[0] == 404
+        snapshot = http(base,"/api/state?topic="+archived)[1]
+        assert not any(t["id"]==archived for t in snapshot["topics"])
+        assert not any(w["agent"]["id"]==retired for w in snapshot["windows"])
+        assert any(t["id"]==team for t in snapshot["topics"])
+        assert mcp(exe,root,retired_key,"list_windows").get("isError")
+        assert "归档前消息" in (folder / "collab-log.md").read_text(encoding="utf8")
         db.close()
         if "--browser" in sys.argv:
             subprocess.run(["node",Path(__file__).with_suffix(".cjs"),base,team,member,linked],check=True,timeout=100,
@@ -345,6 +361,11 @@ def check_permanent(exe, case):
         if "--browser" in sys.argv:
             subprocess.run(["node",Path(__file__).with_suffix(".cjs"),left,a,"--invite",right,b],check=True,timeout=75)
             link=links(left)[0]["id"]
+            for base in (left,right):
+                full=until(lambda:links(base)[0],lambda row:row["status"]=="approved" and row["connected"])
+                assert sum(person["engine"] is not None for person in full["recipients"])==3,full
+            assert http(left,"/api/peers/groups/"+link,{"members":[a_member],"memberMode":"selected","policy":policy("configure",limit=2)},"PUT")[0]==204
+            until(lambda:links(right)[0],lambda row:not any(p["window"]==a_excluded for p in row["recipients"]))
         else:
             status, result = http(right,"/api/peers/groups",{"topicId":b,"link":share,"purpose":"常驻接口审阅",
                 "selection":{"members":[b_member],"policy":policy()}})

@@ -23,7 +23,7 @@ internal sealed partial class WorkbenchStore
           AND NOT EXISTS(SELECT 1 FROM fed_mail f WHERE f.task_id=i.id AND f.topic=$p0)
         UNION ALL
         SELECT 'peer:'||m.seq,m.topic,m.source,coalesce(sender.name,m.label),NULL,m.body,strftime('%Y-%m-%dT%H:%M:%fZ',m.created),
-               m.reply_to,'[]',m.kind,m.seq,CASE WHEN m.kind='application' THEN m.source END,m.target,
+               m.reply_to,'[]',m.kind,m.seq,CASE WHEN m.kind IN ('application','group-application') THEN m.source END,m.target,
                CASE WHEN m.kind IN ('outgoing','reply-out') THEN m.label
                     WHEN m.kind='human-in' OR (m.kind='reply-in' AND m.target='peer-mailbox') THEN '工作台用户'
                     ELSE recipient.name END,NULL,NULL,0,NULL,0

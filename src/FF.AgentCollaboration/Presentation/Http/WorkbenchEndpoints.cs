@@ -78,6 +78,11 @@ internal static class WorkbenchEndpoints
         });
         app.MapPost("/api/topics/{id}/finish", (string id) => { using var state = new WorkbenchStore(startup.Root); return state.SetFinished(WorkbenchInput.Id(id), true); });
         app.MapPost("/api/topics/{id}/reopen", (string id) => { using var state = new WorkbenchStore(startup.Root); return state.SetFinished(WorkbenchInput.Id(id), false); });
+        app.MapDelete("/api/topics/{id}", async (string id, Workbench workbench, CancellationToken cancellation) =>
+        {
+            await workbench.DeleteArchivedTopic(WorkbenchInput.Id(id), cancellation);
+            return Results.NoContent();
+        });
         app.MapGet("/api/shortcuts/{engine}", (string engine) =>
         {
             using var state = new WorkbenchStore(startup.Root);

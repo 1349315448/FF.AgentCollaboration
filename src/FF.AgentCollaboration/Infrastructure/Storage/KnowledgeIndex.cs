@@ -57,6 +57,8 @@ internal sealed class KnowledgeIndex : IDisposable
         {
             using var handle = File.OpenHandle(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.ReadWrite);
             WorkspaceDirectoryGuard.VerifyFile(handle, path);
+            // macOS 上验证句柄的文件锁会妨碍 SQLite 初始化，索引目录仍由目录句柄保护。
+            if (OperatingSystem.IsMacOS()) handle.Dispose();
             using var index = new KnowledgeIndex(path);
             return operation(index);
         }

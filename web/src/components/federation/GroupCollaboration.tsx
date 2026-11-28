@@ -36,12 +36,13 @@ export function GroupCollaborationDialog() {
   const [tab,setTab]=useState<"local"|"external">("local");
   const [own,setOwn]=useState("");
   const [action,setAction]=useState<"invite"|"join">("invite");
+  const [scoped,setScoped]=useState(false);
   const [opening,setOpening]=useState(0);
   useEffect(()=>{
     const open=(event:Event)=>{
-      const detail=(event as CustomEvent<{id?:string;tab:"local"|"external";member?:string}>).detail;
-      select(detail.id);setMember(detail.member);setTab(detail.tab);setOwn(topic?.id??"");
-      setAction("invite");setOpening(value=>value+1);
+      const detail=(event as CustomEvent<{id?:string;tab:"local"|"external";member?:string;entry?:{topicId:string;action:"invite"|"join"}}>).detail;
+      select(detail.id);setMember(detail.member);setTab(detail.tab);setOwn(detail.entry?.topicId??topic?.id??"");
+      setAction(detail.entry?.action??"invite");setScoped(!!detail.entry);setOpening(value=>value+1);
       if (!dialog.current?.open) dialog.current?.showModal();
     };
     window.addEventListener("ff:group-collaboration",open);
@@ -61,21 +62,21 @@ export function GroupCollaborationDialog() {
       <button type="button" className="icon-button" aria-label="关闭小组合作" onClick={close}>×</button>
     </header>
     <div className="group-collab-body">
-      <nav className="group-collab-tabs" aria-label="合作范围">
+      {(!scoped||action==="join")&&<nav className="group-collab-tabs" aria-label="合作范围">
         <button type="button" className="text-button" aria-pressed={tab==="local"} onClick={()=>setTab("local")}>本机小组</button>
         <button type="button" className="text-button" aria-pressed={tab==="external"} onClick={()=>setTab("external")}>外部小组{pending.length>0&&<small>{pending.length}</small>}</button>
-      </nav>
-      {tab==="local" ? topic&&<LocalGroupLinks key={topic.id+opening} topic={topic} done={close}/> : <>
-        <nav className="group-collab-list" aria-label="外部合作操作">
+      </nav>}
+      {tab==="local" ? current&&<LocalGroupLinks key={current.id+opening} topic={current} done={close}/> : <>
+        {!scoped&&<nav className="group-collab-list" aria-label="外部合作操作">
           <button type="button" className="text-button" aria-pressed={!link&&action==="invite"} onClick={()=>start("invite")}>创建邀请</button>
           <button type="button" className="text-button" aria-pressed={!link&&action==="join"} onClick={()=>start("join")}>接受邀请</button>
-        </nav>
-        {!link&&ownGroups.length>0&&<label className="group-collab-own">我的小组
+        </nav>}
+        {!scoped&&!link&&ownGroups.length>0&&<label className="group-collab-own">我的小组
           <select value={current?.id??""} onChange={e=>{setOwn(e.target.value);select(undefined);}}>
             {ownGroups.map(group=><option key={group.id} value={group.id} title={group.project}>{group.name}{!group.leaderWindowId&&" · 待设组长"}</option>)}
           </select>
         </label>}
-        {(visible.length>0||pending.length>0)&&<nav aria-label="外部合作记录" className="group-collab-list">
+        {!scoped&&(visible.length>0||pending.length>0)&&<nav aria-label="外部合作记录" className="group-collab-list">
           {[...pending,...visible.filter(group=>!pending.some(item=>item.id===group.id))].map(group=>
             <button key={group.id} type="button" className="text-button" aria-pressed={selected===group.id} onClick={()=>select(group.id)}>
               {[group.remote.name,group.user].filter(Boolean).join(" · ")||"外部小组"}<small>{groupStates[group.status]} · {groupConnectionLabel(group)}</small>
@@ -83,14 +84,15 @@ export function GroupCollaborationDialog() {
         </nav>}
         {selected&&!link?<p role="status">正在加载合作记录…</p>:current&&current.status==="active"&&current.leaderWindowId?
           <GroupCollabForm key={opening+":"+(link?.id??current.id+":"+action)} action={action} topic={current} group={link} suggested={member}
-            roster={snapshot?.windows??[]} done={select} shareSettings={()=>{close();openShareSettings(current.leaderWindowId!);}}/>:
+            fullGroup={scoped} roster={snapshot?.windows??[]} done={id=>{if(scoped)close();else select(id);}}
+            shareSettings={()=>{close();openShareSettings(current.leaderWindowId!);}}/>:
           <p>请先为进行中的小组设置组长。</p>}
       </>}
     </div>
   </dialog>;
 }
 
-function GroupCollabForm({action,topic,group,suggested,roster,done,shareSettings}:{suggested?:string;action:"invite"|"join";topic:Topic;group?:GroupCollaborationView;roster:WindowView[];
+function GroupCollabForm({action,topic,group,suggested,fullGroup,roster,done,shareSettings}:{suggested?:string;fullGroup:boolean;action:"invite"|"join";topic:Topic;group?:GroupCollaborationView;roster:WindowView[];
     done:(id?:string)=>void;shareSettings:()=>void}) {
   const incoming=!!group&&!group.requester&&group.status==="pending";
   const [preset]=useState(()=>{
@@ -120,7 +122,9 @@ function GroupCollabForm({action,topic,group,suggested,roster,done,shareSettings
     if (busy) return;
     setBusy(true);
     setFeedback("");
-    const selection={memberMode,expiresAt:expires?Math.floor(new Date(expires).getTime()/1000):null,suggestedMember:preview?.suggestedMember??undefined,members:members.filter(id=>roster.some(view=>view.agent.id===id&&view.agent.topicId===topic.id)),policy:{...policy,action:decision,confirmWrite}};
+    const selection={memberMode:fullGroup?"all":memberMode,expiresAt:expires?Math.floor(new Date(expires).getTime()/1000):null,
+      suggestedMember:fullGroup?undefined:preview?.suggestedMember??undefined,
+      members:fullGroup?[]:members.filter(id=>roster.some(view=>view.agent.id===id&&view.agent.topicId===topic.id)),policy:{...policy,action:decision,confirmWrite}};
     try {
       if (editable && decision!=="reject" && decision!=="revoke" && memberMode==="selected" && !selection.members.length) throw new Error("请选择参与合作的 Agent。");
       if (group) {
@@ -163,7 +167,8 @@ function GroupCollabForm({action,topic,group,suggested,roster,done,shareSettings
         {!group.connected&&!group.needsInvitation&&group.status==="approved"&&<p>正在等待对端同步，暂时无法确认成员是否在线。</p>}
         <p>{group.purpose}</p>{group.remote.members.length>0&&<p>对方参与成员 · {group.remote.members.map(member=>"@"+member.name).join("、")}</p>}
         {group.remoteQuota?.remaining!=null&&<small>对端剩余 {group.remoteQuota.remaining} 次</small>}</div>}
-    {editable&&<>
+    {editable&&fullGroup&&<p>全组参与。对方将在群聊中确认合作。</p>}
+    {editable&&!fullGroup&&<>
       <GroupMembers topic={topic} roster={roster} selected={members} mode={memberMode} onMode={setMemberMode} onChange={setMembers} disabled={busy}/>
       <details className="group-collab-policy" open={policy.permissionMode==="read_write"||undefined}>
         <summary>权限与配额</summary>
@@ -189,7 +194,7 @@ function GroupCollabForm({action,topic,group,suggested,roster,done,shareSettings
       <span role="status">{feedback}</span>
       {needsSharing&&<button type="button" className="button" onClick={shareSettings}>打开组长分享设置</button>}
       {editable&&<button type="submit" className="button primary" disabled={busy}>
-        {!group?(creating?"复制小组邀请":"提交本组名单"):incoming?"确认合作":"保存"}
+        {!group?(creating?"复制小组邀请":fullGroup?"发送小组协作申请":"提交本组名单"):incoming?"确认合作":"保存"}
       </button>}
       {group&&available(group)&&<button className="button danger" type="button" disabled={busy}
         onClick={event=>{if(incoming||window.confirm("解除与此小组的合作？"))void commit(event,incoming?"reject":"revoke");}}>

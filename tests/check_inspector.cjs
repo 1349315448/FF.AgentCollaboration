@@ -229,7 +229,7 @@ const [base,exe,root] = process.argv.slice(2);
     await chip.locator(".tag-power").click(); await chip.getByRole("button",{name:"关闭 @"+sender.name}).waitFor();
     assert.deepEqual(await ids(headerMembers),originalOrder);
     assert.deepEqual(await ids(treeMembers),originalOrder);
-    await page.locator("#new-agent").click();await page.getByRole("tab",{name:"外部协作 Agent"}).click();await page.getByLabel("分享链接").waitFor();
+    await page.locator("#new-agent").click();await page.getByRole("button",{name:"协作 Agent",exact:true}).click();await page.getByLabel("Agent 分享链接").waitFor();
     await page.getByRole("tab",{name:"本地 Agent"}).click();await page.locator("#agent-name").waitFor();await page.keyboard.press("Escape");
     await page.locator('.timeline-entry[data-message="'+short+'"]').click();
     await page.locator(".mail-detail").getByText("纯文本信箱详情",{exact:true}).waitFor();

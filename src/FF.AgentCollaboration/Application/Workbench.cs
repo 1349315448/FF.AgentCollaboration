@@ -43,6 +43,7 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             return topic with { Activity = activity };
         }).ToArray();
         var (current, projects) = state.ProjectList(topics.Select(t => t.Project).Concat(windows.Select(w => w.Agent.Project)));
+        if (topicId != null && !topics.Any(topic => topic.Id == topicId)) topicId = null;
         return new(current, projects, topics, windows, topicId, topicId == null ? [] : state.Timeline(topicId, recent),
             state.MentionShortcut(), state.RecentHandoffs(), state.FederationSummary(),
             projects.Distinct(ProjectFolders.Comparer).ToDictionary(path => path, state.KnowledgeMode, ProjectFolders.Comparer),
@@ -514,17 +515,32 @@ internal sealed partial class Workbench(WorkbenchStartup startup, SessionCatalog
             using var state = new WorkbenchStore(Root);
             var window = state.Window(id);
             state.StopWindow(id);
-            wakeErrors.TryRemove(id, out _);
-            waking.TryRemove(id, out _);
-            if (terminals.TryGetValue(id, out var terminal)) await Task.Run(terminal.Dispose);
+            await DisposeTerminal(id);
             if (removeWindow)
             {
                 state.Close(id);
                 if (window.IsLeader) SyncTeamRoster(window.TopicId);
             }
-            terminals.TryRemove(id, out _);
         }
         finally { lifecycle.Release(); }
+    }
+
+    internal async Task DeleteArchivedTopic(string id, CancellationToken ct)
+    {
+        await lifecycle.WaitAsync(ct);
+        try
+        {
+            using var state = new WorkbenchStore(Root);
+            foreach (var window in state.DeleteArchivedTopic(id)) await DisposeTerminal(window);
+        }
+        finally { lifecycle.Release(); events.Changed(); }
+    }
+
+    private async Task DisposeTerminal(string id)
+    {
+        wakeErrors.TryRemove(id, out _);
+        waking.TryRemove(id, out _);
+        if (terminals.TryRemove(id, out var terminal)) await Task.Run(terminal.Dispose);
     }
 
     internal async Task Toggle(string id, ChangeAutoReceive request, CancellationToken ct)

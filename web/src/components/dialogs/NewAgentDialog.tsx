@@ -1,10 +1,45 @@
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { engineNames, installGuides, traeAccountNotice } from "../../services/engines";
+import { request } from "../../services/api";
+import { navigation } from "../../services/navigation";
 
 export function NewAgentDialog() {
+  const dialog=useRef<HTMLDialogElement>(null);
+  const [external,setExternal]=useState(false);
+  const [feedback,setFeedback]=useState("");
+  const [sending,setSending]=useState(false);
+  useEffect(()=>{
+    const form=dialog.current!;
+    const reset=()=>{setExternal(false);setFeedback("");};
+    form.addEventListener("ff:new-agent",reset);
+    return ()=>form.removeEventListener("ff:new-agent",reset);
+  },[]);
+  async function apply(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (sending) return;
+    const form=new FormData(event.currentTarget);
+    const topicId=dialog.current?.dataset.topic;
+    const link=String(form.get("link")??"").trim();
+    const purpose=String(form.get("purpose")??"").trim();
+    if (!topicId || !link || !purpose) {setFeedback("请填写分享链接和用途。");return;}
+    setSending(true);
+    setFeedback("");
+    try {
+      if (new URL(link).searchParams.has("ffGroup")) throw new Error("小组邀请请从「＋协作小组」打开。");
+      await request("/peers/remotes",{method:"POST",body:{topicId,link,purpose}});
+      dialog.current?.close();
+      await navigation.switchTopic(topicId);
+    } catch(error) {setFeedback((error as Error).message);}
+    finally {setSending(false);}
+  }
   return (
-    <><dialog id="new-dialog" aria-labelledby="new-title">
-        <header className="dialog-header"><h2 id="new-title">新建 Agent 窗口</h2><button type="button" className="icon-button" data-close="" aria-label="关闭">×</button></header>
-      <form id="new-form">
+    <><dialog id="new-dialog" ref={dialog} aria-labelledby="new-title">
+        <header className="dialog-header"><h2 id="new-title">添加 Agent</h2><button type="button" className="icon-button" data-close="" aria-label="关闭">×</button></header>
+      <nav className="new-agent-tabs" aria-label="Agent 类型">
+        <button type="button" aria-pressed={!external} onClick={()=>setExternal(false)}>本地 Agent</button>
+        <button type="button" aria-pressed={external} onClick={()=>setExternal(true)}>协作 Agent</button>
+      </nav>
+      <form id="new-form" hidden={external}>
         <div className="dialog-body">
           <label className="field"><span><span className="required">*必填</span> 窗口别名</span>
             <input id="agent-name" type="text" maxLength={40} placeholder="例如 后端GPT" required ref={input => { if (input) input.autofocus = true; }} />
@@ -49,6 +84,16 @@ export function NewAgentDialog() {
         </div>
         <footer className="dialog-footer"><button className="button" type="button" data-close="">取消</button><button className="button primary" type="submit" id="create-agent">打开终端</button></footer>
       </form>
+      {external&&<form onSubmit={event=>void apply(event)}>
+        <div className="dialog-body">
+          <label className="field">Agent 分享链接<input name="link" required maxLength={1500} autoComplete="off" placeholder="粘贴对方给你的分享链接"/></label>
+          <label className="field">申请用途<input name="purpose" required maxLength={300}/></label>
+          <p className="field-hint">对方会在群聊中收到协作申请，你也会在群聊看到结果。</p>
+          {feedback&&<p className="form-error" role="alert">{feedback}</p>}
+        </div>
+        <footer className="dialog-footer"><button className="button" type="button" onClick={()=>dialog.current?.close()}>取消</button>
+          <button className="button primary" type="submit" disabled={sending}>发送 Agent 协作申请</button></footer>
+      </form>}
     </dialog>
     <dialog id="engine-login-dialog" aria-labelledby="engine-login-title">
       <header className="dialog-header"><h2 id="engine-login-title">引擎登录</h2><button type="button" className="icon-button" data-close="" aria-label="关闭">×</button></header>

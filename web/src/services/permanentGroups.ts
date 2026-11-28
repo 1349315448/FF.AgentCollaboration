@@ -21,8 +21,9 @@ export function groupConnectionLabel(group:GroupCollaborationView) {
   return group.status==="approved" ? "断联" : "未连接";
 }
 
-export function openGroupCollaboration(id?:string,tab:"local"|"external"="external",member?:string) {
-  window.dispatchEvent(new CustomEvent("ff:group-collaboration",{detail:{id,tab,member}}));
+export function openGroupCollaboration(id?:string,tab:"local"|"external"="external",member?:string,
+  entry?:{topicId:string;action:"invite"|"join"}) {
+  window.dispatchEvent(new CustomEvent("ff:group-collaboration",{detail:{id,tab,member,entry}}));
 }
 
 export function approvedGroupRecipients(groups:GroupCollaborationView[]|undefined,topic:string,actor?:string) {

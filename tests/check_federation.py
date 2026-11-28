@@ -45,10 +45,16 @@ def verify(exe, case):
         assert a["nodeId"] != b["nodeId"]
         assert identity(client, "审阅端改名")["nodeId"] == b["nodeId"]
         w = new_id()
+        applicant = new_id()
         topic = http(local, "/api/topics", {"name":"提供方"})[1]["id"]
         target = http(client, "/api/topics", {"name":"请求方"})[1]["id"]
         with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
             db.execute("INSERT INTO windows(id,name,engine,project,topic_id,auto_receive,session,session_title) VALUES(?, 'Reviewer','codex',?,?,0,?,'Reviewer')", (w,str(project),topic,new_id()))
+            db.execute("UPDATE topics SET leader_window_id=? WHERE id=?", (w,topic))
+            db.commit()
+        with closing(sqlite3.connect(requester / "workbench.sqlite")) as db:
+            db.execute("INSERT INTO windows(id,name,engine,project,topic_id,online,auto_receive) VALUES(?, 'Planner','codex',?,?,0,0)",(applicant,str(case),target))
+            db.execute("UPDATE topics SET leader_window_id=? WHERE id=?", (applicant,target))
             db.commit()
         share = "/api/peers/windows/" + w
         grant_url = "/api/peers/grants/"
@@ -121,9 +127,9 @@ def verify(exe, case):
         assert g["status"] == "pending" and g["nodeName"] == "审阅端改名"
         approval_key = new_id()
         with closing(sqlite3.connect(provider / "workbench.sqlite")) as db:
-            notice = db.execute("SELECT source,target,text,wake_requested FROM inbox WHERE id=?", (g["id"],)).fetchone()
-            assert notice[:2] == ("collaboration-system", w) and notice[3] == 0, notice
-            assert "show_external_collaboration_approval" in notice[2] and "代码审阅" not in notice[2]
+            assert db.execute("SELECT 1 FROM inbox WHERE id=?", (g["id"],)).fetchone() is None
+            notice = next(p for p in http(local,f"/api/topics/{topic}/chat")[1] if p.get("application")==g["id"])
+            assert notice["kind"]=="application" and "代码审阅" in notice["text"], notice
             db.execute("UPDATE windows SET online=1,grant_hash=? WHERE id=?",
                        (hashlib.sha256(approval_key.encode()).hexdigest().upper(), w))
             db.commit()
@@ -145,9 +151,8 @@ def verify(exe, case):
         assert approve()[0] == 200
         rem = lambda: next(r for r in view(client)["remotes"] if r["id"] == remote)
         until(rem,lambda r:r["status"]=="approved" and r["connected"])
-        applicant = new_id()
         with closing(sqlite3.connect(requester / "workbench.sqlite")) as db:
-            db.execute("INSERT INTO windows(id,name,engine,project,topic_id,online,auto_receive) VALUES(?, 'Planner','codex',?,?,1,0)",(applicant,str(case),target))
+            db.execute("UPDATE windows SET online=1 WHERE id=?", (applicant,))
             db.commit()
         binding = "/api/peers/remotes/"+remote+"/contact"
         assert http(client,binding,{"topicId":target,"agentId":applicant},"PUT")[0] == 204

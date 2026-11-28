@@ -8,6 +8,7 @@ import { NavigationName } from "./NavigationName";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import { ProjectKnowledgeDialog } from "../dialogs/ProjectKnowledgeDialog";
 import { knowledgeUiLocal } from "../../services/knowledge";
+import { openGroupCollaboration } from "../../services/permanentGroups";
 
 // A selected path opens on page load. Remounting its parent preserves later user choices.
 const touchedBranches = new Set<string>();
@@ -51,7 +52,10 @@ function TopicBranch({topic}:{topic:Topic}) {
       {unread>0 && <span className="tag-inbox" title={unread+" 条待处理"}>{unread}</span>}
       <small className="tree-total">{online}/{members.length+remotes.length}</small>
       <span className="tree-actions">
+        {topic.status==="active"&&topic.leaderWindowId&&<button type="button" title="协作分享"
+          onClick={()=>openGroupCollaboration(undefined,"external",undefined,{topicId:topic.id,action:"invite"})}>协作分享</button>}
         <button type="button" onClick={()=>navigation.archiveTopic(topic.id)}>{topic.status==="finished"?"重开":"归档"}</button>
+        {topic.status==="finished"&&<button type="button" className="delete-topic" onClick={()=>navigation.removeTopic(topic.id)}>删除</button>}
       </span>
     </div>
     {expanded && <CooperationTree topic={topic} members={members}/>}
@@ -86,8 +90,8 @@ function ProjectBranch({path,total,topics,onSettings}:{path:string;total:Project
         <strong ref={name} id={current?"project-name":undefined} data-path={path} title={path}/>
       </button>
       <small className="tree-total">{active}/{total.agents+remotes.size}</small>
+      <button type="button" className="tree-add" title="创建小组" aria-label={"在 "+path+" 创建小组"} onClick={()=>navigation.addTopic(path)}>＋小组</button>
       <span className="tree-actions">
-        <button type="button" title="创建小组" aria-label={"在 "+path+" 创建小组"} onClick={()=>navigation.addTopic(path)}>＋</button>
         <button type="button" id={current?"remove-project":undefined} aria-label={current?"移除当前项目":"移除项目"} title={"移除 "+path} onClick={()=>navigation.removeProject(path)}><WorkspaceIcon name="close"/></button>
       </span>
     </div>

@@ -276,7 +276,7 @@ const [base, , root] = process.argv.slice(2);
       await route.fulfill({json:{...engines,opencode:false,cursor:false}});
     });
     await page.locator("#new-agent").click();
-    const create = page.getByRole("dialog",{name:"新建 Agent 窗口"});
+    const create = page.getByRole("dialog",{name:"添加 Agent"});
     await create.getByRole("radio",{name:"OpenCode",exact:true}).waitFor();
     await create.getByRole("radio",{name:"Cursor CLI",exact:true}).waitFor();
     await create.getByRole("button",{name:"安装指南 OpenCode",exact:true}).waitFor();

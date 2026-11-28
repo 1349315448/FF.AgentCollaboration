@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { ResourceManager } from "../dialogs/ResourceManager";
 import { TeamProposalControl } from "../dialogs/TeamProposalDialog";
-import { layout, useWorkbench } from "../../store/workbenchStore";
+import { useWorkbench } from "../../store/workbenchStore";
 import { navigation } from "../../services/navigation";
 import { knowledgeUiLocal } from "../../services/knowledge";
-import { openGroupCollaboration } from "../../services/permanentGroups";
 import { TopicNavigation } from "./TopicNavigation";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 
@@ -16,12 +15,9 @@ function showInspector(section: "files" | "docs" | "changes") {
 }
 
 export function TopBar() {
-  const {snapshot, topic, rosters} = useWorkbench();
+  const {snapshot, topic} = useWorkbench();
   const menu = useRef<HTMLElement>(null);
-  const [agentId,setAgentId] = useState<string|null>(null);
   const project = topic?.project ?? snapshot?.project;
-  const active = topic?.status === "active";
-  const agent = rosters.get(topic?.id ?? "")?.members.find(view=>view.agent.id===agentId)?.agent;
 
   function closeMenus(except?: HTMLDetailsElement) {
     menu.current?.querySelectorAll<HTMLDetailsElement>("details[open]").forEach(details=>{
@@ -65,29 +61,6 @@ export function TopBar() {
         </div>
       </details>
       <details onToggle={e=>{if(e.currentTarget.open)closeMenus(e.currentTarget);}}>
-        <summary>小组</summary>
-        <div className="menu-commands">
-          <button type="button" disabled={!project} onClick={()=>project&&navigation.addTopic(project)}>新建小组</button>
-          <button type="button" disabled={!topic} onClick={()=>topic&&navigation.editTopic(topic.id)}>编辑名称与目标</button>
-          <button type="button" disabled={!active} onClick={()=>openGroupCollaboration(undefined,"local")}>小组合作</button>
-          <TeamProposalControl />
-          <button type="button" disabled={!topic} onClick={()=>topic&&navigation.archiveTopic(topic.id)}>{active?"归档小组":"重新打开小组"}</button>
-        </div>
-      </details>
-      <details onToggle={e=>{
-        if (!e.currentTarget.open) return;
-        closeMenus(e.currentTarget);
-        setAgentId((layout?.workspaceMode==="code" ? layout.codeActiveWindowId : layout?.activeWindowId) ?? null);
-      }}>
-        <summary>Agent</summary>
-        <div className="menu-commands">
-          <button type="button" id="new-agent" disabled={!active} onClick={()=>navigation.addAgent()}>添加 Agent</button>
-          <button type="button" disabled={!agent} onClick={()=>agent&&navigation.powerAgent(agent.id)}>{agent?.online?"停止终端":"启动终端"}</button>
-          <button type="button" disabled={!agent} onClick={()=>agent&&navigation.openAgentSessions(agent.id)}>会话记录</button>
-          <button type="button" disabled={!agent} onClick={()=>agent&&navigation.renameAgent(agent.id)}>Agent 设置</button>
-        </div>
-      </details>
-      <details onToggle={e=>{if(e.currentTarget.open)closeMenus(e.currentTarget);}}>
         <summary>查看</summary>
         <div className="menu-commands">
           <div id="workspace-mode-switch" role="group" aria-label="工作区模式">
@@ -107,6 +80,7 @@ export function TopBar() {
         <div className="menu-commands">
           <button type="button" onClick={()=>press("open-settings")}>设置</button>
           <button type="button" id="open-engine-settings">CLI 引擎与环境检测</button>
+          <TeamProposalControl />
           <ResourceManager />
         </div>
       </details>

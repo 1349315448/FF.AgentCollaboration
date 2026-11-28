@@ -64,17 +64,40 @@ internal sealed partial class WorkbenchStore
         WHERE t.remote=$p0 AND ($p1 IS NULL OR t.topic=$p1) ORDER BY t.rowid LIMIT 1
         """, r=>Optional(r,0),remote,topic).SingleOrDefault();
 
-    internal bool RemoteStatus(string id, PeerSession peer, bool connected) => Exec("""
+    internal bool RemoteStatus(string id, PeerSession peer, bool connected) => WithRemoteDecision(id,peer.Status,()=>Exec("""
         UPDATE fed_remote SET name=$p1,agent=$p2,status=$p3,online=$p4,connected=$p5,token=coalesce($p6,token),
         group_name=$p9,engine=$p10,quota_snapshot=$p8,share=CASE WHEN $p3='applying' THEN share ELSE NULL END,error=NULL WHERE id=$p0 AND provider=$p7 AND
         (name!=$p1 OR agent!=$p2 OR status!=$p3 OR online!=$p4 OR connected!=$p5 OR ($p6 IS NOT NULL AND token IS NOT $p6) OR quota_snapshot IS NOT $p8 OR group_name IS NOT $p9 OR engine IS NOT $p10 OR error IS NOT NULL)
         """, id, peer.NodeName, peer.AgentName, peer.Status, connected && peer.Online, connected, peer.Token, peer.NodeId,
-        peer.Status == "approved" && peer.Quota != null ? JsonSerializer.Serialize(peer.Quota) : null,peer.GroupName,peer.Engine) > 0;
+        peer.Status == "approved" && peer.Quota != null ? JsonSerializer.Serialize(peer.Quota) : null,peer.GroupName,peer.Engine) > 0);
 
     internal bool RemoteFailure(string id, string reason, string? status = null) => Exec("""
         UPDATE fed_remote SET online=0,connected=0,status=coalesce($p2,status),error=$p1
         WHERE id=$p0 AND (online OR connected OR error IS NOT $p1 OR ($p2 IS NOT NULL AND status!=$p2))
         """, id, reason, status) > 0;
+
+    internal bool RemoteApplicationRejected(string id) =>
+        WithRemoteDecision(id,"rejected",()=>RemoteFailure(id,"rejected","rejected"));
+
+    private bool WithRemoteDecision(string id,string? status,Func<bool> update)
+    {
+        if (status is not ("approved" or "rejected")) return update();
+        bool changed=false;
+        Atomic(()=>{
+            bool awaiting=Read("SELECT 1 FROM fed_remote WHERE id=$p0 AND status IN ('applying','pending')",_=>true,id).Any();
+            changed=update();
+            if (!changed || !awaiting) return;
+            foreach (var link in Read("""
+                SELECT t.topic,r.name,r.agent FROM fed_remote_topic t JOIN fed_remote r ON r.id=t.remote WHERE t.remote=$p0
+                """,r=>(Topic:r.GetString(0),Name:r.GetString(1),Agent:r.GetString(2)),id))
+            {
+                string source=string.IsNullOrWhiteSpace(link.Name)?link.Agent:link.Name;
+                Mail(link.Topic,"permission",id,InboxItem.ChatUser,source,
+                    $"{source} 已{(status=="approved"?"同意":"拒绝")}你与 @{link.Agent} 的 Agent 协作申请。");
+            }
+        });
+        return changed;
+    }
 
     internal bool RemoveRemote(string id, string topic)
     {

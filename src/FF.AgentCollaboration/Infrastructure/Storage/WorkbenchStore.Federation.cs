@@ -196,11 +196,7 @@ internal sealed partial class WorkbenchStore
         }
         if (!input.Enabled)
         {
-            foreach (var pending in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND kind='agent' AND status='pending'", r => r.GetString(0), id))
-                ClearPeerReview(pending);
-            foreach (var grant in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND kind='agent'", r => r.GetString(0), id)) WithdrawPeerInbox(grant);
-            Exec("DELETE FROM fed_share WHERE window_id=$p0", id);
-            Exec("UPDATE fed_grant SET status='revoked',token_hash=NULL,salt=NULL WHERE window_id=$p0 AND kind='agent' AND status IN ('approved','pending')", id);
+            DisableAgentSharing(id);
             return;
         }
         Exec("""
@@ -213,6 +209,15 @@ internal sealed partial class WorkbenchStore
             Exec("UPDATE fed_grant SET permission='read_only' WHERE window_id=$p0 AND kind='agent'", id);
         }
     });
+
+    private void DisableAgentSharing(string id)
+    {
+        foreach (var pending in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND kind='agent' AND status='pending'", r => r.GetString(0), id))
+            ClearPeerReview(pending);
+        foreach (var grant in Read("SELECT id FROM fed_grant WHERE window_id=$p0 AND kind='agent'", r => r.GetString(0), id)) WithdrawPeerInbox(grant);
+        Exec("DELETE FROM fed_share WHERE window_id=$p0", id);
+        Exec("UPDATE fed_grant SET status='revoked',token_hash=NULL,salt=NULL WHERE window_id=$p0 AND kind='agent' AND status IN ('approved','pending')", id);
+    }
 
     private const string GrantFields = """
         id,window_id,node,name,ip,purpose,status,permission,quota,quota_limit,paused,upload,total,hour,hourly,day,daily,last_received,blocked,streams
@@ -321,12 +326,9 @@ internal sealed partial class WorkbenchStore
             id = Guid.NewGuid().ToString("N");
             if (Exec("INSERT OR IGNORE INTO fed_grant(id,window_id,node,name,ip,purpose,status,claim_hash) VALUES($p0,$p1,$p2,$p3,$p4,$p5,'pending',$p6)",
                 id, window, node, name, ip, purpose, claim) != 1) throw new FederationException(409, "pair_exists");
-            Mail(Window(window).TopicId,"application",id,window,name+"#"+node[..8],purpose);
             var target = Window(window);
-            if (Topic(target.TopicId).Status == "active")
-                QueueIncoming(id, target with { AutoReceive = false }, "collaboration-system", "协作平台",
-                    "有一条外部协作申请等待人工审批。请提醒用户，并调用 show_external_collaboration_approval，applicationId 填 " + id + "。由用户决定是否通过。",
-                    null, null);
+            Mail(target.TopicId,"application",id,window,name+"#"+node[..8],
+                $"{name} 申请与你的 @{target.Name} 协作。\n用途：{purpose}");
         });
         // POST 响应丢失后重试时，审批可能已经完成；用原有申请凭据恢复同一个授权。
         return ClaimPeer(input.Claim, node);

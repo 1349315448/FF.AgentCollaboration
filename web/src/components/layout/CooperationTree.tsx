@@ -17,8 +17,9 @@ interface Cooperation {
   open?:()=>void;
 }
 
-function Branch({name,children,link,status}:{name:string;children:ReactNode;link?:string;status?:string}) {
-  return <li><details open data-collab-branch={link}><summary title={name}>{name}{status&&<small> · {status}</small>}</summary><ul>{children}</ul></details></li>;
+function Branch({name,children,link,status,action}:{name:string;children:ReactNode;link?:string;status?:string;action?:ReactNode}) {
+  return <li className={action?"tree-section":undefined}><details open data-collab-branch={link}>
+    <summary title={name}>{name}{status&&<small> · {status}</small>}</summary><ul>{children}</ul></details>{action}</li>;
 }
 
 function CooperationLink({item}:{item:Cooperation}) {
@@ -56,7 +57,7 @@ function OwnMember({view,cooperations}:{view:WindowView;cooperations:Cooperation
 }
 
 export function CooperationTree({topic,members}:{topic:Topic;members:WindowView[]}) {
-  const {snapshot}=useWorkbench();
+  const {snapshot,selectedTopicId}=useWorkbench();
   const cooperations:Cooperation[]=[];
   for(const link of groupLinkSides(snapshot?.groupLinks,topic.id)) {
     const other=snapshot?.topics.find(t=>t.id===link.id&&t.status==="active");
@@ -95,8 +96,11 @@ export function CooperationTree({topic,members}:{topic:Topic;members:WindowView[
     ...remotes.map(remote=>({online:remoteOnline(remote),row:<li key={"remote-"+remote.id}><RemoteCapsule remote={remote} tree/></li>}))
   ].sort((a,b)=>Number(b.online)-Number(a.online)).map(item=>item.row);
   const branches=cooperations.filter(item=>!item.owners);
-  return <ul className="tree-members">{cooperations.length||remotes.length?<><Branch name="本组成员" link="own">{own}</Branch>
-    {branches.length>0&&<Branch name="协作小组" link="partners">{branches.map(item=>
+  const active=topic.status==="active";
+  return <ul className="tree-members"><Branch name="本组成员" link="own" action={active&&
+    <button type="button" id={selectedTopicId===topic.id?"new-agent":undefined} className="tree-add" onClick={()=>navigation.addAgent(topic.id)}>＋Agent</button>}>{own}</Branch>
+    <Branch name="协作小组" link="partners" action={active&&
+      <button type="button" className="tree-add" onClick={()=>openGroupCollaboration(undefined,"external",undefined,{topicId:topic.id,action:"join"})}>＋协作小组</button>}>{branches.map(item=>
       item.people ? <Branch key={item.id} name={item.label} link={item.id} status={item.status}>{item.people}</Branch> :
-        <li key={item.id}><CooperationLink item={item}/></li>)}</Branch>}</>:own}</ul>;
+        <li key={item.id}><CooperationLink item={item}/></li>)}</Branch></ul>;
 }

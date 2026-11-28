@@ -60,16 +60,11 @@
 .tree-loan-group span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tree-loan-group small { flex:none; margin-left:auto; color:var(--muted); font-size:10px; }
 .tree-members details > ul > li > .tree-loan-group { padding-inline:23px 4px; color:var(--text); }
-.tree-members .tree-remote {
-  display:grid; grid-template-columns:12px 6px minmax(0,1fr) auto; grid-template-rows:14px 12px;
-  align-content:center; column-gap:4px; row-gap:0; padding-inline:23px 4px;
-}
-.tree-remote > svg { grid-area:1/1; width:12px; height:12px; }
-.tree-remote .nav-dot { grid-area:1/2; }
-.tree-remote b { grid-area:1/3; color:var(--text); }
-.tree-remote small { grid-area:1/4; }
-.tree-remote .remote-origin { grid-area:2/3/3/5; overflow:hidden; text-overflow:ellipsis; color:var(--muted); font-size:10px; }
-.tree-remote:has(.remote-quota) .remote-origin { grid-column-end:4; }
-.tree-remote .remote-quota { grid-area:2/4; justify-self:end; color:var(--muted); }
+.tree-members .tree-remote { padding-inline:23px 4px; }
+.tree-remote > svg { flex:none; width:12px; height:12px; }
+.tree-remote b { color:var(--text); }
+.tree-remote :is(.remote-identity,.remote-engine) { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.tree-remote .remote-origin { color:var(--muted); font-size:10px; }
+.tree-remote .remote-engine { max-width:45%; }
 .tree-loans .tree-group-person { padding-inline-start:48px; }
 .tree-cooperation-toggle:hover,.tree-loan-group:hover { background:var(--surface); color:var(--text); }

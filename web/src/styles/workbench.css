@@ -2,7 +2,7 @@
   color-scheme: dark;
   font: 500 12px "Inter", "Segoe UI", "Microsoft YaHei UI", sans-serif;
   --mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
-  --rail-width: 240px;
+  --rail-width: 268px;
   --shell: #09090b;
   --stage: #0c0c0f;
   --surface: #121216;
@@ -225,7 +225,7 @@ button:disabled { cursor: default; opacity: .42; }
 .topic-shell[data-collapsed="true"] .workspace { grid-column: 1 / -1; }
 .topic-navigation { display:flex; align-items:center; gap:4px; min-width:0; margin-inline-start:auto; }
 .current-topic-title,.topic-label,.member-name,.tag-power { background:transparent; color:inherit; border:0; padding:0; }
-.current-topic-title,.topic-label,.member-name,.tree-remote b { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; }
+.current-topic-title,.topic-label,.member-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; }
 .current-topic-title { font-weight:650; }
 #mobile-topic { display:none; }
 #project-collapse[aria-expanded=true] { color:var(--text); background:var(--raised); }
@@ -262,8 +262,8 @@ button:disabled { cursor: default; opacity: .42; }
 .tree-archive { display:flex; align-items:center; gap:4px; padding-left:14px; color:var(--muted); }
 .tree-arrow,.tree-actions button { display:grid; place-items:center; flex:none; height:24px; min-width:14px; }
 .tree-arrow svg,.tree-actions svg,.agent-mail-count svg,.project-select svg { width:13px; height:13px; flex:none; }
-.tree-total,.tree-agent-state,.tree-remote small { margin-left:auto; flex:none; font:11px var(--mono); color:var(--muted); }
-.tree-agent-state,.tree-remote small { color:var(--activity-color); }
+.tree-total,.tree-agent-state { margin-left:auto; flex:none; font:11px var(--mono); color:var(--muted); }
+.tree-agent-state { color:var(--activity-color); }
 .nav-engine,.nav-quota { color:var(--muted); font:10px var(--mono); white-space:nowrap; }
 .nav-engine { flex:none; }
 #agent-config-history:not([hidden]),#agent-config-basic:not([hidden]) {display:flex;flex:1;min-height:0;flex-direction:column}
@@ -274,6 +274,13 @@ button:disabled { cursor: default; opacity: .42; }
 .nav-quota:hover { color:var(--text); }
 .tree-row[data-activity=working] .tree-total { color:var(--agent-blue); }
 .tree-actions { display:none; flex:none; font-size:11px; }
+.tree-actions .delete-topic { color:var(--danger); }
+.tree-add {flex:none;border:0;border-radius:4px;background:transparent;color:var(--muted);font-size:11px;padding:3px 4px}
+.tree-add:is(:hover,:focus-visible) {background:var(--raised);color:var(--text)}
+.tree-section {position:relative}
+.tree-section > .tree-add {position:absolute;inset-inline-end:0;top:0}
+.tree-section > details > summary {padding-inline-end:76px}
+.new-agent-tabs button[aria-pressed=true] {background:var(--raised);color:var(--text)}
 .tree-row:is(:hover,:focus-within) .tree-actions { display:flex; }
 .tree-row:is(:hover,:focus-within) .tree-total { display:none; }
 .agent-mail-count { flex:none; font:10px var(--mono); color:var(--amber); gap:2px; }

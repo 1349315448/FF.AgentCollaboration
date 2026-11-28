@@ -22,6 +22,8 @@ internal sealed partial class WorkbenchStore
             Exec("ALTER TABLE topics ADD COLUMN finish_summary TEXT");
         if (!Read("PRAGMA table_info(topics)", row => row.GetString(1)).Contains("leader_window_id"))
             Exec("ALTER TABLE topics ADD COLUMN leader_window_id TEXT");
+        if (!Read("PRAGMA table_info(topics)", row => row.GetString(1)).Contains("deleted_at"))
+            Exec("ALTER TABLE topics ADD COLUMN deleted_at TEXT");
         if (!Read("PRAGMA table_info(windows)", row => row.GetString(1)).Contains("topic_id"))
         {
             Exec("ALTER TABLE windows ADD COLUMN topic_id TEXT NOT NULL DEFAULT ''");
@@ -48,8 +50,9 @@ internal sealed partial class WorkbenchStore
     private static WorkbenchTopic ReadTopic(SqliteDataReader row) => new(row.GetString(0), row.GetString(1), row.GetString(2),
         Optional(row, 3), row.GetString(4), Optional(row, 5), row.GetString(6), Optional(row, 7), Optional(row, 8), Optional(row, 9));
 
-    internal List<WorkbenchTopic> Topics() => Read($"SELECT {TopicColumns} FROM topics ORDER BY rowid", ReadTopic);
-    internal WorkbenchTopic Topic(string id) => Read($"SELECT {TopicColumns} FROM topics WHERE id=$p0", ReadTopic, id)
+    internal List<WorkbenchTopic> Topics() => Read($"SELECT {TopicColumns} FROM topics WHERE deleted_at IS NULL ORDER BY rowid", ReadTopic);
+    internal WorkbenchTopic Topic(string id, bool includeDeleted = false) =>
+        Read($"SELECT {TopicColumns} FROM topics WHERE id=$p0 AND (deleted_at IS NULL OR $p1)", ReadTopic, id, includeDeleted)
         .SingleOrDefault() ?? throw new WorkbenchError("找不到这个话题", WorkbenchFailure.NotFound);
 
     // 仅本机人工入口调用。确认时的快照已过期则需重新查看当前组长。
@@ -83,7 +86,7 @@ internal sealed partial class WorkbenchStore
                     BindArchive(Topic(id), input.Folder);
                 });
             }
-            else Exec("UPDATE topics SET name=$p1,goal=$p2 WHERE id=$p0", id, name, goal);
+            else Exec("UPDATE topics SET name=$p1,goal=$p2 WHERE id=$p0 AND deleted_at IS NULL", id, name, goal);
         }
         catch (SqliteException error) when (error.SqliteExtendedErrorCode == 2067)
         {
@@ -99,7 +102,7 @@ internal sealed partial class WorkbenchStore
         string parent = ArchiveRoot;
         TopicArchive.CheckPath(parent);
         if (!Directory.Exists(parent)) return [];
-        var used = Topics().Where(t => t.Folder != null).Select(t => t.Folder!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var used = Read("SELECT folder FROM topics WHERE folder IS NOT NULL", row => row.GetString(0)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         return new DirectoryInfo(parent).EnumerateDirectories("*", new EnumerationOptions { AttributesToSkip = FileAttributes.ReparsePoint })
             .Where(d => !d.Name.StartsWith('.') && !used.Contains(d.FullName)).OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
             .Select(d => new FolderEntry(d.Name, d.FullName)).ToList();
@@ -129,6 +132,35 @@ internal sealed partial class WorkbenchStore
         WorkbenchTopic topic = null!;
         Atomic(() => topic = SetFinishedCore(id, finished, null));
         return topic;
+    }
+
+    internal string[] DeleteArchivedTopic(string id)
+    {
+        string[] windows = [];
+        Atomic(() =>
+        {
+            if (Topic(id).Status != "finished")
+                throw new WorkbenchError("请先归档这个小组", WorkbenchFailure.Conflict);
+            windows = Read("SELECT id FROM windows WHERE topic_id=$p0 AND closed=0", row => row.GetString(0), id).ToArray();
+            foreach (string window in windows)
+            {
+                ClearWake(window);
+                DisableAgentSharing(window);
+            }
+            foreach (string link in Read("""
+                SELECT l.id FROM fed_group_link l JOIN fed_grant g ON g.id=l.id
+                WHERE l.topic=$p0 AND g.status IN ('pending','approved')
+                """, row => row.GetString(0), id))
+                StopGroupLink(link,"revoked");
+            Exec("""
+                UPDATE windows SET closed=1,online=0,grant_hash=NULL WHERE topic_id=$p0 AND closed=0;
+                DELETE FROM chat_group_link WHERE first=$p0 OR second=$p0;
+                DELETE FROM fed_contact_binding WHERE topic=$p0;
+                DELETE FROM fed_remote_topic WHERE topic=$p0;
+                UPDATE topics SET deleted_at=CURRENT_TIMESTAMP,leader_window_id=NULL WHERE id=$p0;
+                """, id);
+        });
+        return windows;
     }
 
     private WorkbenchTopic SetFinishedCore(string id, bool finished, string? summary)

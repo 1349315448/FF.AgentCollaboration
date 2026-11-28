@@ -506,7 +506,7 @@ async function run() {
     await page.keyboard.press("Escape");
     const b = (await post("/topics", {name:"设计", project:path.join(root, "two")})).id;
     const another = (await post("/topics", {name:"同项目备忘", project:path.join(root, "one")})).id;
-    assert.equal(await page.locator(".topbar #new-agent").count(), 1);
+    assert.equal(await page.locator("#project-rail #new-agent").count(), 1);
     assert(await page.locator(".topbar #topic-list").isVisible());
     assert(await page.locator("#project-rail #project-tabs").isVisible());
     let installed = false, attempts = 0, catalogs = 0;
